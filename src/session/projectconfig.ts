@@ -14,14 +14,29 @@ export interface PlaypenConfig {
 	/**
 	 * Project-relative paths given guest-local storage instead of the 9p share.
 	 *
+	 * Two reasons, neither of them privacy: the 9p share is slow, and host and
+	 * guest frequently need different contents at the same path — native modules
+	 * and toolchain builds are per-platform, so one copy cannot serve both.
+	 *
 	 * Masked, not hidden: the host directory stays mounted underneath, and the
-	 * guest has passwordless root and can unmount the mask. This is a speed and
-	 * correctness feature. Keep secrets outside the project directory.
+	 * guest has passwordless root and can unmount the mask. Keep secrets outside
+	 * the project directory.
 	 *
 	 * One concrete relative path per entry; a bind mount needs a single target,
 	 * so globs are unsupported.
 	 */
 	masked?: string[];
+
+	/**
+	 * Shell commands run in the guest, in order, on create and after a rebuild.
+	 * `playpen setup` re-runs them.
+	 *
+	 * Declared rather than inferred: a masked `node_modules` is empty in a new
+	 * sandbox, but `npm ci`, `pnpm i` and `uv sync` are not interchangeable, so
+	 * guessing from a lockfile would be wrong often enough to be worse than
+	 * saying nothing.
+	 */
+	setup?: string[];
 }
 
 /**
@@ -34,8 +49,11 @@ export function defineConfig(config: PlaypenConfig): PlaypenConfig {
 
 export interface LoadedConfig {
 	masked: string[];
-	/** Entries dropped by validation, verbatim, for warning about. */
+	setup: string[];
+	/** `masked` entries dropped by validation, verbatim, for warning about. */
 	rejected: string[];
+	/** `setup` entries dropped by validation, verbatim. */
+	rejectedSetup: string[];
 	/** Set when the file exists but could not be loaded. Masking is skipped. */
 	error?: string;
 }
@@ -84,6 +102,30 @@ export function validateMasks(entries: readonly unknown[]): {
 	return { masked, rejected };
 }
 
+/**
+ * Only shape is checked. The command itself is not parsed or restricted: it
+ * runs in the guest, which already executes the project's code by design, and
+ * a project that wanted to run something could put it in a package script
+ * anyway. What matters is that nothing here reaches the host.
+ */
+export function validateSetup(entries: readonly unknown[]): {
+	setup: string[];
+	rejected: string[];
+} {
+	const setup: string[] = [];
+	const rejected: string[] = [];
+
+	for (const raw of entries) {
+		if (typeof raw !== "string" || raw.trim() === "") {
+			rejected.push(String(raw));
+			continue;
+		}
+		setup.push(raw.trim());
+	}
+
+	return { setup, rejected };
+}
+
 export async function hasLegacyIgnore(projectDir: string): Promise<boolean> {
 	return exists(join(projectDir, LEGACY_IGNORE_FILE));
 }
@@ -116,7 +158,12 @@ function explain(err: unknown): string {
  */
 export async function importConfig(file: string): Promise<LoadedConfig> {
 	const name = basename(file);
-	const empty: LoadedConfig = { masked: [], rejected: [] };
+	const empty: LoadedConfig = {
+		masked: [],
+		setup: [],
+		rejected: [],
+		rejectedSetup: [],
+	};
 
 	let loaded: unknown;
 	try {
@@ -133,16 +180,28 @@ export async function importConfig(file: string): Promise<LoadedConfig> {
 		return { ...empty, error: `${name} must default-export an object` };
 	}
 
-	const masked = (config as PlaypenConfig).masked;
-	if (masked === undefined) return empty;
-	if (!Array.isArray(masked)) {
+	const { masked, setup } = config as PlaypenConfig;
+	if (masked !== undefined && !Array.isArray(masked)) {
 		return {
 			...empty,
 			error: `${name}: \`masked\` must be an array of strings`,
 		};
 	}
+	if (setup !== undefined && !Array.isArray(setup)) {
+		return {
+			...empty,
+			error: `${name}: \`setup\` must be an array of strings`,
+		};
+	}
 
-	return validateMasks(masked);
+	const masks = validateMasks(masked ?? []);
+	const steps = validateSetup(setup ?? []);
+	return {
+		masked: masks.masked,
+		setup: steps.setup,
+		rejected: masks.rejected,
+		rejectedSetup: steps.rejected,
+	};
 }
 
 /** Ungated: executes the project's config in place. See `importConfig`. */
@@ -151,6 +210,13 @@ export async function loadProjectConfig(
 ): Promise<ConfigResult> {
 	const legacyIgnore = await hasLegacyIgnore(projectDir);
 	const name = await findConfigFile(projectDir);
-	if (name === null) return { masked: [], rejected: [], legacyIgnore };
+	if (name === null)
+		return {
+			masked: [],
+			setup: [],
+			rejected: [],
+			rejectedSetup: [],
+			legacyIgnore,
+		};
 	return { ...(await importConfig(join(projectDir, name))), legacyIgnore };
 }

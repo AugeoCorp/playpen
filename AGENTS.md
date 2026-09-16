@@ -15,8 +15,13 @@ builds, and any base baked before Node 26 — importing `.ts` fails with
 
 ```
 npx tsc --noEmit false --rewriteRelativeImportExtensions --outDir "$OUT"
-node --test "$OUT/**/*.test.js"
+node --test --experimental-test-module-mocks "$OUT/**/*.test.js"
 ```
+
+`lifecycle.test.ts` fails there: `mock.module()` takes its specifier as a
+runtime string, which `--rewriteRelativeImportExtensions` does not touch, so it
+still asks for `.ts` after compilation. Run that file on a Node with type
+stripping.
 
 Anything touching a real VM is verified by hand with `playpen up`. Say when you
 could not.
@@ -28,6 +33,8 @@ could not.
   `src/session/trust.ts`. It executes a snapshot of the approved import graph,
   never the project file. Approvals live outside the mount.
 - Only `assertOurs` paths stop or delete Lima instances.
+- `setup` entries run in the guest, through a login shell so mise applies. The
+  host only extracts them as data; nothing from a config reaches a host shell.
 
 ## Style
 

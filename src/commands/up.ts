@@ -11,12 +11,15 @@ export default defineCommand({
 		const sb = await identify(process.cwd());
 		console.log(`sandbox ${sb.sandbox} (${sb.instance})`);
 
-		const { created } = await ensureRunning(sb);
+		const { created, setupOk } = await ensureRunning(sb);
 		console.log(
 			created
 				? `created and running; ${sb.cwd} is mounted read-write`
 				: `running; ${sb.cwd} is mounted read-write`,
 		);
+		// The sandbox is up either way, so this is the exit code rather than a
+		// throw -- but `up` is the command that reports whether it is ready.
+		if (!setupOk) process.exitCode = 1;
 		console.log(`next: playpen shell   or   playpen claude`);
 	},
 });

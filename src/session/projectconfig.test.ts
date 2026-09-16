@@ -7,6 +7,7 @@ import {
 	LEGACY_IGNORE_FILE,
 	loadProjectConfig,
 	validateMasks,
+	validateSetup,
 } from "./projectconfig.ts";
 
 /**
@@ -166,4 +167,61 @@ test("loads a TypeScript config", { skip: !canImportTs }, async (t) => {
 	});
 	const r = await loadProjectConfig(dir);
 	assert.deepEqual(r.masked, ["node_modules"]);
+});
+
+test("keeps setup commands in order, trimmed", () => {
+	const r = validateSetup(["npm ci", "  npm run build  "]);
+	assert.deepEqual(r.setup, ["npm ci", "npm run build"]);
+	assert.deepEqual(r.rejected, []);
+});
+
+test("rejects empty and non-string setup entries", () => {
+	const r = validateSetup(["", "   ", 42, null, "npm ci"]);
+	assert.deepEqual(r.setup, ["npm ci"]);
+	assert.deepEqual(r.rejected, ["", "   ", "42", "null"]);
+});
+
+test("reads setup from a default export", async (t) => {
+	const dir = await project(t, {
+		"playpen.config.js": 'export default { setup: ["npm ci"] };',
+	});
+	const r = await loadProjectConfig(dir);
+	assert.deepEqual(r.setup, ["npm ci"]);
+	assert.equal(r.error, undefined);
+});
+
+test("masked and setup are independent, so either alone is enough", async (t) => {
+	const masksOnly = await loadProjectConfig(
+		await project(t, {
+			"playpen.config.js": 'export default { masked: ["node_modules"] };',
+		}),
+	);
+	assert.deepEqual(masksOnly.masked, ["node_modules"]);
+	assert.deepEqual(masksOnly.setup, []);
+
+	const setupOnly = await loadProjectConfig(
+		await project(t, {
+			"playpen.config.js": 'export default { setup: ["npm ci"] };',
+		}),
+	);
+	assert.deepEqual(setupOnly.masked, []);
+	assert.deepEqual(setupOnly.setup, ["npm ci"]);
+});
+
+test("reports a non-array setup instead of throwing", async (t) => {
+	const dir = await project(t, {
+		"playpen.config.js": 'export default { setup: "npm ci" };',
+	});
+	const r = await loadProjectConfig(dir);
+	assert.match(r.error ?? "", /`setup` must be an array/);
+});
+
+test("an invalid setup entry is dropped, not fatal", async (t) => {
+	const dir = await project(t, {
+		"playpen.config.js": 'export default { setup: ["npm ci", ""] };',
+	});
+	const r = await loadProjectConfig(dir);
+	assert.deepEqual(r.setup, ["npm ci"]);
+	assert.deepEqual(r.rejectedSetup, [""]);
+	assert.equal(r.error, undefined);
 });

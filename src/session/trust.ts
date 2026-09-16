@@ -148,7 +148,9 @@ export async function loadTrustedConfig(
 	const name = await findConfigFile(projectDir);
 	const skipped = (state: TrustState, error?: string): TrustedConfig => ({
 		masked: [],
+		setup: [],
 		rejected: [],
+		rejectedSetup: [],
 		legacyIgnore,
 		state,
 		loaded: false,
@@ -194,6 +196,9 @@ export async function loadTrustedConfig(
 		);
 		console.error(
 			`  a process inside the sandbox can write it — read it before approving.`,
+		);
+		console.error(
+			`  its \`setup\` commands, if any, then run inside the sandbox.`,
 		);
 		console.error(
 			`  ${count === 1 ? "1 file" : `${count} files`} will be executed:`,

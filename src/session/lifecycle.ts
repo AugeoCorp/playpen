@@ -37,14 +37,16 @@ function renderFor(sb: Sandbox) {
 	return render(baseImage, { ...defaults, mount: sb.cwd });
 }
 
-async function loadMasks(sb: Sandbox): Promise<string[]> {
-	const { masked, rejected, error, legacyIgnore } = await loadTrustedConfig(
-		sb.cwd,
-		sb.sandbox,
-	);
+async function loadConfig(
+	sb: Sandbox,
+): Promise<{ masked: string[]; setup: string[] }> {
+	const { masked, setup, rejected, rejectedSetup, error, legacyIgnore } =
+		await loadTrustedConfig(sb.cwd, sb.sandbox);
 	if (error) {
 		console.error(`warning: ${CONFIG_FILE} not loaded (${error})`);
-		console.error(`  continuing with no masks; everything is shared over 9p.`);
+		console.error(
+			`  continuing with no masks and no setup; everything is shared over 9p.`,
+		);
 	}
 	if (legacyIgnore) {
 		console.error(
@@ -57,26 +59,63 @@ async function loadMasks(sb: Sandbox): Promise<string[]> {
 	for (const bad of rejected) {
 		console.error(`warning: ignoring invalid \`masked\` entry: ${bad}`);
 	}
+	for (const bad of rejectedSetup) {
+		console.error(`warning: ignoring invalid \`setup\` entry: ${bad}`);
+	}
 	if (masked.length > 0) {
 		console.error(`masking with guest-local storage: ${masked.join(", ")}`);
 	}
-	return masked;
+	return { masked, setup };
+}
+
+/**
+ * Must run after `applyMasks`: a mask is a bind mount over a directory inside
+ * the project, so an install that ran first would write to the 9p share and
+ * then be shadowed by the mount.
+ *
+ * Through a login shell rather than argv, against the rule elsewhere, because
+ * an entry may use `&&` or redirection and because a login shell is what
+ * activates mise -- otherwise an install uses the floor toolchain instead of
+ * the one the project pinned.
+ */
+export async function runSetup(
+	sb: Sandbox,
+	setup: readonly string[],
+): Promise<boolean> {
+	for (const command of setup) {
+		console.error(`setup: ${command}`);
+		// stdin is the caller's: a step that prompts would hang `playpen run`,
+		// and one that reads would eat input meant for the command after it.
+		const code = await lima.shell(sb.instance, sb.cwd, [
+			"bash",
+			"-lc",
+			`exec </dev/null; ${command}`,
+		]);
+		if (code !== 0) {
+			console.error(`warning: setup step failed (exit ${code}): ${command}`);
+			console.error(`  remaining steps skipped; re-run with: playpen setup`);
+			return false;
+		}
+	}
+	return true;
 }
 
 interface Template {
 	yaml: string;
 	hash: string;
 	masks: string[];
+	setup: string[];
 }
 
 /** Loads the project config, so it is read once per command and reused. */
 async function renderTemplate(sb: Sandbox): Promise<Template> {
-	const masks = await loadMasks(sb);
+	const { masked, setup } = await loadConfig(sb);
 	const rendered = renderFor(sb);
 	return {
 		yaml: `${serialize(rendered)}\n`,
 		hash: rendered.contentHash,
-		masks,
+		masks: masked,
+		setup,
 	};
 }
 
@@ -124,14 +163,16 @@ async function giveCloneItsMount(sb: Sandbox): Promise<void> {
 async function applyMasks(
 	sb: Sandbox,
 	masks: readonly string[],
-): Promise<void> {
-	if (masks.length === 0) return;
+): Promise<boolean> {
+	if (masks.length === 0) return true;
 	const result = await lima.runScript(sb.instance, maskScript(sb.cwd, masks), {
 		root: true,
 	});
 	if (result.code !== 0) {
 		console.error(`warning: could not apply masks (${result.stderr.trim()})`);
+		return false;
 	}
+	return true;
 }
 
 /**
@@ -185,9 +226,15 @@ async function confirmRebuild(reason: string): Promise<boolean> {
 	return ok;
 }
 
-export async function ensureRunning(
-	sb: Sandbox,
-): Promise<{ created: boolean }> {
+export interface Running {
+	created: boolean;
+	/** False when a step failed, or when setup was skipped because masks were not applied. */
+	setupOk: boolean;
+	/** The project's steps, so `playpen setup` re-runs them without a second trust pass. */
+	setup: string[];
+}
+
+export async function ensureRunning(sb: Sandbox): Promise<Running> {
 	const existing = await lima.get(sb.instance);
 
 	let rebuilding = false;
@@ -201,7 +248,7 @@ export async function ensureRunning(
 			if (!lima.isRunning(existing)) await lima.start(sb.instance);
 			await applyMasks(sb, template.masks);
 			await store.touch(sb.sandbox);
-			return { created: false };
+			return { created: false, setupOk: true, setup: template.setup };
 		}
 	}
 
@@ -236,11 +283,14 @@ export async function ensureRunning(
 			);
 		throw err;
 	}
-	await applyMasks(sb, current.masks);
+	const masked = await applyMasks(sb, current.masks);
 	if (await history.restore(sb.instance, sb.sandbox)) {
 		console.error(`restored Claude history from the previous sandbox`);
 	}
 
+	// Recorded before setup, not after: setup can run for minutes, and an
+	// instance that exists with no record is one `up` will neither finish nor
+	// offer to rebuild.
 	const now = new Date().toISOString();
 	await store.save({
 		name: sb.sandbox,
@@ -250,7 +300,26 @@ export async function ensureRunning(
 		imageHash: current.hash,
 		baseInstance: base.instance,
 	});
-	return { created: true };
+
+	// Not on every start, so `run` and `shell` stay fast. A rebuild reaches here
+	// too, which is the case that needs it most: the guest disk went with it.
+	const setupOk = masked
+		? await runSetup(sb, current.setup)
+		: skipSetup(current.setup);
+	return { created: true, setupOk, setup: current.setup };
+}
+
+/**
+ * Masks failed, so the paths setup would write to are still the host's. Running
+ * an install now would replace the host's contents with the guest's build of
+ * them, which is the thing masking exists to prevent.
+ */
+function skipSetup(setup: readonly string[]): boolean {
+	if (setup.length === 0) return true;
+	console.error(`warning: skipping setup because masks were not applied`);
+	console.error(`  it would install into the host directory. fix, then:`);
+	console.error(`  playpen setup`);
+	return false;
 }
 
 export async function stop(sb: Sandbox): Promise<void> {

@@ -18,6 +18,7 @@ const main = defineCommand({
 		shell: () => import("./commands/shell.ts").then((m) => m.default),
 		run: () => import("./commands/run.ts").then((m) => m.default),
 		claude: () => import("./commands/claude.ts").then((m) => m.default),
+		setup: () => import("./commands/setup.ts").then((m) => m.default),
 		ls: () => import("./commands/ls.ts").then((m) => m.default),
 		stop: () => import("./commands/stop.ts").then((m) => m.default),
 		rm: () => import("./commands/rm.ts").then((m) => m.default),

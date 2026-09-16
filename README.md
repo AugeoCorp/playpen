@@ -31,6 +31,7 @@ playpen up                       create or start the sandbox for this directory
 playpen shell                    shell in the guest
 playpen run [--keep] -- <cmd>    run a command, then stop the VM
 playpen claude [--keep] [args]   run Claude Code, then stop the VM
+playpen setup                    re-run the project's setup steps
 playpen ls | stop | rm --yes
 playpen image show | doctor
 ```
@@ -44,17 +45,30 @@ and account identity. `--no-sync` skips the rest.
 Optional `playpen.config.ts` in the project root:
 
 ```ts
-export default { masked: ["node_modules"] };
+export default { masked: ["node_modules"], setup: ["npm ci"] };
 ```
 
-`masked` directories get guest-local storage instead of the 9p share. This is
-for speed, not privacy: the host copy is still mounted underneath and the guest
-has root. Keep secrets outside the project.
+| Key      | Type       | Effect                                                  |
+| -------- | ---------- | ------------------------------------------------------- |
+| `masked` | `string[]` | Project-relative dirs given guest-local storage, not 9p |
+| `setup`  | `string[]` | Shell commands run in the guest, after masks, in order  |
 
-The config is imported on the host, so it runs as you. playpen prints it and
-asks before executing, again whenever it or anything it imports changes.
-Approvals are stored outside the project, so the sandbox cannot approve its own
-edits. Without a terminal it runs unmasked instead.
+- `masked` gives host and guest their own copy of a path: the 9p share is slow,
+  and the two often need different contents there — native modules and toolchain
+  builds are per-platform, and the environments drift.
+- Masked is not hidden. The host copy stays mounted underneath and the guest has
+  root. Keep secrets outside the project.
+- `setup` runs on create and after a rebuild, never on start. Nothing is
+  inferred from a lockfile. `playpen setup` re-runs it.
+- The file is imported on the host and runs as you. `setup` commands do not —
+  they run in the guest.
+- playpen prints the file and asks before executing it, again whenever it or
+  anything it imports changes. Approvals live outside the project, so a sandbox
+  cannot approve its own edits.
+- No terminal, no approval: the file is not executed, and you get neither masks
+  nor setup.
+
+Reasoning in `docs/spec.md`.
 
 ## Scope
 

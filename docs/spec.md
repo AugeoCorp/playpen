@@ -188,6 +188,31 @@ path, because an interactive trust prompt would hang the non-interactive
 `playpen run` — which concedes nothing, since the guest already runs the
 project's code and the host-side gate in `trust.ts` is untouched.
 
+### Setup steps, declared not inferred
+
+A mask means a new sandbox starts with that directory empty, so a project whose
+dependencies live in a masked `node_modules` cannot be worked in until something
+refills it. `setup` in `playpen.config.ts` is that something.
+
+Not inferred from a lockfile: `npm ci`, `pnpm i`, `uv sync` and `bundle install`
+are not interchangeable, and running a package manager nobody asked for is the
+kind of guess playpen otherwise avoids. The project already says how it wants to
+be sandboxed via `masked`; this is the same kind of statement.
+
+Ordering is load-bearing. Setup runs _after_ `applyMasks`, because a mask is a
+bind mount over a directory inside the project: an install that ran first would
+write to the 9p share and then be shadowed. It runs through a login shell rather
+than argv, both so an entry can use `&&` and redirection and so mise has
+activated — otherwise an install would use the floor toolchain instead of the
+one the project pinned. That is the one place project-controlled strings reach a
+shell, and it holds because the shell is the guest's.
+
+Create-only, so `run` and `shell` stay fast; a rebuild reaches it too, which is
+the case that needs it most, since the guest disk went with it. A failure stops
+the remaining steps and warns rather than throwing — a sandbox with a
+half-finished setup is still worth having a shell in. `playpen setup` re-runs
+them without rebuilding.
+
 `distro` abstracts apt vs dnf (`installCmd(pkgs): string`), making an
 Ubuntu→Fedora swap a one-line change. Defaulting to Ubuntu because it's Lima's
 own default and the best-tested path — the

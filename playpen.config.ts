@@ -6,4 +6,5 @@ import type { PlaypenConfig } from "./src/session/projectconfig.ts";
 // anything, which keeps this a one-file graph.
 export default {
 	masked: ["node_modules"],
+	setup: ["npm ci"],
 } satisfies PlaypenConfig;

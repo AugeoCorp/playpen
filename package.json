@@ -14,7 +14,7 @@
 	"scripts": {
 		"playpen": "node src/cli.ts",
 		"typecheck": "tsc --noEmit",
-		"test": "node --test \"src/**/*.test.ts\"",
+		"test": "node --test --experimental-test-module-mocks \"src/**/*.test.ts\"",
 		"lint": "biome check && npm run prettier:check",
 		"lint:fix": "biome check --write && npm run prettier:fix",
 		"format": "biome check --write",
