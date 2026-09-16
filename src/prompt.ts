@@ -5,12 +5,12 @@ import { createInterface } from "node:readline/promises";
  * TTY: there is nobody to answer, and silence is not consent.
  */
 export async function confirm(question: string): Promise<boolean> {
-  if (!process.stdin.isTTY) return false;
-  const rl = createInterface({ input: process.stdin, output: process.stderr });
-  try {
-    const answer = (await rl.question(question)).trim().toLowerCase();
-    return answer === "y" || answer === "yes";
-  } finally {
-    rl.close();
-  }
+	if (!process.stdin.isTTY) return false;
+	const rl = createInterface({ input: process.stdin, output: process.stderr });
+	try {
+		const answer = (await rl.question(question)).trim().toLowerCase();
+		return answer === "y" || answer === "yes";
+	} finally {
+		rl.close();
+	}
 }

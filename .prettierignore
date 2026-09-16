@@ -1,0 +1,7 @@
+# Biome owns code; Prettier only touches prose.
+*
+!*.md
+!**/*.md
+!*/
+
+node_modules

@@ -1,7 +1,7 @@
 # Plan
 
-Updated 2026-09-15. Design and reasoning are in `spec.md`; constraints that
-must not be inverted are in `AGENTS.md`. Update this when status changes.
+Updated 2026-09-15. Design and reasoning are in `spec.md`; constraints that must
+not be inverted are in `AGENTS.md`. Update this when status changes.
 
 ## Status
 
@@ -18,8 +18,8 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
 ## Known problems
 
 - An existing sandbox does not pick up image or config changes, or a rebaked
-  base, on its own. `up` notices both and offers a ~10s rebuild; declining
-  keeps the old one running.
+  base, on its own. `up` notices both and offers a ~10s rebuild; declining keeps
+  the old one running.
 - `up` leaves 8GiB running until `stop`. Idle auto-stop deferred to v1; a
   forgotten VM happened twice in the first half hour, so revisit.
 - Nothing collects old sandboxes, old bases, or history archives. A clone costs
@@ -27,11 +27,13 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
   a ~2GB base behind. Unscheduled. Whatever does it cannot just delete:
   `destroy` boots a stopped sandbox to archive its Claude history, so collecting
   N sandboxes costs N boots unless they are archived on stop instead.
-- The guest's Node cannot import `.ts`, so playpen cannot run its own tests
-  inside a sandbox. Step 2. The base is Ubuntu 26.04 and apt's `nodejs` there
-  is v22.22.1, so the pin is still needed.
-- No git identity or credentials in the guest; agents can commit, not push.
-  Step 2, and the only thing that blocks the core workflow.
+- Node 26 from nodejs.org and mise are both in the base, verified in a booted
+  guest from wiped mise state: `npm test` runs natively (80 pass, nothing
+  skipped, no compile-out); a project pinning `.node-version` installs and
+  resolves it on the first login shell (~7s cold, ~30ms after); one pinning
+  nothing falls through to the floor with no output.
+- No git identity or credentials in the guest; agents can commit, not push. Step
+  2, and the only thing that blocks the core workflow.
 
 ## Next
 
@@ -41,11 +43,11 @@ Bake `playpen-base-<hash>-<date>` once, `limactl clone` it per sandbox.
 
 Spiked 2026-09-15 on Lima 2.2.0 + btrfs, plain Ubuntu base: clone reflinks and
 is free -- 0.07s, 0.00B exclusive against 2.03GiB shared. Cold boot of a clone
-is 10s, against ~90s to reprovision. The unlayered base provisioned in 38s;
-the real layered one takes ~75s, most of it installing Claude Code. Two
-constraints it turned up: `clone` refuses a running source, so a baked base is
-stopped and never started again; and it prompts to start the new instance, so
-`up` must pass `--tty=false`.
+is 10s, against ~90s to reprovision. The unlayered base provisioned in 38s; the
+real layered one takes ~75s, most of it installing Claude Code. Two constraints
+it turned up: `clone` refuses a running source, so a baked base is stopped and
+never started again; and it prompts to start the new instance, so `up` must pass
+`--tty=false`.
 
 Base names carry the build date so you can see how old one is:
 `playpen-base-<hash>-2026-09-15`. It is a label, not an expiry. Since the date
@@ -53,12 +55,11 @@ is outside the hash, lookup matches `playpen-base-<hash>-*` and takes the
 newest; `image build --force` bakes a new dated base from the same definition,
 which is how you pick up current packages.
 
-Two things make a sandbox stale: its rendered template no longer matches the
-one written at creation, or a newer base exists than the one it was cloned
-from. `up` offers a rebuild rather than doing it -- a reclone is ~10s but
-discards installed packages and masked directories, and `up` is routine.
-Claude transcripts and memory are archived across it. Without a TTY it
-declines.
+Two things make a sandbox stale: its rendered template no longer matches the one
+written at creation, or a newer base exists than the one it was cloned from.
+`up` offers a rebuild rather than doing it -- a reclone is ~10s but discards
+installed packages and masked directories, and `up` is routine. Claude
+transcripts and memory are archived across it. Without a TTY it declines.
 
 One base for now. `playpen.config.ts` does not choose an image.
 
@@ -71,12 +72,12 @@ lima builds yq with env operations disabled, so the cwd cannot be passed as
 so provisioning stays skipped.
 
 Masks therefore cannot be a provision entry -- nothing can add one to a clone.
-They run from the host over `limactl shell` after every start, which they had
-to do anyway since a bind does not survive a reboot. Changing `masked` now
-takes effect on the next `up` without a rebuild.
+They run from the host over `limactl shell` after every start, which they had to
+do anyway since a bind does not survive a reboot. Changing `masked` now takes
+effect on the next `up` without a rebuild.
 
-Consequence: cpus, memory, disk and mountType come from the base, so they
-cannot yet vary per sandbox. They are global defaults today.
+Consequence: cpus, memory, disk and mountType come from the base, so they cannot
+yet vary per sandbox. They are global defaults today.
 
 - [x] `image build`, with `--force` for a fresh dated bake
 - [x] base naming, lookup by hash, newest wins
@@ -85,17 +86,17 @@ cannot yet vary per sandbox. They are global defaults today.
 - [x] a stale sandbox offers a rebuild instead of only warning
 - [x] a sandbox on an older base than the newest is offered one too
 - [x] `~/.claude/projects` is archived on destroy and restored on create, so a
-      rebuild keeps transcripts and the memory directory; round-trip verified
-      on the host 2026-09-15
+      rebuild keeps transcripts and the memory directory; round-trip verified on
+      the host 2026-09-15
 - [x] verified on the host: a fresh sandbox clones and boots in 10s, with no
       package installs and no image download
 
 ### 2. Guest toolchain
 
-Pin the `node()` layer to a Node that runs `.ts`: apt's `nodejs` on Ubuntu
-26.04 is v22.22.1, which cannot. Add git identity and a push credential path.
-Both change the image hash, so every existing sandbox will be offered a
-rebuild the next time it is used.
+Pin the `node()` layer to a Node that runs `.ts`: apt's `nodejs` on Ubuntu 26.04
+is v22.22.1, which cannot. Add git identity and a push credential path. Both
+change the image hash, so every existing sandbox will be offered a rebuild the
+next time it is used.
 
 ### 3. Run playpen inside playpen
 
@@ -122,12 +123,12 @@ stay out of the way -- manual testing has been finding the real bugs.
 
 - Run the config snapshot under `node --permission --allow-fs-read=<snapshot>`
   so approved code cannot write, spawn, or reach the network.
-- macOS: `doctor` crashes on missing `findmnt`/`lsattr`; `vmType` is
-  hardcoded to `qemu` where `vz` + `virtiofs` is native.
+- macOS: `doctor` crashes on missing `findmnt`/`lsattr`; `vmType` is hardcoded
+  to `qemu` where `vz` + `virtiofs` is native.
 - Idle auto-stop. Host-side egress filtering per the spec.
-- Preset bases, selected from `playpen.config.ts`; later, defined there.
-  Needs a cap or a GC story first: bases share no extents with each other, so
-  one image per project is one full copy per project.
+- Preset bases, selected from `playpen.config.ts`; later, defined there. Needs a
+  cap or a GC story first: bases share no extents with each other, so one image
+  per project is one full copy per project.
 
 ## Tests
 

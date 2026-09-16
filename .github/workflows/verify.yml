@@ -1,0 +1,46 @@
+name: Verify
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          # Resolves the `engines.node` range in package.json (>=23.6), which is
+          # the floor for running .ts without a build step.
+          node-version-file: "package.json"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Restore prettier cache
+        uses: actions/cache@v4
+        with:
+          path: node_modules/.cache/prettier
+          # The sha makes every run save a fresh cache; without it the first
+          # exact-key hit means the cache never reflects later files.
+          key:
+            prettier-${{ hashFiles('package-lock.json', '.prettierrc.cjs',
+            '.prettierignore') }}-${{ github.sha }}
+          restore-keys: prettier-
+
+      - name: Run typecheck
+        run: npm run typecheck
+
+      - name: Run lint
+        run: npm run lint
+
+      - name: Run tests
+        run: npm test

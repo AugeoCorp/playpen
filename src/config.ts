@@ -3,10 +3,10 @@ import { join } from "node:path";
 import type { SandboxOptions } from "./image/render.ts";
 
 export interface Config {
-  cpus: number;
-  memory: string;
-  disk: string;
-  mountType: SandboxOptions["mountType"];
+	cpus: number;
+	memory: string;
+	disk: string;
+	mountType: SandboxOptions["mountType"];
 }
 
 /**
@@ -14,25 +14,25 @@ export interface Config {
  * host; virtiofs is faster but still experimental there. Revisit with numbers.
  */
 export const defaults: Config = {
-  cpus: 4,
-  memory: "8GiB",
-  disk: "60GiB",
-  mountType: "9p",
+	cpus: 4,
+	memory: "8GiB",
+	disk: "60GiB",
+	mountType: "9p",
 };
 
 export function dataDir(): string {
-  const xdg = process.env["XDG_DATA_HOME"];
-  const base = xdg && xdg !== "" ? xdg : join(homedir(), ".local", "share");
-  return join(base, "playpen");
+	const xdg = process.env.XDG_DATA_HOME;
+	const base = xdg && xdg !== "" ? xdg : join(homedir(), ".local", "share");
+	return join(base, "playpen");
 }
 
 export function sessionsDir(): string {
-  return join(dataDir(), "sessions");
+	return join(dataDir(), "sessions");
 }
 
 /** Kept on disk so a failed boot can be inspected. */
 export function templatesDir(): string {
-  return join(dataDir(), "templates");
+	return join(dataDir(), "templates");
 }
 
 /**
@@ -41,7 +41,7 @@ export function templatesDir(): string {
  * reach only the project mount, so it cannot read or rewrite its own history.
  */
 export function historyDir(): string {
-  return join(dataDir(), "history");
+	return join(dataDir(), "history");
 }
 
 /**
@@ -50,9 +50,9 @@ export function historyDir(): string {
  * can reach these and approve its own config.
  */
 export function trustDir(): string {
-  return join(dataDir(), "trust");
+	return join(dataDir(), "trust");
 }
 
 export function limaHome(): string {
-  return process.env["LIMA_HOME"] ?? join(homedir(), ".lima");
+	return process.env.LIMA_HOME ?? join(homedir(), ".lima");
 }

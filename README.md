@@ -53,8 +53,8 @@ has root. Keep secrets outside the project.
 
 The config is imported on the host, so it runs as you. playpen prints it and
 asks before executing, again whenever it or anything it imports changes.
-Approvals are stored outside the project, so the sandbox cannot approve its
-own edits. Without a terminal it runs unmasked instead.
+Approvals are stored outside the project, so the sandbox cannot approve its own
+edits. Without a terminal it runs unmasked instead.
 
 ## Scope
 
