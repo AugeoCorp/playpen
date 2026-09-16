@@ -11,7 +11,7 @@ export interface CaptureResult {
   stderr: string;
 }
 
-interface Collected {
+export interface Collected {
   code: number;
   stdout: Buffer;
   stderr: string;
@@ -70,8 +70,9 @@ export function captureBuffer(
   cmd: string,
   args: readonly string[],
   opts: RunOptions = {},
+  input?: string | Uint8Array,
 ): Promise<Collected> {
-  return collect(cmd, args, opts);
+  return collect(cmd, args, opts, input);
 }
 
 /**

@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   INSTANCE_PREFIX,
+  baseInstanceName,
   instanceName,
+  isBaseInstance,
   isPlaypenInstance,
+  parseBaseInstance,
   sandboxFromInstance,
   sandboxName,
 } from "./identity.ts";
@@ -36,4 +39,26 @@ test("instance names round-trip", () => {
 test("foreign instances are not recognized as ours", () => {
   assert.equal(isPlaypenInstance("default"), false);
   assert.equal(isPlaypenInstance("playpen-api-abc123"), true);
+});
+
+test("a base instance name round-trips its hash and date", () => {
+  const name = baseInstanceName("a1b2c3d4", "2026-09-15");
+  assert.deepEqual(parseBaseInstance(name), { hash: "a1b2c3d4", date: "2026-09-15" });
+});
+
+test("a sandbox for a directory named base is not mistaken for a base image", () => {
+  const name = instanceName(sandboxName("/home/e/projects/base"));
+  assert.ok(isPlaypenInstance(name));
+  assert.equal(isBaseInstance(name), false);
+});
+
+test("names that are not dated base images are rejected", () => {
+  for (const name of [
+    "playpen-base-a1b2c3d4",
+    "playpen-base-a1b2c3d4-2026-9-15",
+    "playpen-base-nothex00-2026-09-15",
+    "base-a1b2c3d4-2026-09-15",
+  ]) {
+    assert.equal(parseBaseInstance(name), null, name);
+  }
 });

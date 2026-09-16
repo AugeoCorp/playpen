@@ -1,6 +1,6 @@
 import { defineCommand } from "citty";
 import * as lima from "../lima/client.ts";
-import { isPlaypenInstance, sandboxFromInstance } from "../session/identity.ts";
+import { isBaseInstance, isPlaypenInstance, sandboxFromInstance } from "../session/identity.ts";
 import * as store from "../session/store.ts";
 
 function age(iso: string | undefined): string {
@@ -16,7 +16,9 @@ function age(iso: string | undefined): string {
 export default defineCommand({
   meta: { name: "ls", description: "List playpen sandboxes" },
   async run() {
-    const instances = (await lima.list()).filter((i) => isPlaypenInstance(i.name));
+    const instances = (await lima.list()).filter(
+      (i) => isPlaypenInstance(i.name) && !isBaseInstance(i.name),
+    );
     const metas = new Map((await store.all()).map((m) => [m.name, m]));
 
     if (instances.length === 0) {

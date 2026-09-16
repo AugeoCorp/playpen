@@ -36,6 +36,15 @@ export function templatesDir(): string {
 }
 
 /**
+ * Claude transcripts and memory saved out of a sandbox before it is destroyed.
+ * Under the data directory for the same reason as `trustDir`: the guest can
+ * reach only the project mount, so it cannot read or rewrite its own history.
+ */
+export function historyDir(): string {
+  return join(dataDir(), "history");
+}
+
+/**
  * Approved config graphs and their snapshots. Under the data directory, never
  * the project: the sandbox mounts only the project, so nothing inside a guest
  * can reach these and approve its own config.

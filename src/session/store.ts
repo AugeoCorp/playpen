@@ -8,6 +8,8 @@ export interface SessionMeta {
   created: string;
   lastUsed: string;
   imageHash: string;
+  /** Base this sandbox was cloned from. The image hash is what decides staleness. */
+  baseInstance?: string;
   pinned?: boolean;
   /** Fingerprint of the ~/.claude subset last copied in; skips unchanged re-pushes. */
   configHash?: string;

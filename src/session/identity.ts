@@ -26,6 +26,30 @@ export function instanceName(sandbox: string): string {
   return `${INSTANCE_PREFIX}${sandbox}`;
 }
 
+/**
+ * Bases carry their build date so `playpen ls` can show how old one is; it is a
+ * label, not an expiry. A sandbox instance always ends in six hex characters,
+ * so this shape cannot collide with one -- not even for a directory named
+ * "base", whose instance would end in a six-character hash rather than a
+ * two-digit day.
+ */
+const BASE_INSTANCE = new RegExp(`^${INSTANCE_PREFIX}base-([0-9a-f]{8})-(\\d{4}-\\d{2}-\\d{2})$`);
+
+export function baseInstanceName(hash: string, date: string): string {
+  return `${INSTANCE_PREFIX}base-${hash}-${date}`;
+}
+
+export function parseBaseInstance(name: string): { hash: string; date: string } | null {
+  const match = BASE_INSTANCE.exec(name);
+  if (!match) return null;
+  const [, hash, date] = match;
+  return hash !== undefined && date !== undefined ? { hash, date } : null;
+}
+
+export function isBaseInstance(name: string): boolean {
+  return parseBaseInstance(name) !== null;
+}
+
 export function isPlaypenInstance(name: string): boolean {
   return name.startsWith(INSTANCE_PREFIX);
 }

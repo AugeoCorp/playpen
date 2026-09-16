@@ -1,15 +1,16 @@
 import { createHash } from "node:crypto";
 import type { ImageDef } from "./types.ts";
 
-export interface SandboxOptions {
-  /** Host directory to mount read-write, at the same path inside the guest. */
-  mount: string;
+export interface ImageOptions {
   cpus: number;
   memory: string;
   disk: string;
   mountType: "9p" | "virtiofs" | "reverse-sshfs";
-  /** Paths under `mount` to shadow with guest-local storage; see `masked` in playpen.config.ts. */
-  masks?: string[];
+}
+
+export interface SandboxOptions extends ImageOptions {
+  /** Host directory to mount read-write, at the same path inside the guest. */
+  mount: string;
 }
 
 export interface Rendered {
@@ -69,11 +70,14 @@ function guard(hash: string, name: string, body: string): string {
 }
 
 /**
- * Runs after Lima establishes the 9p mount, so the bind lands on top of the
- * share. Backing storage is on the VM disk, which keeps it off 9p and lets an
- * install survive stop/start.
+ * Run from the host after every start rather than as a provision script: binds
+ * do not survive a reboot, and a clone's instance config is Lima's own
+ * resolved yaml, which playpen cannot add provision entries to.
+ *
+ * Backing storage is on the VM disk, which keeps it off 9p and lets an install
+ * survive stop/start.
  */
-function maskScript(mount: string, masks: readonly string[]): string {
+export function maskScript(mount: string, masks: readonly string[]): string {
   const quoted = masks.map((m) => `'${m.replace(/'/g, `'\\''`)}'`).join(" ");
   return [
     "#!/bin/bash",
@@ -95,7 +99,7 @@ function maskScript(mount: string, masks: readonly string[]): string {
   ].join("\n");
 }
 
-export function render(def: ImageDef, opts: SandboxOptions): Rendered {
+function build(def: ImageDef, opts: ImageOptions, mount: string | null): Rendered {
   const hash = imageHash(def);
   const provision: ProvisionEntry[] = [];
 
@@ -116,12 +120,6 @@ export function render(def: ImageDef, opts: SandboxOptions): Rendered {
     });
   }
 
-  // Unguarded: bind mounts do not survive a reboot, so this must re-run every boot.
-  const masks = opts.masks ?? [];
-  if (masks.length > 0) {
-    provision.push({ mode: "system", script: maskScript(opts.mount, masks) });
-  }
-
   const env = Object.assign({}, ...def.layers.map((l) => l.env ?? {})) as Record<
     string,
     string
@@ -137,7 +135,7 @@ export function render(def: ImageDef, opts: SandboxOptions): Rendered {
     disk: opts.disk,
     // On by default on Linux x86_64; a ~100MB download nothing here uses.
     containerd: { system: false, user: false },
-    mounts: [{ location: opts.mount, writable: true }],
+    mounts: mount === null ? [] : [{ location: mount, writable: true }],
     mountType: opts.mountType,
     provision,
     probes: [
@@ -160,6 +158,18 @@ export function render(def: ImageDef, opts: SandboxOptions): Rendered {
   if (Object.keys(env).length > 0) template["env"] = env;
 
   return { template, contentHash: hash };
+}
+
+/**
+ * A base image belongs to no project, so it is baked with no mount and no
+ * masks. Each sandbox writes its own yaml over the clone before first start.
+ */
+export function renderBase(def: ImageDef, opts: ImageOptions): Rendered {
+  return build(def, opts, null);
+}
+
+export function render(def: ImageDef, opts: SandboxOptions): Rendered {
+  return build(def, opts, opts.mount);
 }
 
 /** JSON is valid YAML 1.2, so Lima accepts this as a .yaml without a YAML serializer. */

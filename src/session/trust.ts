@@ -1,7 +1,7 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { createInterface } from "node:readline/promises";
 import { dirname, join } from "node:path";
 import { trustDir } from "../config.ts";
+import { confirm } from "../prompt.ts";
 import { readConfigGraph, type ConfigGraph } from "./configgraph.ts";
 import {
   findConfigFile,
@@ -103,16 +103,6 @@ function preview(graph: ConfigGraph, approved: Record<string, string> | undefine
     for (const line of f.contents.replace(/\n$/, "").split("\n")) out.push(`  │ ${line}`);
   }
   return out.join("\n");
-}
-
-async function confirm(question: string): Promise<boolean> {
-  const rl = createInterface({ input: process.stdin, output: process.stderr });
-  try {
-    const answer = (await rl.question(question)).trim().toLowerCase();
-    return answer === "y" || answer === "yes";
-  } finally {
-    rl.close();
-  }
 }
 
 export interface TrustedConfig extends ConfigResult {

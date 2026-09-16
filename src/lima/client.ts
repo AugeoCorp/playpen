@@ -1,4 +1,4 @@
-import { attach, capture, mustSucceed } from "../sh.ts";
+import { attach, capture, captureBuffer, mustSucceed, type Collected } from "../sh.ts";
 import { INSTANCE_PREFIX } from "../session/identity.ts";
 
 /** Subset of `limactl list --format json` we rely on. */
@@ -59,6 +59,15 @@ export async function createAndStart(name: string, templatePath: string): Promis
   if (code !== 0) throw new Error(`limactl start failed for ${name} (exit ${code})`);
 }
 
+/**
+ * Near-free on a reflinking filesystem. `clone` refuses a running source, and
+ * without --tty=false it prompts and then starts the copy.
+ */
+export async function clone(source: string, target: string): Promise<void> {
+  assertOurs("clone into", target);
+  mustSucceed("limactl clone", await capture(LIMACTL, ["clone", "--tty=false", source, target]));
+}
+
 export async function start(name: string): Promise<void> {
   const code = await attach(LIMACTL, ["start", "--tty=false", name]);
   if (code !== 0) throw new Error(`limactl start failed for ${name} (exit ${code})`);
@@ -86,6 +95,20 @@ export async function stop(name: string, force = false): Promise<void> {
 export async function remove(name: string): Promise<void> {
   assertOurs("delete", name);
   mustSucceed("limactl delete", await capture(LIMACTL, ["delete", "-f", name]));
+}
+
+/**
+ * Run a script inside a guest, with its stdout captured as bytes so a tar can
+ * travel this way. Here rather than at each call site so `limactl` and its
+ * argument shape stay in this file.
+ */
+export function runScript(
+  name: string,
+  script: string,
+  opts: { root?: boolean; input?: string | Uint8Array } = {},
+): Promise<Collected> {
+  const shell = opts.root ? ["sudo", "bash", "-c", script] : ["bash", "-c", script];
+  return captureBuffer(LIMACTL, ["shell", name, ...shell], {}, opts.input);
 }
 
 export function shell(name: string, workdir: string, command: readonly string[]): Promise<number> {

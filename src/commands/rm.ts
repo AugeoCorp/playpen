@@ -15,7 +15,8 @@ export default defineCommand({
     if (!args.yes) {
       console.error(`This deletes VM ${sb.instance}.`);
       console.error(`${sb.cwd} is a host mount and is not affected.`);
-      console.error(`Guest-local state (installed deps, Claude session history) is lost.`);
+      console.error(`Installed packages and other guest-local state are lost.`);
+      console.error(`Claude transcripts and memory are saved, and restored by the next up.`);
       console.error(`Re-run with --yes to proceed.`);
       process.exitCode = 1;
       return;
