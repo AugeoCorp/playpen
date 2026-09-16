@@ -252,9 +252,10 @@ session waits while the first creates a sandbox, including through `setup`.
 `stop --force` and `rm --force` cut every session off deliberately, and clear
 the leases with them -- they describe a VM that is about to be gone.
 
-Not covered: Ctrl-C. Node exits on SIGINT without running `finally`, so the
-lease outlives the session and the VM does not auto-stop that time. The next
-session to detach reaps it.
+A session that dies without running its cleanup leaves its lease behind, and the
+VM does not auto-stop that time. Nothing is corrupted: the lease is dead, so the
+next read reaps it, `playpen ls` stops counting it, and `playpen stop` needs no
+`--force`.
 
 ---
 

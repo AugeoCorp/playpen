@@ -37,7 +37,8 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
   guest ordering are unit-tested; the actual run needs a host with `limactl`.
 - Sessions in a project share a VM and hold leases, so the last one out stops
   it. Unit-tested with a fake Lima client; confirmed by hand with two
-  `playpen claude`. A Ctrl-C leaves a stale lease, reaped on the next detach.
+  `playpen claude`. A session killed before its cleanup leaves a lease behind;
+  it is dead, so the next read reaps it.
 - No git identity or credentials in the guest; agents can commit, not push. Step
   2, and the only thing that blocks the core workflow.
 
