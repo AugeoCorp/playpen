@@ -1,0 +1,26 @@
+{
+  "name": "playpen",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Manage Lima VMs as disposable agent sandboxes",
+  "license": "MIT",
+  "engines": {
+    "node": ">=23.6"
+  },
+  "bin": {
+    "playpen": "./src/cli.ts"
+  },
+  "scripts": {
+    "playpen": "node src/cli.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"src/**/*.test.ts\""
+  },
+  "dependencies": {
+    "citty": "^0.1.6"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.8.0"
+  }
+}

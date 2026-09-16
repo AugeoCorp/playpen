@@ -1,0 +1,27 @@
+import { defineCommand } from "citty";
+import { destroy, identify } from "../session/lifecycle.ts";
+
+export default defineCommand({
+  meta: {
+    name: "rm",
+    description: "Delete the sandbox VM for this directory (your files are untouched)",
+  },
+  args: {
+    yes: { type: "boolean", description: "Skip confirmation", default: false, alias: ["y"] },
+  },
+  async run({ args }) {
+    const sb = await identify(process.cwd());
+
+    if (!args.yes) {
+      console.error(`This deletes VM ${sb.instance}.`);
+      console.error(`${sb.cwd} is a host mount and is not affected.`);
+      console.error(`Guest-local state (installed deps, Claude session history) is lost.`);
+      console.error(`Re-run with --yes to proceed.`);
+      process.exitCode = 1;
+      return;
+    }
+
+    await destroy(sb);
+    console.log(`deleted ${sb.sandbox}`);
+  },
+});
