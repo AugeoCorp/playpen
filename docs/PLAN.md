@@ -35,6 +35,9 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
 - `setup` in `playpen.config.ts` runs project-declared commands in the guest on
   create and rebuild, with `playpen setup` to re-run. Config parsing and the
   guest ordering are unit-tested; the actual run needs a host with `limactl`.
+- Sessions in a project share a VM and hold leases, so the last one out stops
+  it. Unit-tested with a fake Lima client; confirmed by hand with two
+  `playpen claude`. A Ctrl-C leaves a stale lease, reaped on the next detach.
 - No git identity or credentials in the guest; agents can commit, not push. Step
   2, and the only thing that blocks the core workflow.
 

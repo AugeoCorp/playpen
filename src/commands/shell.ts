@@ -1,6 +1,6 @@
 import { defineCommand } from "citty";
 import * as lima from "../lima/client.ts";
-import { ensureRunning, identify } from "../session/lifecycle.ts";
+import { attached, identify } from "../session/lifecycle.ts";
 
 export default defineCommand({
 	meta: {
@@ -9,8 +9,10 @@ export default defineCommand({
 	},
 	async run() {
 		const sb = await identify(process.cwd());
-		await ensureRunning(sb);
-		const code = await lima.shell(sb.instance, sb.cwd, []);
-		process.exitCode = code;
+		// Leaves the sandbox running, but still holds a lease: a sibling `claude`
+		// exiting must not stop the VM this shell is sitting in.
+		process.exitCode = await attached(sb, false, () =>
+			lima.shell(sb.instance, sb.cwd, []),
+		);
 	},
 });

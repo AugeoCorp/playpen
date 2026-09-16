@@ -8,6 +8,8 @@ import * as lima from "../lima/client.ts";
 import { confirm } from "../prompt.ts";
 import * as history from "./history.ts";
 import { instanceName, sandboxName } from "./identity.ts";
+import * as leases from "./leases.ts";
+import { withLock } from "./lock.ts";
 import { checkMount } from "./mountguard.ts";
 import { CONFIG_FILE, LEGACY_IGNORE_FILE } from "./projectconfig.ts";
 import * as store from "./store.ts";
@@ -320,6 +322,51 @@ function skipSetup(setup: readonly string[]): boolean {
 	console.error(`  it would install into the host directory. fix, then:`);
 	console.error(`  playpen setup`);
 	return false;
+}
+
+/**
+ * Run `fn` with the sandbox up and a lease held, then stop it only if no other
+ * session is still attached.
+ *
+ * Acquiring and releasing both happen under the lock, so a session arriving
+ * while another is deciding to stop is either counted or starts the VM itself.
+ * `fn` runs outside it -- it lasts as long as the agent does.
+ */
+export async function attached<T>(
+	sb: Sandbox,
+	stopAfter: boolean,
+	fn: (running: Running) => Promise<T>,
+): Promise<T> {
+	const { owner, running } = await withLock(
+		sb.sandbox,
+		async () => ({
+			owner: await leases.acquire(sb.sandbox),
+			running: await ensureRunning(sb),
+		}),
+		{
+			waiting: () =>
+				console.error(
+					`waiting for another playpen to release ${sb.sandbox}...`,
+				),
+		},
+	);
+
+	try {
+		return await fn(running);
+	} finally {
+		await withLock(sb.sandbox, async () => {
+			await leases.release(sb.sandbox, owner);
+			const others = await leases.live(sb.sandbox);
+			if (!stopAfter) return;
+			if (others.length > 0) {
+				console.error(
+					`leaving ${sb.sandbox} running; ${others.length} other session${others.length === 1 ? "" : "s"} attached`,
+				);
+				return;
+			}
+			await stop(sb);
+		});
+	}
 }
 
 export async function stop(sb: Sandbox): Promise<void> {

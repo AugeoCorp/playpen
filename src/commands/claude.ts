@@ -1,7 +1,7 @@
 import { defineCommand } from "citty";
 import * as lima from "../lima/client.ts";
 import { pushClaudeConfig } from "../session/claudeconfig.ts";
-import { ensureRunning, identify, stop } from "../session/lifecycle.ts";
+import { attached, identify } from "../session/lifecycle.ts";
 import * as store from "../session/store.ts";
 
 export default defineCommand({
@@ -35,36 +35,31 @@ export default defineCommand({
 	async run({ args }) {
 		const passthrough = args._ as string[];
 		const sb = await identify(process.cwd());
-		await ensureRunning(sb);
 
-		if (args.sync || args.auth) {
-			const meta = await store.load(sb.sandbox);
-			const result = await pushClaudeConfig(sb.instance, {
-				includeConfig: args.sync,
-				includeCredentials: args.auth,
-				projectDir: sb.cwd,
-				...(args["force-sync"] ? {} : { skipIfHash: meta?.configHash ?? "" }),
-			});
+		process.exitCode = await attached(sb, !args.keep, async () => {
+			if (args.sync || args.auth) {
+				const meta = await store.load(sb.sandbox);
+				const result = await pushClaudeConfig(sb.instance, {
+					includeConfig: args.sync,
+					includeCredentials: args.auth,
+					projectDir: sb.cwd,
+					...(args["force-sync"] ? {} : { skipIfHash: meta?.configHash ?? "" }),
+				});
 
-			if (result.error) {
-				console.error(`warning: config sync failed: ${result.error}`);
-			} else if (result.skipped) {
-				console.error("config unchanged, skipping sync");
-			} else {
-				const mb = (result.bytes / 1_000_000).toFixed(1);
-				console.error(`synced ${result.pushed.join(", ")} (${mb} MB)`);
-				if (meta) await store.save({ ...meta, configHash: result.hash });
+				if (result.error) {
+					console.error(`warning: config sync failed: ${result.error}`);
+				} else if (result.skipped) {
+					console.error("config unchanged, skipping sync");
+				} else {
+					const mb = (result.bytes / 1_000_000).toFixed(1);
+					console.error(`synced ${result.pushed.join(", ")} (${mb} MB)`);
+					if (meta) await store.save({ ...meta, configHash: result.hash });
+				}
 			}
-		}
 
-		const code = await lima.shell(sb.instance, sb.cwd, [
-			"claude",
-			...passthrough,
-		]);
-
-		// Stopped by default, like `run`: nothing else reaps an 8GiB reservation.
-		if (!args.keep) await stop(sb);
-
-		process.exitCode = code;
+			// Stopped by default once the last session detaches: nothing else reaps
+			// an 8GiB reservation.
+			return lima.shell(sb.instance, sb.cwd, ["claude", ...passthrough]);
+		});
 	},
 });

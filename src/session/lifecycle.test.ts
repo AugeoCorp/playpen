@@ -13,20 +13,25 @@ const calls: string[] = [];
  * varies per test has to live here rather than in the fake. */
 let maskExit = 0;
 let limaHome = "";
+/** Whether the fake has been cloned into existence yet, so `stop` has something to stop. */
+let exists = false;
 
 mock.module("../lima/client.ts", {
 	// @ts-expect-error @types/node still types this as `namedExports`, which the
 	// runtime has deprecated. Delete this line once the types catch up.
 	exports: {
-		isRunning: () => false,
+		isRunning: (i: { status: string } | null) => i?.status === "Running",
 		list: async () => [
 			{ name: baseInstanceName(imageHash(baseImage), "2026-09-16") },
 		],
-		get: async () => null,
-		stop: async () => {},
+		get: async (name: string) => (exists ? { name, status: "Running" } : null),
+		stop: async () => {
+			calls.push("stop");
+		},
 		remove: async () => {},
 		start: async () => {},
 		async clone(_source: string, target: string) {
+			exists = true;
 			await mkdir(join(limaHome, target), { recursive: true });
 			await writeFile(
 				join(limaHome, target, "lima.yaml"),
@@ -45,7 +50,10 @@ mock.module("../lima/client.ts", {
 	},
 });
 
-async function sandboxFor(t: TestContext, config: string): Promise<unknown> {
+async function sandboxFor(
+	t: TestContext,
+	config: string,
+): Promise<{ sb: { sandbox: string }; run: () => Promise<unknown> }> {
 	const root = await mkdtemp(join(tmpdir(), "playpen-lifecycle-"));
 	t.after(() => rm(root, { recursive: true, force: true }));
 	const project = join(root, "project");
@@ -60,6 +68,7 @@ async function sandboxFor(t: TestContext, config: string): Promise<unknown> {
 	limaHome = join(root, "lima");
 	process.env.LIMA_HOME = limaHome;
 	calls.length = 0;
+	exists = false;
 	t.after(() => {
 		process.env.XDG_DATA_HOME = before.xdg;
 		process.env.LIMA_HOME = before.lima;
@@ -76,19 +85,62 @@ async function sandboxFor(t: TestContext, config: string): Promise<unknown> {
 		sb.sandbox,
 		await readConfigGraph(project, "playpen.config.js"),
 	);
-	return ensureRunning(sb);
+	return { sb, run: () => ensureRunning(sb) };
+}
+
+/** pid 1 always exists, so this is a second attached session without one. */
+async function anotherSessionAttaches(sandbox: string): Promise<void> {
+	const { owner } = await import("./proc.ts");
+	const init = await owner(1);
+	const dir = join(
+		process.env.XDG_DATA_HOME ?? "",
+		"playpen",
+		"leases",
+		sandbox,
+	);
+	await mkdir(dir, { recursive: true });
+	await writeFile(join(dir, "1"), JSON.stringify(init), "utf8");
 }
 
 const BOTH = 'export default { masked: ["node_modules"], setup: ["npm ci"] };';
 
 test("masks are applied before setup runs", async (t) => {
-	await sandboxFor(t, BOTH);
+	const { run } = await sandboxFor(t, BOTH);
+	await run();
 	assert.deepEqual(calls, ["apply masks", "run exec </dev/null; npm ci"]);
 });
 
 test("setup is skipped when the masks it would install under failed", async (t) => {
 	maskExit = 1;
-	const result = (await sandboxFor(t, BOTH)) as { setupOk: boolean };
+	const { run } = await sandboxFor(t, BOTH);
+	const result = (await run()) as { setupOk: boolean };
 	assert.equal(result.setupOk, false);
 	assert.deepEqual(calls, ["apply masks"]);
+});
+
+test("the last session to detach stops the sandbox", async (t) => {
+	const { sb } = await sandboxFor(t, BOTH);
+	const { attached } = await import("./lifecycle.ts");
+	await attached(sb as never, true, async () => {});
+	assert.ok(calls.includes("stop"), `expected a stop in ${calls.join(", ")}`);
+});
+
+test("detaching leaves the sandbox running while another session is attached", async (t) => {
+	const { sb } = await sandboxFor(t, BOTH);
+	const { attached } = await import("./lifecycle.ts");
+	await attached(sb as never, true, () => anotherSessionAttaches(sb.sandbox));
+	assert.deepEqual(
+		calls.filter((c) => c === "stop"),
+		[],
+	);
+});
+
+test("a session that asked to keep the sandbox does not stop it", async (t) => {
+	const { sb } = await sandboxFor(t, BOTH);
+	const { attached } = await import("./lifecycle.ts");
+	await attached(sb as never, false, async () => {});
+	assert.deepEqual(
+		calls.filter((c) => c === "stop"),
+		[],
+	);
 });

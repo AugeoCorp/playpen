@@ -1,5 +1,5 @@
 import { defineCommand } from "citty";
-import { ensureRunning, identify } from "../session/lifecycle.ts";
+import { attached, identify } from "../session/lifecycle.ts";
 
 export default defineCommand({
 	meta: {
@@ -11,7 +11,9 @@ export default defineCommand({
 		const sb = await identify(process.cwd());
 		console.log(`sandbox ${sb.sandbox} (${sb.instance})`);
 
-		const { created, setupOk } = await ensureRunning(sb);
+		// Leaves it running, so it takes no lease of its own -- but goes through
+		// the same lock, which keeps two concurrent creations from racing.
+		const { created, setupOk } = await attached(sb, false, async (r) => r);
 		console.log(
 			created
 				? `created and running; ${sb.cwd} is mounted read-write`

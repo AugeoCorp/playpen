@@ -1,4 +1,5 @@
 import { defineCommand } from "citty";
+import * as leases from "../session/leases.ts";
 import { destroy, identify } from "../session/lifecycle.ts";
 
 export default defineCommand({
@@ -14,9 +15,27 @@ export default defineCommand({
 			default: false,
 			alias: ["y"],
 		},
+		force: {
+			type: "boolean",
+			description: "Delete even while other sessions are attached",
+			default: false,
+		},
 	},
 	async run({ args }) {
 		const sb = await identify(process.cwd());
+
+		// Worse than stopping: this takes the guest disk with it, out from under
+		// whatever is running in there. Gated on a live lease, not on rm itself.
+		const others = await leases.live(sb.sandbox);
+		if (others.length > 0 && !args.force) {
+			const pids = others.map((o) => o.pid).join(", ");
+			console.error(
+				`${others.length} session${others.length === 1 ? " is" : "s are"} attached to ${sb.sandbox} (pid ${pids}).`,
+			);
+			console.error(`Deleting now cuts them off. Re-run with --force.`);
+			process.exitCode = 1;
+			return;
+		}
 
 		if (!args.yes) {
 			console.error(`This deletes VM ${sb.instance}.`);
@@ -30,6 +49,7 @@ export default defineCommand({
 			return;
 		}
 
+		await leases.clear(sb.sandbox);
 		await destroy(sb);
 		console.log(`deleted ${sb.sandbox}`);
 	},

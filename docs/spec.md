@@ -221,6 +221,43 @@ with several RPM distros, which isn't a fight worth having in week one.
 
 ---
 
+## Who stops a shared VM
+
+One project is one VM, so two `playpen claude` in a project share a guest. That
+is the right sharing -- but `run` and `claude` stop the VM on exit, and the
+first to leave used to take the other down with it.
+
+Fixed by leases, not by refcounting in memory: a session writes
+`<dataDir>/leases/<sandbox>/<pid>` before attaching and removes it after, and
+stops the VM only when no other lease is live. Under the data directory for the
+same reason as `trustDir` -- a guest mounts only the project, so nothing inside
+a sandbox can forge a lease to keep itself alive or delete one to cut off a
+sibling.
+
+A lease records `{pid, start, boot}`, not just a pid. The kernel recycles pids,
+and a recycled one would pin a VM alive or block a delete; the process start
+time from `/proc/<pid>/stat` does not collide, and the boot id separates two
+boots whose tick counters agree. This is Linux-only, like the rest of playpen.
+Nothing reaps: a lease whose process is gone is deleted by the next read, so a
+killed session heals without a timer.
+
+Acquiring and releasing both run under `withLock`, an `O_CREAT|O_EXCL` file in
+the data directory. Without it a session can release its lease, see none left,
+and decide to stop while another is attaching -- the new session would find the
+VM running and then lose it. Under the lock the newcomer is either counted or
+starts the VM itself. `ensureRunning` is inside the lock too, which also stops
+two concurrent `up` from racing on `limactl clone`; the cost is that a second
+session waits while the first creates a sandbox, including through `setup`.
+
+`stop --force` and `rm --force` cut every session off deliberately, and clear
+the leases with them -- they describe a VM that is about to be gone.
+
+Not covered: Ctrl-C. Node exits on SIGINT without running `finally`, so the
+lease outlives the session and the VM does not auto-stop that time. The next
+session to detach reaps it.
+
+---
+
 ## Sandbox lifecycle
 
 1. **`ensureBase()`** — if `playpen-base-<hash>` doesn't exist: render template,
