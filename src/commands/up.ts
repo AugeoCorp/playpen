@@ -11,8 +11,9 @@ export default defineCommand({
 		const sb = await identify(process.cwd());
 		console.log(`sandbox ${sb.sandbox} (${sb.instance})`);
 
-		// Leaves it running, so it takes no lease of its own -- but goes through
-		// the same lock, which keeps two concurrent creations from racing.
+		// Holds a lease for as long as this runs, which during a long `setup` is
+		// what makes a concurrent `playpen stop` refuse. Leaves the sandbox
+		// running, and takes the lock, which stops two creations from racing.
 		const { created, setupOk } = await attached(sb, false, async (r) => r);
 		console.log(
 			created

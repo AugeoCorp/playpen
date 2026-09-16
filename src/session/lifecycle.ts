@@ -337,36 +337,52 @@ export async function attached<T>(
 	stopAfter: boolean,
 	fn: (running: Running) => Promise<T>,
 ): Promise<T> {
-	const { owner, running } = await withLock(
+	// Captured outside the callback so a throw from `ensureRunning` -- a
+	// mount-guard refusal, a failed clone -- still releases the lease rather than
+	// leaving one behind for the next read to reap.
+	let owner: leases.Owner | null = null;
+	const running = await withLock(
 		sb.sandbox,
-		async () => ({
-			owner: await leases.acquire(sb.sandbox),
-			running: await ensureRunning(sb),
-		}),
+		async () => {
+			owner = await leases.acquire(sb.sandbox);
+			return ensureRunning(sb);
+		},
 		{
 			waiting: () =>
 				console.error(
 					`waiting for another playpen to release ${sb.sandbox}...`,
 				),
 		},
-	);
+	).catch(async (err: unknown) => {
+		await release(sb, owner, false);
+		throw err;
+	});
 
 	try {
 		return await fn(running);
 	} finally {
-		await withLock(sb.sandbox, async () => {
-			await leases.release(sb.sandbox, owner);
-			const others = await leases.live(sb.sandbox);
-			if (!stopAfter) return;
-			if (others.length > 0) {
-				console.error(
-					`leaving ${sb.sandbox} running; ${others.length} other session${others.length === 1 ? "" : "s"} attached`,
-				);
-				return;
-			}
-			await stop(sb);
-		});
+		await release(sb, owner, stopAfter);
 	}
+}
+
+/** Drop our lease, and stop the sandbox only if we held the last one. */
+async function release(
+	sb: Sandbox,
+	owner: leases.Owner | null,
+	stopAfter: boolean,
+): Promise<void> {
+	await withLock(sb.sandbox, async () => {
+		if (owner) await leases.release(sb.sandbox, owner);
+		if (!stopAfter) return;
+		const others = await leases.live(sb.sandbox);
+		if (others.length > 0) {
+			console.error(
+				`leaving ${sb.sandbox} running; ${others.length} other session${others.length === 1 ? "" : "s"} attached`,
+			);
+			return;
+		}
+		await stop(sb);
+	});
 }
 
 export async function stop(sb: Sandbox): Promise<void> {

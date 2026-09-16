@@ -1,4 +1,11 @@
-import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import {
+	link,
+	mkdir,
+	readFile,
+	rename,
+	unlink,
+	writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { dataDir } from "../config.ts";
 import { isLive, type Owner, self } from "./proc.ts";
@@ -22,27 +29,70 @@ function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Breaks a lock whose holder died; returns false while a live one holds it. */
-async function claim(path: string, owner: Owner): Promise<boolean> {
+/** Who the lock file says holds it, or null if there is no readable lock. */
+async function heldBy(path: string): Promise<Owner | null> {
 	try {
-		await writeFile(path, `${JSON.stringify(owner)}\n`, {
-			encoding: "utf8",
-			// O_CREAT|O_EXCL: exactly one process wins the create.
-			flag: "wx",
-		});
+		return JSON.parse(await readFile(path, "utf8")) as Owner;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Publish `owner` at `path`, or fail if it already exists.
+ *
+ * `link` rather than an `O_EXCL` write, because a write creates the file and
+ * then fills it: another claimant could see it existing and empty, read no
+ * holder, conclude nobody held it, and delete a live lock -- leaving two
+ * processes in a critical section whose whole purpose is to hold one. The
+ * contents are complete in the temporary file before the link makes them
+ * visible under `path`.
+ */
+async function publish(path: string, owner: Owner): Promise<boolean> {
+	const temp = `${path}.${owner.pid}.tmp`;
+	await writeFile(temp, `${JSON.stringify(owner)}\n`, "utf8");
+	try {
+		await link(temp, path);
 		return true;
 	} catch {
-		let holder: Owner;
-		try {
-			holder = JSON.parse(await readFile(path, "utf8")) as Owner;
-		} catch {
-			// Unreadable or gone; either way it is not a lock anyone is holding.
-			await unlink(path).catch(() => {});
-			return false;
-		}
-		if (!(await isLive(holder))) await unlink(path).catch(() => {});
 		return false;
+	} finally {
+		await unlink(temp).catch(() => {});
 	}
+}
+
+/**
+ * Take the lock, or report who is holding it.
+ *
+ * A lock whose holder is gone is moved aside rather than unlinked in place: the
+ * rename names the file, so two processes breaking the same stale lock cannot
+ * both delete it and both claim. Ownership is re-read after publishing for the
+ * same reason -- whoever ends up in the file is the holder, and anyone else
+ * retries.
+ */
+async function claim(path: string, owner: Owner): Promise<boolean> {
+	if (await publish(path, owner)) {
+		return isMine(await heldBy(path), owner);
+	}
+
+	const holder = await heldBy(path);
+	// Written atomically, so an unreadable lock is corrupt, not half-written;
+	// leaving it would wedge the sandbox permanently.
+	if (holder === null || !(await isLive(holder))) {
+		await rename(path, `${path}.${owner.pid}.stale`)
+			.then(() => unlink(`${path}.${owner.pid}.stale`))
+			.catch(() => {});
+	}
+	return false;
+}
+
+function isMine(holder: Owner | null, owner: Owner): boolean {
+	return (
+		holder !== null &&
+		holder.pid === owner.pid &&
+		holder.start === owner.start &&
+		holder.boot === owner.boot
+	);
 }
 
 export interface LockOptions {
@@ -80,6 +130,10 @@ export async function withLock<T>(
 	try {
 		return await fn();
 	} finally {
-		await unlink(path).catch(() => {});
+		// Only if it is still ours: releasing a lock someone else now holds would
+		// put a third process into the critical section alongside them.
+		if (isMine(await heldBy(path), owner)) {
+			await unlink(path).catch(() => {});
+		}
 	}
 }

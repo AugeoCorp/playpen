@@ -241,16 +241,26 @@ boots whose tick counters agree. This is Linux-only, like the rest of playpen.
 Nothing reaps: a lease whose process is gone is deleted by the next read, so a
 killed session heals without a timer.
 
-Acquiring and releasing both run under `withLock`, an `O_CREAT|O_EXCL` file in
-the data directory. Without it a session can release its lease, see none left,
-and decide to stop while another is attaching -- the new session would find the
-VM running and then lose it. Under the lock the newcomer is either counted or
-starts the VM itself. `ensureRunning` is inside the lock too, which also stops
-two concurrent `up` from racing on `limactl clone`; the cost is that a second
-session waits while the first creates a sandbox, including through `setup`.
+Acquiring and releasing both run under `withLock`, a file in the data directory
+published with `link` rather than written in place: a write creates the file and
+then fills it, so a second claimant can catch it existing and empty, read no
+holder, conclude nobody holds it, and delete a live lock. Leases are written
+through a rename for the same reason -- an unparseable file is then corrupt
+rather than half-written, which is what makes it safe to delete one. A holder
+re-reads the file after publishing, and releases only a lock still naming it, so
+a broken-and-retaken lock cannot be released by the process it was taken from.
+Without it a session can release its lease, see none left, and decide to stop
+while another is attaching -- the new session would find the VM running and then
+lose it. Under the lock the newcomer is either counted or starts the VM itself.
+`ensureRunning` is inside the lock too, which also stops two concurrent `up`
+from racing on `limactl clone`; the cost is that a second session waits while
+the first creates a sandbox, including through `setup`.
 
 `stop --force` and `rm --force` cut every session off deliberately, and clear
-the leases with them -- they describe a VM that is about to be gone.
+the leases with them -- they describe a VM that is about to be gone. Both count
+and act under the same lock: unlocked, a session attaching between the count and
+the stop would be cut off anyway, or have its disk deleted underneath it, which
+is the gate's whole purpose.
 
 A session that dies without running its cleanup leaves its lease behind, and the
 VM does not auto-stop that time. Nothing is corrupted: the lease is dead, so the

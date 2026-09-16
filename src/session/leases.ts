@@ -8,7 +8,10 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import { dataDir } from "../config.ts";
+import { writeAtomic } from "../fs.ts";
 import { isLive, type Owner, self } from "./proc.ts";
+
+export type { Owner };
 
 /**
  * One file per session attached to a sandbox, so the last one out is the one
@@ -30,11 +33,7 @@ export async function acquire(sandbox: string): Promise<Owner> {
 	const owner = await self();
 	const dir = leasesDir(sandbox);
 	await mkdir(dir, { recursive: true });
-	await writeFile(
-		join(dir, String(owner.pid)),
-		`${JSON.stringify(owner)}\n`,
-		"utf8",
-	);
+	await writeAtomic(join(dir, String(owner.pid)), `${JSON.stringify(owner)}\n`);
 	return owner;
 }
 
@@ -66,6 +65,7 @@ export async function live(sandbox: string): Promise<Owner[]> {
 		try {
 			owner = JSON.parse(await readFile(path, "utf8")) as Owner;
 		} catch {
+			// Written atomically, so this is corrupt rather than half-written.
 			await unlink(path).catch(() => {});
 			continue;
 		}

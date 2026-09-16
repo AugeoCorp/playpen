@@ -87,3 +87,9 @@ test("a sandbox name that would escape the leases directory is rejected", async 
 	await dataHome(t);
 	await assert.rejects(() => leases.live("../../etc"), /invalid sandbox name/);
 });
+
+test("no temporary files are left in the leases directory", async (t) => {
+	const dir = await dataHome(t);
+	const me = await leases.acquire(SANDBOX);
+	assert.deepEqual(await readdir(dir), [String(me.pid)]);
+});

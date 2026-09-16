@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+	mkdir,
+	mkdtemp,
+	readdir,
+	readFile,
+	rm,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
@@ -76,4 +83,24 @@ test("a lock name that would escape the locks directory is rejected", async (t) 
 		() => withLock("../../etc", async () => "no"),
 		/invalid lock name/,
 	);
+});
+
+test("a lock taken over mid-flight is not released by the previous holder", async (t) => {
+	const path = await dataHome(t);
+	const init = await owner(1);
+
+	// Stand in for a lock that was broken and re-taken while we held it.
+	await withLock(NAME, async () => {
+		await writeFile(path, JSON.stringify(init), "utf8");
+	});
+
+	const after = JSON.parse(await readFile(path, "utf8")) as { pid: number };
+	assert.equal(after.pid, 1, "the new holder's lock should still be there");
+});
+
+test("no temporary files are left in the locks directory", async (t) => {
+	const path = await dataHome(t);
+	const dir = path.slice(0, path.lastIndexOf("/"));
+	await withLock(NAME, async () => {});
+	assert.deepEqual(await readdir(dir), []);
 });
