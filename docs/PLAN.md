@@ -24,8 +24,9 @@ Cold boot ~90s, restart ~20s.
 - `up` leaves 8GiB running until `stop`. Idle auto-stop deferred to v1; a
   forgotten VM happened twice in the first half hour, so revisit.
 - Nothing collects old sandboxes (~2GB each). Step 2.
-- The guest's Node (Ubuntu's v22) cannot import `.ts`, so playpen cannot run
-  its own tests inside a sandbox. Step 3.
+- The guest's Node cannot import `.ts`, so playpen cannot run its own tests
+  inside a sandbox. Step 3. Check the version first: the spike's base resolved
+  to Ubuntu 26.04, not the 24.04 this was measured on.
 - No git identity or credentials in the guest; agents can commit, not push.
   Step 3.
 
@@ -33,12 +34,20 @@ Cold boot ~90s, restart ~20s.
 
 ### 1. Base image and clone
 
-Bake `playpen-base-<hash>` once, `limactl clone` it per sandbox. Spike first:
-Lima's docs do not say whether `clone` needs a stopped source or reflinks the
-qcow2, and on btrfs that decides whether retention is affordable. Fallback is
-today's full template per sandbox.
+Bake `playpen-base-<hash>` once, `limactl clone` it per sandbox.
 
-Done when `image build` exists, `up` clones, and cold/warm timings are here.
+Spiked 2026-09-15 on Lima 2.2.0 + btrfs, plain Ubuntu base: clone reflinks and
+is free -- 0.07s, 0.00B exclusive against 2.03GiB shared. Cold boot of a clone
+is 10s, against ~90s to reprovision. Provisioning that unlayered base took
+38s, which is the floor for `image build`. Two constraints it turned up: `clone`
+refuses a running source, so a baked base is stopped and never started again;
+and it prompts to start the new instance, so `up` must pass `--tty=false`.
+
+Because a reclone is ~10s, a sandbox on a stale image hash should reclone
+rather than warn. That discards guest-local state, including masked paths.
+
+Done when `image build` exists, `up` clones, and timings for the real layered
+image are here.
 
 ### 2. Sessions
 
@@ -49,7 +58,8 @@ fallback chain, disk usage in `ls`. A running session is never collected.
 
 ### 3. Guest toolchain
 
-Pin the `node()` layer to a Node that runs `.ts`; add git identity and a push
+Pin the `node()` layer to a Node that runs `.ts`, if apt's `nodejs` on the
+current base is not already new enough; add git identity and a push
 credential path. Both change the image hash, so after step 1.
 
 ### 4. E2E harness
