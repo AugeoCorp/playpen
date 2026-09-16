@@ -59,4 +59,4 @@ own edits. Without a terminal it runs unmasked instead.
 ## Scope
 
 Threat model is the host filesystem. Network egress is unfiltered. See
-`docs/STATE.md` for known rough edges and `docs/spec.md` for the design.
+`docs/PLAN.md` for known rough edges and `docs/spec.md` for the design.

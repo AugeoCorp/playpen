@@ -1,6 +1,6 @@
 # Working in this repo
 
-Read `docs/STATE.md` first; update it when you change what it describes.
+Read `docs/PLAN.md` first; update it when you change what it describes.
 
 ## Test
 
