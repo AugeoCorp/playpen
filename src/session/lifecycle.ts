@@ -298,12 +298,20 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 			(await changedTemplate(sb, template)) ?? (await outdatedBase(sb));
 		rebuilding = reason !== null && (await confirmRebuild(reason));
 		if (!rebuilding) {
+			const fence = lima.isRunning(existing)
+				? await fenceStatus(sb.sandbox, sb.instance)
+				: "stopped";
+			// Started by hand with limactl, so its egress is unfiltered. There is no
+			// unfenced mode to attach to; the fix is a restart through playpen.
+			if (fence === "unsealed") {
+				throw new Error(
+					`${sb.instance} is running outside its network fence.\n` +
+						`  stop it and start it again: playpen stop --force && playpen start`,
+				);
+			}
 			// Also when the VM is up but its fence lost the gatekeeper: the VM
 			// survives a killed helper, and nothing else brings egress back.
-			if (
-				!lima.isRunning(existing) ||
-				(await fenceStatus(sb.sandbox, sb.instance)) === "sealed-no-gatekeeper"
-			) {
+			if (fence === "stopped" || fence === "sealed-no-gatekeeper") {
 				await startFenced(sb, template);
 			}
 			await applyMasks(sb, template.masks);
