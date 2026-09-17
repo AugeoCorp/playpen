@@ -262,12 +262,22 @@ and passes.
 - **mitmproxy listens on TCP only**, so the outside end of each socket file is a
   small bridge rather than mitmproxy itself.
 
-### Untested
+### What is proven, and what is not
 
-All of it. The assumption everything rests on is that qemu owns the ssh listener
-and hostagent only connects to it; if that is backwards, the control-path bridge
-does not work. Also unconfirmed: that Lima tolerates hostagent having no network
-of its own, and that `unshare -Urn` is available unprivileged on Bazzite.
+`spike/netns/` builds the fence, the proxy and both socket-file crossings, and
+asserts each property above. Seven checks pass: nothing escapes the namespace by
+any route, the socket file carries traffic that policy still governs, killing
+mitmproxy severs egress rather than releasing it, and the control path bridges
+back out with no `nsenter` on our side. `unshare -Urn` as an unprivileged user
+was confirmed separately.
+
+qemu is the gap. The prototype runs its client inside the fence directly, where
+the real thing has the guest reach `192.168.5.2` and qemu translate it onto the
+namespace's loopback. Everything Lima-shaped is still reasoning: whether qemu
+owns the ssh listener and hostagent only connects to it, whether hostagent
+tolerates having no network of its own, and whether a VM survives `stop`/`start`
+inside the fence. If the ssh listener belongs to hostagent rather than qemu, the
+control-path bridge does not work as drawn.
 
 This holds only while Lima's default user-mode networking translates on the
 guest's behalf. Give the VM a real network card and the guest gets its own path
