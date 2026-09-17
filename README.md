@@ -88,8 +88,9 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
   `*.example.com` is rejected — `example.com` already says it. An IPv4 literal
   is the one address you can name. `localhost:PORT` is a service on your own
   machine, and the port is required.
-- `mode: "log"` records what the sandbox reaches and blocks nothing. Use it to
-  find the hosts a project needs, then list them; the default is `enforce`.
+- `mode: "log"` records what the sandbox reaches and blocks nothing on the
+  internet side; your own machine's localhost stays closed in every mode. Use it
+  to find the hosts a project needs, then list them; the default is `enforce`.
 - The file is imported on the host and runs as you. `setup` commands do not —
   they run in the guest.
 - playpen prints the file and asks before executing it, again whenever it or

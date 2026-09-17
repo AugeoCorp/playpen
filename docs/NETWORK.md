@@ -219,9 +219,10 @@ maintainer's own machine.
 - **mockttp as the gatekeeper.** It waits for the client's first bytes before
   dialing onward, so any protocol where the server speaks first -- ssh, most
   databases -- stalls forever; refusing a connection at `CONNECT` time is not
-  something its public interface exposes, only its internals. It also pulls in
-  far more than `proxy-chain` needs to: installing it alone adds tens of
-  megabytes of dependencies to a job that is one `CONNECT` decision.
+  something its public interface exposes, only its internals. It also costs far
+  more than `proxy-chain` for a job that is one `CONNECT` decision: about 200
+  packages against 9, and 114 MB resident at idle against 73 MB, both measured
+  on the same machine.
 - **`bwrap --unshare-pid`.** Isolating the process namespace too, not just the
   network one, sounds like it should make the fence tidier. Lima instead reports
   a perfectly healthy instance as `Broken`, so the fence uses `--unshare-net`
@@ -234,6 +235,7 @@ maintainer's own machine.
   a request without it ever reaching the guest -- sitting behind the gatekeeper,
   likely with mockttp doing the injection once a connection is already known to
   be allowed.
-- **Publishing chosen guest ports to the host**, now that nothing is forwarded
-  by default the way Lima used to forward every guest loopback port.
+- **Publishing chosen guest ports to the host.** Lima still forwards every guest
+  loopback port, but inside the fence, where nothing on the host can reach them;
+  a dev server in the guest no longer shows up on the host's `localhost`.
 - **A measured built-in list.** See the numbered item in `docs/PLAN.md`.
