@@ -6,7 +6,8 @@ reasoning (guest-side nftables as a guardrail; host-side nftables matched on
 Lima actually provides, two userspace routes that need no host firewall rules,
 and the order to build in.
 
-Checked against Lima 2.2.0 docs on 2026-09-16.
+Checked against Lima 2.2.0 docs on 2026-09-16. The mitmproxy claims were
+measured on 2026-09-17; see `spike/mitmproxy/`.
 
 ## Goals, in the order they pay off
 
@@ -78,9 +79,33 @@ reach around it.
   the mount, not in the `~/.claude` sync. A guest holding it can impersonate
   anything to us, which is worse than the hole being closed.
 
-Unknowns that decide whether this is enforcement or only observation: whether
-the redirect fails open or closed when mitmproxy exits, and how it handles
-non-HTTP TCP.
+### What the spike measured
+
+`spike/mitmproxy/` runs this against a plain `curl` and records the mechanism in
+full. The load-bearing results:
+
+**It fails open.** Kill the mitmproxy and traffic flows unfiltered within
+seconds. That settles the question this section used to leave open: Option A is
+observation. It is not a boundary, and no amount of addon work makes it one.
+
+**A deny has to be an explicit block.** `ignore_connection` is
+allow-and-passthrough. Once the guest trusts our CA a denied connection
+completes to mitmproxy and has to be answered -- 403 for HTTP, `flow.kill()` for
+raw TCP. The SNI verdict itself does land before decryption, as assumed, and an
+allowed host is never decrypted.
+
+**The privileged helper outlives its parent**, holding a `tun` device and its
+routing rules, so something has to reap it. The leases already know when the
+last session went away.
+
+**Pid targeting does not follow children**, and flows carry no originating pid,
+so per-sandbox policy means one mitmproxy per sandbox. `set_intercept()`
+retargets a running proxy, so a VM restart costs a new spec rather than a new
+proxy.
+
+Still unmeasured: non-HTTP TCP, and everything qemu-specific -- whether Lima's
+hostagent keeps qemu in the pid we targeted, and whether that pid survives a
+`stop`/`start`.
 
 ## Option B -- unprivileged network namespace
 
@@ -104,34 +129,45 @@ lifecycle rather than on top of it.
 
 ## Comparison
 
-|                             | Guest nftables | A: local capture | B: namespace      |
-| --------------------------- | -------------- | ---------------- | ----------------- |
-| Root needed                 | no             | `sudo` for eBPF  | no                |
-| Survives hostile guest root | no             | yes              | yes               |
-| Covers non-HTTP             | yes            | unknown          | yes               |
-| Covers DNS                  | yes            | no               | B1 yes, B2 partly |
-| Header injection            | no             | yes              | via the proxy     |
-| Effort                      | hours          | hours            | days              |
+|                             | Guest nftables | A: local capture   | B: namespace      |
+| --------------------------- | -------------- | ------------------ | ----------------- |
+| Root needed                 | no             | NOPASSWD for eBPF  | no                |
+| Survives hostile guest root | no             | yes                | yes               |
+| Survives its own death      | n/a            | no -- fails open   | yes               |
+| Covers non-HTTP             | yes            | unmeasured         | yes               |
+| Covers DNS                  | yes            | yes, but see below | B1 yes, B2 partly |
+| Header injection            | no             | yes                | via the proxy     |
+| Effort                      | hours          | hours              | days              |
+
+The proxy captures DNS from the process it targets -- measured. It will not see
+guest lookups while `hostResolver` answers them inside hostagent, which is a
+Lima question, not a mitmproxy one.
 
 ## Order of work
 
-1. Spike A in log-only mode, everything tunneled, nothing decrypted. Confirm the
-   agent still works, collect the domain list, and answer the fail-open
-   question.
+1. A against a real VM, log-only, everything tunneled, nothing decrypted.
+   Confirm the agent still works, collect the domain list, and settle the two
+   qemu questions the spike could not reach.
 2. Policy surface in `playpen.config.ts` (`allow: [...]`), defaulting to
    allow-all, with an `allow`/`deny` verdict in the log from the first commit so
    enforcement is a config change rather than a new code path.
 3. Lifecycle on the leases: the proxy starts with the first session and dies
-   with the last, like the VM.
-4. Enforce. Option A if it fails closed; option B if it does not, or if the
-   `sudo` is unacceptable.
+   with the last, like the VM. Reaping the leaked redirector belongs here.
+4. Enforce, underneath A rather than with it. A fails open, so the boundary is a
+   host-side default-deny on the qemu cgroup that permits only the redirected
+   path -- `spec.md`'s own answer, and now cheaper than option B, which costs
+   days and puts playpen underneath Lima's lifecycle. Write the two together:
+   the nftables rule has to allow what the redirect needs and nothing else.
 5. Injection last, per host, only where a scoped short-lived token is not the
    better answer. See the credential notes in `spec.md`.
 
 ## What none of this solves
 
 - **DNS.** Lima's host resolver answers guest lookups in the hostagent process,
-  so labels can carry data out without touching the proxy.
+  so labels can carry data out without touching the proxy. Setting
+  `hostResolver.enabled: false` and pointing `dns:` at a resolver moves lookups
+  into qemu's egress, where the proxy does see them -- visibility, not a
+  boundary, since guest root can rewrite `resolv.conf`.
 - **Allowed destinations.** As `spec.md` already says: allow github.com and an
   agent can push a branch full of secrets. This blocks unknown destinations; it
   is not a data-loss control.
