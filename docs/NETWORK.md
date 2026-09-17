@@ -98,10 +98,10 @@ allowed host is never decrypted.
 routing rules, so something has to reap it. The leases already know when the
 last session went away.
 
-**Pid targeting does not follow children**, and flows carry no originating pid,
-so per-sandbox policy means one mitmproxy per sandbox. `set_intercept()`
-retargets a running proxy, so a VM restart costs a new spec rather than a new
-proxy.
+**Pid targeting does not follow children.** `set_intercept()` retargets a
+running proxy, so a VM restart costs a new spec rather than a new proxy. The
+originating pid reaches the Rust stream but not `mitmproxy.connection`, so one
+proxy cannot tell two sandboxes apart until that is patched through.
 
 Still unmeasured: non-HTTP TCP, and everything qemu-specific -- whether Lima's
 hostagent keeps qemu in the pid we targeted, and whether that pid survives a
