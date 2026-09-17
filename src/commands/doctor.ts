@@ -88,6 +88,50 @@ async function checkLimaHomeFs(): Promise<Check> {
 			};
 }
 
+/**
+ * The probe run is root here and bwrap as root can always make a namespace, so
+ * this only ever catches the unprivileged-user-namespace restriction it is
+ * meant to when playpen itself runs unprivileged.
+ */
+async function checkBwrap(): Promise<Check> {
+	const path = await which("bwrap");
+	if (!path) {
+		return {
+			status: "fail",
+			label: "bwrap",
+			detail: "not on PATH — install bubblewrap",
+		};
+	}
+	const { code, stderr } = await capture("bwrap", [
+		"--unshare-net",
+		"--dev-bind",
+		"/",
+		"/",
+		"--",
+		"/bin/true",
+	]);
+	if (code !== 0) {
+		return {
+			status: "fail",
+			label: "bwrap",
+			detail: `cannot make a network namespace: ${stderr.trim() || `exited ${code}`}`,
+		};
+	}
+	return { status: "ok", label: "bwrap", detail: `at ${path}` };
+}
+
+async function checkSocat(): Promise<Check> {
+	const path = await which("socat");
+	return path
+		? { status: "ok", label: "socat", detail: `at ${path}` }
+		: {
+				status: "fail",
+				label: "socat",
+				detail:
+					"not on PATH — install socat (brew install socat on a Homebrew host)",
+			};
+}
+
 async function checkInstances(): Promise<Check> {
 	let names: string[];
 	try {
@@ -120,6 +164,8 @@ export default defineCommand({
 			checkNode(),
 			await checkLimactl(),
 			await checkLimaHomeFs(),
+			await checkBwrap(),
+			await checkSocat(),
 			await checkInstances(),
 		];
 
