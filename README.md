@@ -87,5 +87,6 @@ Reasoning in `docs/spec.md`.
 
 ## Scope
 
-Threat model is the host filesystem. Network egress is unfiltered. See
-`docs/PLAN.md` for known rough edges and `docs/spec.md` for the design.
+Threat model is the host filesystem. Network egress is unfiltered;
+`docs/NETWORK.md` is the design note for containing it. See `docs/PLAN.md` for
+known rough edges and `docs/spec.md` for the design.

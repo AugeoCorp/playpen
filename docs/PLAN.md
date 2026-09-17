@@ -141,7 +141,7 @@ bugs.
 - macOS: `doctor` crashes on missing `findmnt`/`lsattr`; `vmType` is hardcoded
   to `qemu` where `vz` + `virtiofs` is native; the bash completion script uses
   `mapfile`, which the bash 3.2 Apple ships does not have.
-- Idle auto-stop. Host-side egress filtering per the spec.
+- Idle auto-stop. Host-side egress filtering per `NETWORK.md`.
 - Preset bases, selected from `playpen.config.ts`; later, defined there. Needs a
   cap or a GC story first: bases share no extents with each other, so one image
   per project is one full copy per project.
