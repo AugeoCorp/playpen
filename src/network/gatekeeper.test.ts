@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import * as net from "node:net";
+import * as os from "node:os";
 import { type TestContext, test } from "node:test";
 import { startGatekeeper } from "./gatekeeper.ts";
 import { HOST_ALIAS, type Policy } from "./policy.ts";
@@ -10,7 +11,7 @@ import { HOST_ALIAS, type Policy } from "./policy.ts";
  * still open itself, rather than relying on the order `t.after` hooks run
  * in: `server.close()` alone would wait forever for a connection this test's
  * own client hook has not yet torn down. */
-function bannerServer(t: TestContext): Promise<number> {
+function bannerServer(t: TestContext, bind = "127.0.0.1"): Promise<number> {
 	return new Promise((resolve) => {
 		const sockets = new Set<net.Socket>();
 		const server = net.createServer((socket) => {
@@ -26,7 +27,7 @@ function bannerServer(t: TestContext): Promise<number> {
 					server.close(() => r());
 				}),
 		);
-		server.listen(0, "127.0.0.1", () => {
+		server.listen(0, bind, () => {
 			resolve((server.address() as net.AddressInfo).port);
 		});
 	});
@@ -141,12 +142,27 @@ test("a CONNECT to a bare IP literal is refused with 403", async (t) => {
 	assert.match(status, / 403 /);
 });
 
+/** A non-loopback address of this machine, so a test can dial an unlisted
+ * IP literal that still lands on a server the test owns. */
+function outwardAddress(): string | null {
+	for (const iface of Object.values(os.networkInterfaces())) {
+		for (const info of iface ?? []) {
+			if (info.family === "IPv4" && !info.internal) return info.address;
+		}
+	}
+	return null;
+}
+
 test("in log mode, a host outside the policy is let through and logged as report", async (t) => {
-	// A real, unlisted external host would make this test dependent on the
-	// network; the alias form denies deterministically the same way (no
-	// matching `localhost:PORT` entry) while still dialing out locally, so the
-	// CONNECT can genuinely succeed without leaving this machine.
-	const localPort = await bannerServer(t);
+	// A real external host would make this depend on the network. An unlisted
+	// IP literal is refused the same way, and this machine's own outward
+	// address is one the banner server can be reached on without leaving it.
+	const address = outwardAddress();
+	if (address === null) {
+		t.skip("no non-loopback IPv4 address on this machine");
+		return;
+	}
+	const localPort = await bannerServer(t, "0.0.0.0");
 	const entries: Array<{ verdict: string; reason: string }> = [];
 	const gatekeeper = await startGatekeeper({
 		policy: { allow: [], mode: "log" },
@@ -154,15 +170,35 @@ test("in log mode, a host outside the policy is let through and logged as report
 	});
 	t.after(() => gatekeeper.close());
 
-	const { status } = await connectRaw(
+	const { status, socket, afterHeaders } = await connectRaw(
 		t,
 		gatekeeper.port,
-		`${HOST_ALIAS}:${localPort}`,
+		`${address}:${localPort}`,
 	);
 	assert.match(status, / 200 /);
+	const banner = await readAtLeast(socket, afterHeaders, "banner\r\n".length);
+	assert.equal(banner.toString(), "banner\r\n");
 	assert.deepEqual(
 		entries.map((e) => e.verdict),
 		["report"],
 	);
-	assert.match(entries[0]?.reason ?? "", /no matching localhost:\d+ entry/);
+	assert.match(entries[0]?.reason ?? "", /not in the allow list/);
+});
+
+test("log mode still refuses this machine's loopback", async (t) => {
+	const localPort = await bannerServer(t);
+	const gatekeeper = await startGatekeeper({
+		policy: { allow: [], mode: "log" },
+		log: () => {},
+	});
+	t.after(() => gatekeeper.close());
+
+	const direct = await connectRaw(t, gatekeeper.port, `127.0.0.1:${localPort}`);
+	assert.match(direct.status, / 403 /);
+	const alias = await connectRaw(
+		t,
+		gatekeeper.port,
+		`${HOST_ALIAS}:${localPort}`,
+	);
+	assert.match(alias.status, / 403 /);
 });
