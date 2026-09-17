@@ -47,9 +47,11 @@ the spec has to be updated when a VM restarts and its pid changes.
 `LocalRedirector.set_intercept()` takes a new spec at runtime, so that needs no
 proxy restart.
 
-**Flows do not carry the originating pid.** `mitmproxy.connection` exposes no
-process attribute, so one proxy cannot attribute a flow to a sandbox.
-Per-sandbox policy means one mitmproxy per sandbox.
+**The originating pid exists but is not wired through.** The Rust stream carries
+it -- `Stream.get_extra_info("pid")` -- and `mitmproxy.connection` drops it, so
+an addon cannot see which qemu a flow came from without a patch. Until someone
+writes that patch, per-sandbox policy means one mitmproxy per sandbox. It is a
+small patch, and plausibly one upstream would take.
 
 **DNS from an intercepted process is captured.** The proxy logged
 `DNS QUERY (A) …` and answered it. The `Covers DNS: no` row in `docs/NETWORK.md`
