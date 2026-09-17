@@ -5,7 +5,8 @@ Two scripts, both asserting the properties `docs/NETWORK.md` claims under
 
 - `prototype.sh` -- the mechanism with no VM. 8 checks, all passing.
 - `lima-fenced.sh` -- the same thing with a real Lima 2.2.0 VM inside the fence.
-  12 checks, all passing.
+  16 checks, all passing, including the guest reaching the relay by route as
+  well as by proxy setting.
 
 `socat` carries connections across the fence. `../mitmproxy/verdict.py` is the
 mitmproxy addon, reduced to asking a question and applying the answer, and
@@ -27,11 +28,20 @@ mitmproxy addon, reduced to asking a question and applying the answer, and
   ok    no internet from the guest
   ok    192.168.5.2 reaches the fence's own loopback
   ok    and the relay on it carries the guest out
-5. policy still governs what comes through
+5. as a route, with no proxy setting anywhere
+  ok    traffic to the internet now leaves via a tun device
+  ok    a request that refuses every proxy setting still gets out
+  ok    and a raw socket that has never heard of a proxy gets out
+  ok    a denied host is still denied on this path
+6. policy still governs what comes through
   ok    a denied host is blocked, not merely unreachable
   ok    losing the policy denies rather than releases
   ok    killing the proxy severs the guest (fails closed)
 ```
+
+Section 5 runs only with `TUN2PROXY=<binary>`. `--noproxy '*'` makes curl refuse
+every proxy setting it can see and bash's `/dev/tcp` has never heard of one, so
+between them they show the route carrying traffic the variable could not.
 
 The guest pulled 46MB of the PyPI index through that chain, so this is real
 traffic rather than a handshake that happened to complete.
@@ -86,6 +96,11 @@ master connection going away, but the free path is worth knowing about.
   blocks a rebind. Whatever binds it has to unlink first.
 - **A fresh namespace has loopback down.** bubblewrap handles it; anything else
   has to.
+- **tun2proxy needs `--bypass` for qemu's subnet.** Without it the guest's
+  replies to the gateway go into the tunnel and the ssh session dies with them.
+- **tun2proxy does not replace the default route**, it overrides it with a
+  `0.0.0.0/1` and `128.0.0.0/1` pair. `ip route show default` looks untouched;
+  `ip route get` is where the answer is.
 
 ## Running them
 
@@ -99,7 +114,7 @@ cannot start without `/dev/kvm`; 2.2.0 falls back to software emulation, which
 is how this ran. Nothing here needs root.
 
 ```
-GUEST_CURL_OPTS=-k ./lima-fenced.sh
+GUEST_CURL_OPTS=-k TUN2PROXY=/path/to/tun2proxy-bin ./lima-fenced.sh
 ```
 
 ## Still not answered
