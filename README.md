@@ -13,8 +13,11 @@ playpen claude
 
 - Linux host with Lima ≥ 2.0 and QEMU
 - Node ≥ 23.6 with TypeScript support (runs `.ts` directly, no build)
+- [bubblewrap](https://github.com/containers/bubblewrap) and
+  [socat](http://www.dest-unreach.org/socat/), for the network fence
+  (`brew install socat` on a Homebrew host)
 
-`playpen doctor` checks both.
+`playpen doctor` checks all of it.
 
 ## Install
 
@@ -49,7 +52,11 @@ playpen completion zsh  > "${fpath[1]}/_playpen"
 Sessions in the same project share one VM. The last one to exit stops it, so
 quitting one `playpen claude` no longer cuts off another. `stop --force` and
 `remove --force` override that and cut every session off; they are only needed
-while one is attached. `playpen list` shows the count under `ATT`.
+while one is attached. `playpen list` shows the count under `ATT`, and the
+sandbox's network fence under `NET`: `sealed` (fenced, gatekeeper answering),
+`no gate` (fenced, but no gatekeeper is answering -- run `playpen start`),
+`OPEN` (running outside the fence -- stop it and start it again), or `-`
+(stopped).
 
 `playpen claude` copies an allowlist from `~/.claude` (instructions, settings,
 skills, plugins, OAuth token). `--no-auth` withholds the token, API-key settings
