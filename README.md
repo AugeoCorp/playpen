@@ -34,6 +34,14 @@ playpen claude [--keep] [args]   run Claude Code, then stop the VM
 playpen setup                    re-run the project's setup steps
 playpen ls | stop [--force] | rm --yes [--force]
 playpen image show | doctor
+playpen completion bash|zsh      print a completion script for that shell
+```
+
+Tab completion, once per shell:
+
+```
+playpen completion bash > ~/.local/share/bash-completion/completions/playpen
+playpen completion zsh  > "${fpath[1]}/_playpen"
 ```
 
 Sessions in the same project share one VM. The last one to exit stops it, so

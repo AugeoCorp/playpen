@@ -14,6 +14,7 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
 | `playpen claude` with `~/.claude` allowlist sync and `--no-auth` | done                   |
 | `playpen.config.ts` masks, trust gate on config execution        | done, verified on host |
 | `image build`, base image + clone                                | done, verified on host |
+| `completion bash\|zsh`, generated from the citty command tree    | done; zsh unverified   |
 
 ## Known problems
 
@@ -39,6 +40,12 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
   it. Unit-tested with a fake Lima client; confirmed by hand with two
   `playpen claude`. A session killed before its cleanup leaves a lease behind;
   it is dead, so the next read reaps it.
+- The completion scripts hold no command names: they ask `playpen __complete` on
+  each keypress, which reads citty's own tree, so a new command completes
+  without reinstalling anything. ~60ms per press; ~130ms for zsh, whose menu
+  descriptions force every command module to load. The bash script was driven
+  headlessly against real `COMP_WORDS`; nothing on this host has zsh, so the zsh
+  script is syntax-unchecked and untried.
 - No git identity or credentials in the guest; agents can commit, not push. Step
   2, and the only thing that blocks the core workflow.
 
@@ -131,7 +138,8 @@ stay out of the way -- manual testing has been finding the real bugs.
 - Run the config snapshot under `node --permission --allow-fs-read=<snapshot>`
   so approved code cannot write, spawn, or reach the network.
 - macOS: `doctor` crashes on missing `findmnt`/`lsattr`; `vmType` is hardcoded
-  to `qemu` where `vz` + `virtiofs` is native.
+  to `qemu` where `vz` + `virtiofs` is native; the bash completion script uses
+  `mapfile`, which the bash 3.2 Apple ships does not have.
 - Idle auto-stop. Host-side egress filtering per the spec.
 - Preset bases, selected from `playpen.config.ts`; later, defined there. Needs a
   cap or a GC story first: bases share no extents with each other, so one image

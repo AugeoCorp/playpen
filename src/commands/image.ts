@@ -45,6 +45,7 @@ export default defineCommand({
 				mount: {
 					type: "string",
 					description: "Directory to render as the mount (default: cwd)",
+					valueHint: "dir",
 				},
 			},
 			run({ args }) {
