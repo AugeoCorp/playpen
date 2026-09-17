@@ -242,12 +242,11 @@ mitmproxy runs in `socks5` mode with hostnames passed rather than addresses, so
 name lookups land on our side and the guest needs no resolver at all. That is
 also how the DNS hole above closes: `hostResolver` starves inside the fence, and
 should be turned off explicitly rather than left waiting on lookups that can
-never finish. The guest needs one setting,
-`ALL_PROXY=socks5h://192.168.5.2:1080`.
+never finish. What points the guest at it is the next section.
 
-`spike/mitmproxy/allowlist.py` works unchanged in `socks5` mode -- measured.
-Allow passes through undecrypted, deny answers 403, log-only records the verdict
-and passes.
+Allow passes through undecrypted, deny answers 403, and without enforcement the
+verdict is recorded and the connection passes -- which is how the domain list
+gets collected before there is an allow list worth writing.
 
 ### Traps
 

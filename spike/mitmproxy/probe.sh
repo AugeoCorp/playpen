@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# Answers the mitmproxy questions docs/NETWORK.md leaves open. Run it on the
-# host, not in a sandbox. See README.md for what each result means.
+# What mitmproxy's Linux local mode does, and whether it can be a boundary.
+# Kept for the record: the answer was no, and docs/NETWORK.md rejects it on the
+# strength of what this measures. Run it on the host, not in a sandbox.
+#
+# Deliberately carries no addon. Everything here is about the redirector, and
+# coupling it to the live policy addon only meant it broke when that changed.
 set -uo pipefail
 
 TARGET=${TARGET:-curl}
 URL=${URL:-https://example.com/}
 CONFDIR=${CONFDIR:-$HOME/.mitmproxy}
-ADDON="$(cd "$(dirname "$0")" && pwd)/verdict.py"
 
 command -v mitmdump >/dev/null || {
 	echo "mitmdump not on PATH: uv tool install --python 3.13 mitmproxy" >&2
@@ -21,7 +24,8 @@ REDIRECTOR=$(mitmdump --version >/dev/null 2>&1 && \
 	exit 1
 }
 
-log=$(mktemp -d)/mitm.log
+workdir=$(mktemp -d)
+log=$workdir/mitm.log
 
 # The redirector attaches its eBPF program at the cgroup v2 root and finds it
 # by that fixed path.
@@ -40,8 +44,7 @@ tundevs() { sed -n 's/^ *\(tun[0-9]*\):.*/\1/p' /proc/net/dev | tr '\n' ' '; }
 
 start() {
 	rm -f "$log"
-	PLAYPEN_ALLOW="${1-}" PLAYPEN_ENFORCE="${2-0}" \
-		mitmdump --mode "local:$TARGET" -s "$ADDON" \
+	mitmdump --mode "local:$TARGET" \
 		--set connection_strategy=lazy --set confdir="$CONFDIR" \
 		>"$log" 2>&1 &
 	MITM=$!
@@ -63,13 +66,11 @@ echo "    redirectors=$(redirectors) tun=[$(tundevs)]"
 
 echo
 echo "### 1. interception, allow-all, log only"
-start "" 0
+start
 echo "  untrusted client (expect a certificate error unless the CA is installed):"
 fetch
 echo "  client trusting our CA:"
 fetch --cacert "$CONFDIR/mitmproxy-ca-cert.pem"
-echo "  verdicts:"
-grep PLAYPEN "$log" | tail -3 | sed 's/^/    /'
 echo "  DNS seen by the proxy:"
 grep -c "DNS QUERY" "$log" | sed 's/^/    queries=/'
 
@@ -84,15 +85,7 @@ except Exception as e:
 "
 
 echo
-echo "### 3. enforcement: allowlist that does not cover \$URL"
-kill -9 "$MITM" 2>/dev/null
-sleep 3
-start "invalid.example" 1
-fetch --cacert "$CONFDIR/mitmproxy-ca-cert.pem"
-grep PLAYPEN "$log" | tail -3 | sed 's/^/    /'
-
-echo
-echo "### 4. fail open or closed: SIGKILL the proxy, then retry"
+echo "### 3. fail open or closed: SIGKILL the proxy, then retry"
 kill -9 "$MITM" 2>/dev/null
 sleep 5
 echo "    redirectors=$(redirectors) tun=[$(tundevs)]  <- nonzero means a leak"
@@ -100,12 +93,12 @@ fetch
 echo "    a 200 here means the redirect FAILS OPEN"
 
 echo
-echo "### 5. does the filter follow children? (target this shell, curl from it)"
-start "" 0
+echo "### 4. does the filter follow children? (target this shell, curl from it)"
+start
 kill -9 "$MITM" 2>/dev/null
 sleep 2
 rm -f "$log"
-PLAYPEN_ALLOW="" mitmdump --mode "local:$$" -s "$ADDON" \
+mitmdump --mode "local:$$" \
 	--set confdir="$CONFDIR" >"$log" 2>&1 &
 MITM=$!
 for _ in $(seq 1 30); do

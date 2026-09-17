@@ -1,10 +1,13 @@
 # mitmproxy local mode -- spike
 
-Answers the questions `docs/NETWORK.md` left open under "Option A". Run
-`./probe.sh` to reproduce. It drove an addon that has since been replaced by
-`verdict.py`, which asks `../policy/` for each verdict instead of holding the
-policy itself; the probe's findings are unaffected, since none of them are about
-the policy.
+Answers the questions `docs/NETWORK.md` left open under "Option A", which it
+then rejects on the strength of them.
+
+`./probe.sh` reproduces the findings about the redirector, which are the ones
+that settled it. It deliberately carries no addon: the two findings below about
+SNI and blocking were produced with one, and coupling this script to the live
+policy addon only meant it broke silently when that was rewritten. Those two are
+covered by `../netns/lima-fenced.sh` instead, against the design we kept.
 
 Measured 2026-09-17 on Linux 6.18, mitmproxy 12.2.3, mitmproxy_linux 0.12.11,
 against a plain `curl`. **Not** against qemu -- this box has no Lima, so every
@@ -61,16 +64,17 @@ was wrong about the mechanism; what remains true is the Lima part, that
 `hostResolver` answers guest lookups inside hostagent and so never reaches a
 proxy watching qemu.
 
-**The SNI verdict works before decryption.** `tls_clienthello` carries the
-ClientHello, and `ignore_connection` passes the connection through untouched.
-With `connection_strategy=lazy` the decision lands before any upstream
-connection. An allowed host is never decrypted.
+**The SNI verdict works before decryption** (now covered by the live suite).
+`tls_clienthello` carries the ClientHello, and `ignore_connection` passes the
+connection through untouched. With `connection_strategy=lazy` the decision lands
+before any upstream connection. An allowed host is never decrypted.
 
-**A deny has to be an explicit block.** Once the guest trusts our CA a denied
-connection completes to mitmproxy and needs answering -- 403 for HTTP,
-`flow.kill()` for raw TCP. Relying on the TLS handshake to fail only works while
-the CA is absent, which is exactly the state the plan removes.
-`ignore_connection` is allow-and-passthrough; it is not a block.
+**A deny has to be an explicit block** (also covered by the live suite). Once
+the guest trusts our CA a denied connection completes to mitmproxy and needs
+answering -- 403 for HTTP, `flow.kill()` for raw TCP. Relying on the TLS
+handshake to fail only works while the CA is absent, which is exactly the state
+the plan removes. `ignore_connection` is allow-and-passthrough; it is not a
+block.
 
 **Packaging.** Linux local mode ships as a separate `mitmproxy-linux` wheel and
 needs Python >= 3.12. mitmproxy 11 has no Linux redirector at all -- its binary
@@ -84,10 +88,9 @@ interpreter: `uv tool install --python 3.13 mitmproxy`.
   the proxy, so the one result gathered proves nothing. Needs the real host.
 - **qemu.** Whether Lima's hostagent keeps qemu in the pid we targeted, and
   whether one-VM-per-sandbox holds that pid stable across a `stop`/`start`.
-- **Interaction with nftables.** The redirect is socket marks plus policy
-  routing. A host-side default-deny on the qemu cgroup has to be written so it
-  permits the redirected path and nothing else; the two mechanisms have not been
-  run together.
+
+Neither was chased, because fail-open had already decided this. `../netns/`
+answers the qemu question against the design that replaced it.
 
 ## Running it in a container
 

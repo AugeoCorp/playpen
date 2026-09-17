@@ -46,6 +46,12 @@ class Deciding(unittest.TestCase):
         policy = {"allow": ["example.com"], "enforce": True}
         self.assertEqual(verdict.decide(policy, "elsewhere.example"), "deny")
 
+    def test_a_policy_that_forgot_to_say_enforces(self):
+        self.assertEqual(verdict.decide({"allow": ["example.com"]}, "elsewhere.example"), "deny")
+
+    def test_a_policy_that_forgot_its_allow_list_reaches_anything(self):
+        self.assertEqual(verdict.decide({"enforce": True}, "anywhere.example"), "allow")
+
 
 class Reading(unittest.TestCase):
     def read(self, contents):
@@ -63,6 +69,12 @@ class Reading(unittest.TestCase):
 
     def test_an_unparseable_policy_denies(self):
         self.assertEqual(self.read("{not json"), "deny")
+
+    def test_a_policy_that_is_not_an_object_denies(self):
+        self.assertEqual(self.read("[]"), "deny")
+
+    def test_an_empty_policy_file_denies(self):
+        self.assertEqual(self.read(""), "deny")
 
     def test_a_missing_policy_denies(self):
         with mock.patch.object(verdict, "POLICY", "/nonexistent/policy.json"):

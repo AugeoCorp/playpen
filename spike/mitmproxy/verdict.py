@@ -7,10 +7,11 @@ takes effect without restarting the proxy:
 
 An empty allow list reaches anything. `enforce: false` records a verdict and
 lets the connection through, which is how the domain list gets collected before
-there is an allow list worth writing.
+there is an allow list worth writing; leaving it out enforces, so a half-written
+file cannot quietly stop blocking.
 
-A policy that cannot be read is a denial, so losing the file severs egress
-rather than releasing it.
+A policy that cannot be read, or that is not an object, is a denial. Losing the
+file severs egress rather than releasing it.
 
 PLAYPEN_POLICY  path to that file
 """
@@ -42,7 +43,7 @@ def matches(allow: list[str], host: str) -> bool:
 def decide(policy: dict, host: str) -> str:
     if matches(policy.get("allow") or [], host):
         return "allow"
-    return "deny" if policy.get("enforce") else "report"
+    return "report" if policy.get("enforce") is False else "deny"
 
 
 def verdict(host: str) -> str:
@@ -51,6 +52,9 @@ def verdict(host: str) -> str:
             policy = json.load(f)
     except (OSError, ValueError) as e:
         logging.warning(f"PLAYPEN policy unreadable ({e}), denying {host!r}")
+        return "deny"
+    if not isinstance(policy, dict):
+        logging.warning(f"PLAYPEN policy is not an object, denying {host!r}")
         return "deny"
     return decide(policy, host)
 
