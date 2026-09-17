@@ -334,27 +334,16 @@ are unit-tested on their own
 (`python3 -m unittest discover -s spike/mitmproxy -p '*_test.py'`); everything
 touching a flow is covered by the integration scripts.
 
-### The guest side: a setting, or a route
+### The guest side: a route
 
-Two ways to point the guest at the relay. Both measured.
-
-**An environment variable**, `ALL_PROXY=socks5h://192.168.5.2:1080`. Nothing to
-install, and `socks5h` hands hostnames to the proxy so the guest needs no DNS at
-all. But a program has to read the variable and speak SOCKS, and many do not.
-The sandbox this work was done in is the evidence: making the same trick work
-there took `HTTPS_PROXY`, `npm_config_https_proxy`, `YARN_HTTPS_PROXY`,
-`GLOBAL_AGENT_HTTPS_PROXY`, `ELECTRON_GET_USE_PROXY`, `CLOUDSDK_PROXY_*` and a
-`JAVA_TOOL_OPTIONS` line, one per ecosystem, and raw sockets still escape it.
-
-**A route**,
-`tun2proxy --proxy socks5://192.168.5.2:1080 --setup --dns virtual --bypass 192.168.5.0/24`.
-One command, and the guest needs nothing else. Two checks in
-`spike/netns/lima-fenced.sh` say it covers what the variable cannot: a
-`curl --noproxy '*'`, which refuses every proxy setting it can see, gets out
-anyway, and so does bash's `/dev/tcp`, which has never heard of a proxy. A
-denied host is still denied on that path, so policy is untouched by the change.
-`--dns virtual` answers lookups with addresses it maps back to names for the
-proxy, so the guest still needs no resolver.
+`tun2proxy --proxy socks5://192.168.5.2:1080 --setup --dns virtual --bypass 192.168.5.0/24`,
+run in the guest. One command, and nothing else in there needs to know anything.
+Two checks in `spike/netns/lima-fenced.sh` say it covers what a proxy setting
+cannot: a `curl --noproxy '*'`, which refuses every proxy setting it can see,
+gets out anyway, and so does bash's `/dev/tcp`, which has never heard of a
+proxy. A denied host is still denied on that path, so policy is untouched by the
+change. `--dns virtual` answers lookups with addresses it maps back to names for
+the proxy, so the guest still needs no resolver.
 
 The bypass is load-bearing. Without keeping `192.168.5.0/24` off the tun, the
 guest's replies to qemu's gateway go into the tunnel and the ssh session we
@@ -366,6 +355,14 @@ so `ip route show default` looks untouched and `ip route get` is where the
 answer is. And the binary has to reach the guest somehow, which for playpen
 means a layer in the base image rather than the `limactl copy` the test uses.
 
-So: the variable costs nothing and leaks, the route costs a layer in the image
-and does not. The route is the better default, and worth keeping the variable
-alongside it for anything the tun cannot carry.
+**Rejected: proxy environment variables.** Measured and they work, so this is
+not a security judgement -- a program that ignores the variable fails closed
+like everything else. It is that the variable only reaches programs that read
+it, and there is no single variable that does. Making the same trick work in the
+sandbox this was developed in took `HTTPS_PROXY`, `npm_config_https_proxy`,
+`YARN_HTTPS_PROXY`, `GLOBAL_AGENT_HTTPS_PROXY`, `ELECTRON_GET_USE_PROXY`,
+`CLOUDSDK_PROXY_*` and a `JAVA_TOOL_OPTIONS` line, one per ecosystem, and raw
+sockets still escaped it. A `no_proxy` entry silently turns it off per host,
+which in a sealed box reads as `Could not resolve host` rather than as a proxy
+problem. Shipping it alongside the route would add a second way to configure the
+same thing, and a second way for the two to disagree.

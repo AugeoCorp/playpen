@@ -5,8 +5,7 @@ Two scripts, both asserting the properties `docs/NETWORK.md` claims under
 
 - `prototype.sh` -- the mechanism with no VM. 8 checks, all passing.
 - `lima-fenced.sh` -- the same thing with a real Lima 2.2.0 VM inside the fence.
-  16 checks, all passing, including the guest reaching the relay by route as
-  well as by proxy setting.
+  16 checks, all passing, with the guest reaching the relay by route.
 
 `socat` carries connections across the fence, and `../mitmproxy/verdict.py`
 decides what may pass, from a JSON policy file it re-reads per connection.
@@ -26,8 +25,8 @@ decides what may pass, from a JSON policy file it re-reads per connection.
 4. what the guest can and cannot reach
   ok    no internet from the guest
   ok    192.168.5.2 reaches the fence's own loopback
-  ok    and the relay on it carries the guest out
-5. as a route, with no proxy setting anywhere
+  ok    and the relay on it answers, asked directly
+5. the guest side: a route, with no proxy setting anywhere
   ok    traffic to the internet now leaves via a tun device
   ok    a request that refuses every proxy setting still gets out
   ok    and a raw socket that has never heard of a proxy gets out
@@ -38,9 +37,11 @@ decides what may pass, from a JSON policy file it re-reads per connection.
   ok    killing the proxy severs the guest (fails closed)
 ```
 
-Section 5 runs only with `TUN2PROXY=<binary>`. `--noproxy '*'` makes curl refuse
-every proxy setting it can see and bash's `/dev/tcp` has never heard of one, so
-between them they show the route carrying traffic the variable could not.
+Section 5 is the guest side, and needs `TUN2PROXY=<binary>`; the script refuses
+to run without it, because a green run that skipped it would say nothing about
+the design. `--noproxy '*'` makes curl refuse every proxy setting it can see and
+bash's `/dev/tcp` has never heard of one, so between them they show the route
+carrying traffic a proxy setting could not.
 
 The guest pulled 46MB of the PyPI index through that chain, so this is real
 traffic rather than a handshake that happened to complete.

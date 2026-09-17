@@ -16,8 +16,9 @@ DENIED_URL=${DENIED_URL:-https://files.pythonhosted.org/}
 # certificate. Where this machine's own egress is TLS-intercepted, the guest has
 # no reason to trust the intercepting CA: set GUEST_CURL_OPTS=-k, or install it.
 GUEST_CURL_OPTS=${GUEST_CURL_OPTS:-}
-# Set to a linux-x86_64 tun2proxy binary to also test the guest reaching the
-# relay by route rather than by proxy setting.
+# The guest reaches the relay by route, so a linux-x86_64 tun2proxy binary is
+# required. In playpen this is a layer in the base image rather than something
+# copied in at run time.
 TUN2PROXY=${TUN2PROXY:-}
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ADDON="$HERE/../mitmproxy/verdict.py"
@@ -97,6 +98,12 @@ proxy() {
 	sleep 2
 }
 
+[ -n "$TUN2PROXY" ] || {
+	echo "set TUN2PROXY to a linux-x86_64 tun2proxy binary; the guest side is"
+	echo "the point of this script and there is nothing to test without it."
+	exit 2
+}
+
 limactl stop -f "$INSTANCE" >/dev/null 2>&1
 limactl delete -f "$INSTANCE" >/dev/null 2>&1
 rm -rf "$RUN"
@@ -166,12 +173,12 @@ echo "4. what the guest can and cannot reach"
 check "no internet from the guest" "000" "$(tail -c 3 "$RUN/guest-direct")"
 check "192.168.5.2 reaches the fence's own loopback" "200" \
 	"$(tail -c 3 "$RUN/guest-loopback")"
-check "and the relay on it carries the guest out" "200" \
+check "and the relay on it answers, asked directly" "200" \
 	"$(guest "curl -sS $GUEST_CURL_OPTS -o /dev/null -w '%{http_code}' --max-time 120 --socks5-hostname 192.168.5.2:1080 $URL")"
 
-if [ -n "$TUN2PROXY" ]; then
+{
 	echo
-	echo "5. as a route, with no proxy setting anywhere"
+	echo "5. the guest side: a route, with no proxy setting anywhere"
 	limactl copy "$TUN2PROXY" "$INSTANCE:/tmp/tun2proxy" >>"$RUN/log" 2>&1
 	limactl shell "$INSTANCE" -- sudo install -m 755 /tmp/tun2proxy /usr/local/bin/tun2proxy \
 		>>"$RUN/log" 2>&1
@@ -195,7 +202,7 @@ if [ -n "$TUN2PROXY" ]; then
 		"$(guest "curl -sS $GUEST_CURL_OPTS --noproxy '*' -o /dev/null -w '%{http_code}' --max-time 120 $DENIED_URL")"
 	limactl shell "$INSTANCE" -- sudo pkill -f tun2proxy >/dev/null 2>&1
 	sleep 5
-fi
+}
 
 echo
 echo "6. policy still governs what comes through"
