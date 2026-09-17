@@ -15,6 +15,7 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
 | `playpen.config.ts` masks, trust gate on config execution          | done, verified on host |
 | `image build`, base image + clone                                  | done, verified on host |
 | `completion bash\|zsh`, generated from the citty command tree      | done; zsh unverified   |
+| network fence: gatekeeper, socat relays, `fenceStatus`             | done, see below        |
 
 ## Known problems
 
@@ -48,6 +49,19 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
   script is syntax-unchecked and untried.
 - No git identity or credentials in the guest; agents can commit, not push. Step
   2, and the only thing that blocks the core workflow.
+- The network fence puts each sandbox VM in a `bwrap --unshare-net` namespace
+  and relays its egress out over a unix socket to the gatekeeper. Proved end to
+  end against a real Lima VM by `src/network/e2e.ts`, in a container, on the
+  probe template: boot behind the gatekeeper, `limactl shell` over the control
+  socket once Lima's own ssh master is killed, an allowed host through tun2proxy
+  and a denied one refused, the VM surviving a SIGKILLed helper, a reattach
+  restoring egress, and teardown on `limactl stop`. What that run did not cover:
+  `playpen start` itself, which reaches the fence through `ensureRunning` and is
+  only unit-tested with the fence module faked, and the base image's tun2proxy
+  unit, which the probe VM does not have (the e2e copies the binary in and
+  starts it by hand).
+- `destroy` still boots a stopped sandbox unfenced to archive Claude history. It
+  is about to be deleted, but for those seconds its egress is unfiltered.
 
 ## Next
 
@@ -141,7 +155,9 @@ bugs.
 - macOS: `doctor` crashes on missing `findmnt`/`lsattr`; `vmType` is hardcoded
   to `qemu` where `vz` + `virtiofs` is native; the bash completion script uses
   `mapfile`, which the bash 3.2 Apple ships does not have.
-- Idle auto-stop. Host-side egress filtering per `NETWORK.md`.
+- Idle auto-stop.
+- `list` and `doctor` do not show `fenceStatus` yet, so a sandbox running with
+  no gatekeeper looks the same as one running behind it.
 - Preset bases, selected from `playpen.config.ts`; later, defined there. Needs a
   cap or a GC story first: bases share no extents with each other, so one image
   per project is one full copy per project.
