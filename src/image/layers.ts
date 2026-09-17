@@ -120,13 +120,14 @@ export function mise() {
 }
 
 /**
- * Runs inside the guest's network namespace (see docs/NETWORK.md, option B)
- * and hands every packet to the host-side relay at 192.168.5.2:1080, the
- * address Lima's user-mode networking gives the guest for the host's
- * loopback. `--dns virtual` makes tun2proxy answer DNS itself, so the guest
- * needs no resolver. `--bypass 192.168.5.0/24` is load-bearing: without it,
- * the guest's replies to qemu's gateway on that subnet would go into the
- * tunnel instead, and the ssh session Lima drives the VM through would die.
+ * The guest half of network containment (docs/NETWORK.md): a tun device that
+ * catches every outbound packet and hands it to the gatekeeper at
+ * 192.168.5.2:1080, the address Lima's user-mode networking gives the guest
+ * for the host's loopback. A route rather than a proxy setting, so programs
+ * that never read one are covered too. `--dns virtual` makes tun2proxy answer
+ * DNS itself, so the guest needs no resolver. `--bypass 192.168.5.0/24` is
+ * load-bearing: without it the guest's replies to qemu's gateway go into the
+ * tunnel, and the ssh session Lima drives the VM through dies with them.
  */
 const TUN2PROXY_VERSION = "0.8.3";
 
