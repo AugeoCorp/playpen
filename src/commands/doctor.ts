@@ -89,9 +89,10 @@ async function checkLimaHomeFs(): Promise<Check> {
 }
 
 /**
- * The probe run is root here and bwrap as root can always make a namespace, so
- * this only ever catches the unprivileged-user-namespace restriction it is
- * meant to when playpen itself runs unprivileged.
+ * On PATH is not enough: a distro can switch unprivileged user namespaces off
+ * (`kernel.unprivileged_userns_clone`, or an AppArmor profile on newer Ubuntu),
+ * and then bwrap is present but cannot make the fence. The probe is what a
+ * sandbox start does, minus the VM.
  */
 async function checkBwrap(): Promise<Check> {
 	const path = await which("bwrap");
