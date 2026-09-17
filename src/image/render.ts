@@ -137,6 +137,11 @@ function build(
 		// Inheriting _default/mounts instead would add a read-only host home.
 		base: [def.distro.baseTemplate],
 		vmType: "qemu",
+		// Lima defaults this to true and copies the host's proxy env vars,
+		// `no_proxy` included, into the guest, which overrides the tun2proxy
+		// service's own proxying per host and surfaces as "Could not resolve
+		// host" inside the fence.
+		propagateProxyEnv: false,
 		cpus: opts.cpus,
 		memory: opts.memory,
 		disk: opts.disk,

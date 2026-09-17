@@ -119,6 +119,79 @@ export function mise() {
 	});
 }
 
+/**
+ * Runs inside the guest's network namespace (see docs/NETWORK.md, option B)
+ * and hands every packet to the host-side relay at 192.168.5.2:1080, the
+ * address Lima's user-mode networking gives the guest for the host's
+ * loopback. `--dns virtual` makes tun2proxy answer DNS itself, so the guest
+ * needs no resolver. `--bypass 192.168.5.0/24` is load-bearing: without it,
+ * the guest's replies to qemu's gateway on that subnet would go into the
+ * tunnel instead, and the ssh session Lima drives the VM through would die.
+ */
+const TUN2PROXY_VERSION = "0.8.3";
+
+/**
+ * v0.8.3 publishes no checksum file alongside its release assets (checked
+ * SHA256SUMS, sha256sum.txt, checksums.txt, and `<asset>.sha256`: all 404 on
+ * 2026-09-17). These are sha256 hashes of the release assets themselves,
+ * computed from a direct download of
+ * https://github.com/tun2proxy/tun2proxy/releases/tag/v0.8.3 on 2026-09-17.
+ * There is no aarch64-musl asset for this release; -gnu is the aarch64 build
+ * published, which is fine since the base distro is glibc.
+ */
+const TUN2PROXY_SHA256: Record<string, string> = {
+	"tun2proxy-x86_64-unknown-linux-musl.zip":
+		"17a784e88b7b533984d9f4d83a20f9a9311678f27548c6850b57bbc29bbbf604",
+	"tun2proxy-aarch64-unknown-linux-gnu.zip":
+		"b6f5a87f3fee2ba483b06cf987fb058ca7a835ee47b17b098aa2c0d4ce70aa52",
+};
+
+export function tun2proxy() {
+	return defineLayer({
+		name: "tun2proxy",
+		script: [
+			`if ! tun2proxy-bin --version 2>/dev/null | grep -q "^tun2proxy ${TUN2PROXY_VERSION} "; then`,
+			'  case "$(uname -m)" in',
+			"    x86_64) asset=tun2proxy-x86_64-unknown-linux-musl.zip ;;",
+			"    aarch64) asset=tun2proxy-aarch64-unknown-linux-gnu.zip ;;",
+			'    *) echo >&2 "unsupported architecture: $(uname -m)"; exit 1 ;;',
+			"  esac",
+			`  rel="https://github.com/tun2proxy/tun2proxy/releases/download/v${TUN2PROXY_VERSION}"`,
+			'  tmp="$(mktemp -d)"',
+			`  trap 'rm -rf "$tmp"' EXIT`,
+			'  curl -fsSL -o "$tmp/$asset" "$rel/$asset"',
+			'  case "$asset" in',
+			...Object.entries(TUN2PROXY_SHA256).map(
+				([asset, sha]) => `    ${asset}) sha256=${sha} ;;`,
+			),
+			"  esac",
+			'  echo "$sha256  $tmp/$asset" | sha256sum -c -',
+			'  unzip -oq "$tmp/$asset" tun2proxy-bin -d "$tmp"',
+			'  install -m 0755 "$tmp/tun2proxy-bin" /usr/local/bin/tun2proxy-bin',
+			"fi",
+			"cat > /etc/systemd/system/playpen-tun2proxy.service <<'UNIT'",
+			"[Unit]",
+			"Description=playpen guest-side transparent proxy (tun2proxy)",
+			"After=network-online.target",
+			"Wants=network-online.target",
+			"",
+			"[Service]",
+			"ExecStart=/usr/local/bin/tun2proxy-bin --proxy http://192.168.5.2:1080 --setup --dns virtual --bypass 192.168.5.0/24",
+			"Restart=always",
+			"RestartSec=2",
+			"",
+			"[Install]",
+			"WantedBy=multi-user.target",
+			"UNIT",
+			// The bake runs with real network still up; starting the service now
+			// would cut the baking process itself off mid-provision, since nothing
+			// is relaying 192.168.5.2:1080 outside a running sandbox. Enabling
+			// only means it starts on the next boot, which is the sandbox's.
+			"systemctl enable playpen-tun2proxy.service",
+		].join("\n"),
+	});
+}
+
 export function python() {
 	return defineLayer({
 		name: "python",
