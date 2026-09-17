@@ -5,6 +5,8 @@ import { ensureBase, findBase } from "../image/bake.ts";
 import { baseImage } from "../image/base.ts";
 import { maskScript, render, serialize } from "../image/render.ts";
 import * as lima from "../lima/client.ts";
+import { bringUp, fenceStatus } from "../network/fence.ts";
+import { BUILTIN_ALLOW } from "../network/policy.ts";
 import { confirm } from "../prompt.ts";
 import * as history from "./history.ts";
 import { instanceName, sandboxName } from "./identity.ts";
@@ -136,17 +138,19 @@ interface Template {
 	hash: string;
 	masks: string[];
 	setup: string[];
+	network: { allow: string[]; mode: NetworkMode };
 }
 
 /** Loads the project config, so it is read once per command and reused. */
 async function renderTemplate(sb: Sandbox): Promise<Template> {
-	const { masked, setup } = await loadConfig(sb);
+	const { masked, setup, network } = await loadConfig(sb);
 	const rendered = renderFor(sb);
 	return {
 		yaml: `${serialize(rendered)}\n`,
 		hash: rendered.contentHash,
 		masks: masked,
 		setup,
+		network,
 	};
 }
 
@@ -265,6 +269,24 @@ export interface Running {
 	setup: string[];
 }
 
+/**
+ * Starts the VM inside its network fence rather than with `lima.start`, so
+ * every connection out of the guest arrives at the gatekeeper. The base image
+ * is baked unfenced (image/bake.ts): it has no project policy to apply, and
+ * nothing runs in it but the build.
+ */
+async function startFenced(sb: Sandbox, template: Template): Promise<void> {
+	await bringUp({
+		sandbox: sb.sandbox,
+		instance: sb.instance,
+		policy: {
+			allow: [...BUILTIN_ALLOW, ...template.network.allow],
+			mode: template.network.mode,
+		},
+		log: (text) => process.stderr.write(text),
+	});
+}
+
 export async function ensureRunning(sb: Sandbox): Promise<Running> {
 	const existing = await lima.get(sb.instance);
 
@@ -276,7 +298,14 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 			(await changedTemplate(sb, template)) ?? (await outdatedBase(sb));
 		rebuilding = reason !== null && (await confirmRebuild(reason));
 		if (!rebuilding) {
-			if (!lima.isRunning(existing)) await lima.start(sb.instance);
+			// Also when the VM is up but its fence lost the gatekeeper: the VM
+			// survives a killed helper, and nothing else brings egress back.
+			if (
+				!lima.isRunning(existing) ||
+				(await fenceStatus(sb.sandbox, sb.instance)) === "sealed-no-gatekeeper"
+			) {
+				await startFenced(sb, template);
+			}
 			await applyMasks(sb, template.masks);
 			await store.touch(sb.sandbox);
 			return { created: false, setupOk: true, setup: template.setup };
@@ -303,7 +332,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 	await lima.clone(base.instance, sb.instance);
 	try {
 		await giveCloneItsMount(sb);
-		await lima.start(sb.instance);
+		await startFenced(sb, current);
 	} catch (err) {
 		await lima
 			.remove(sb.instance)

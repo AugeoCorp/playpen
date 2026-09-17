@@ -15,6 +15,20 @@ let maskExit = 0;
 let limaHome = "";
 /** Whether the fake has been cloned into existence yet, so `stop` has something to stop. */
 let exists = false;
+/** The policy the sandbox was brought up behind, as the fence was handed it. */
+let fencedWith: { allow: string[]; mode: string } | null = null;
+
+mock.module("../network/fence.ts", {
+	// @ts-expect-error @types/node still types this as `namedExports`, which the
+	// runtime has deprecated. Delete this line once the types catch up.
+	exports: {
+		fenceStatus: async () => (exists ? "sealed" : "stopped"),
+		async bringUp(opts: { policy: { allow: string[]; mode: string } }) {
+			fencedWith = opts.policy;
+			calls.push("start behind the gatekeeper");
+		},
+	},
+});
 
 mock.module("../lima/client.ts", {
 	// @ts-expect-error @types/node still types this as `namedExports`, which the
@@ -69,6 +83,7 @@ async function sandboxFor(
 	process.env.LIMA_HOME = limaHome;
 	calls.length = 0;
 	exists = false;
+	fencedWith = null;
 	t.after(() => {
 		process.env.XDG_DATA_HOME = before.xdg;
 		process.env.LIMA_HOME = before.lima;
@@ -107,7 +122,11 @@ const BOTH = 'export default { masked: ["node_modules"], setup: ["npm ci"] };';
 test("masks are applied before setup runs", async (t) => {
 	const { run } = await sandboxFor(t, BOTH);
 	await run();
-	assert.deepEqual(calls, ["apply masks", "run exec </dev/null; npm ci"]);
+	assert.deepEqual(calls, [
+		"start behind the gatekeeper",
+		"apply masks",
+		"run exec </dev/null; npm ci",
+	]);
 });
 
 test("setup is skipped when the masks it would install under failed", async (t) => {
@@ -115,7 +134,20 @@ test("setup is skipped when the masks it would install under failed", async (t) 
 	const { run } = await sandboxFor(t, BOTH);
 	const result = (await run()) as { setupOk: boolean };
 	assert.equal(result.setupOk, false);
-	assert.deepEqual(calls, ["apply masks"]);
+	assert.deepEqual(calls, ["start behind the gatekeeper", "apply masks"]);
+});
+
+test("the hosts a project names are allowed on top of the ones playpen ships", async (t) => {
+	const { run } = await sandboxFor(
+		t,
+		'export default { network: { allow: ["example.com"], mode: "log" } };',
+	);
+	await run();
+	const { BUILTIN_ALLOW } = await import("../network/policy.ts");
+	assert.deepEqual(fencedWith, {
+		allow: [...BUILTIN_ALLOW, "example.com"],
+		mode: "log",
+	});
 });
 
 test("the last session to detach stops the sandbox", async (t) => {
