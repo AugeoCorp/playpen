@@ -89,6 +89,7 @@ function choicesOf(args: ArgsDef): string[] {
 async function descend(
 	root: CommandDef,
 	typed: string[],
+	aliases: Record<string, string>,
 ): Promise<{ command: CommandDef; depth: number; stranded: boolean }> {
 	let command = root;
 	let depth = 0;
@@ -96,7 +97,9 @@ async function descend(
 	for (const word of typed) {
 		if (word.startsWith("-")) break;
 		const subs = command.subCommands ? await resolve(command.subCommands) : {};
-		const next = subs[word];
+		// Aliases are rewritten at the top level only, so `image ls` is not `list`.
+		const alias = depth === 0 ? aliases[word] : undefined;
+		const next = subs[word] ?? subs[alias ?? ""];
 		if (!next) {
 			return { command, depth, stranded: Object.keys(subs).length > 0 };
 		}
@@ -122,6 +125,7 @@ async function describeOf(sub: Resolvable<CommandDef>): Promise<string> {
 export async function complete(
 	root: CommandDef,
 	argv: string[],
+	aliases: Record<string, string> = {},
 ): Promise<string> {
 	const describe = argv[0] === "--describe";
 	const rest = describe ? argv.slice(1) : argv;
@@ -139,7 +143,7 @@ export async function complete(
 			: DIRECTIVE.files;
 	}
 
-	const { command, depth, stranded } = await descend(root, typed);
+	const { command, depth, stranded } = await descend(root, typed, aliases);
 	if (stranded) return DIRECTIVE.words;
 
 	const args: ArgsDef = command.args ? await resolve(command.args) : {};
@@ -178,8 +182,21 @@ export async function complete(
 		lines.push(describe ? `${value}:${description}` : value);
 	};
 
-	for (const [name, sub] of Object.entries(subs)) {
-		offer(name, describe ? await describeOf(sub) : "");
+	const names = new Set(
+		Object.keys(subs).filter((name) => name.startsWith(current)),
+	);
+	// A candidate that shares no prefix with what was typed, so that `ls` is
+	// replaced by the name it stands for rather than completing to nothing.
+	if (depth === 0) {
+		for (const [alias, name] of Object.entries(aliases)) {
+			if (alias.startsWith(current) && name in subs) names.add(name);
+		}
+	}
+
+	for (const name of names) {
+		const sub = subs[name];
+		if (!sub) continue;
+		lines.push(describe ? `${name}:${await describeOf(sub)}` : name);
 	}
 	for (const choice of choicesOf(args)) offer(choice, "");
 	for (const flag of flags) {

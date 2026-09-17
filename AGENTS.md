@@ -23,8 +23,8 @@ runtime string, which `--rewriteRelativeImportExtensions` does not touch, so it
 still asks for `.ts` after compilation. Run that file on a Node with type
 stripping.
 
-Anything touching a real VM is verified by hand with `playpen up`. Say when you
-could not.
+Anything touching a real VM is verified by hand with `playpen start`. Say when
+you could not.
 
 ## Do not relitigate
 

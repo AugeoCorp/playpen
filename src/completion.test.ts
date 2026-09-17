@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { bashScript, complete, zshScript } from "./completion.ts";
-import { main } from "./main.ts";
+import { ALIASES, main } from "./main.ts";
 
 /** The words typed after `playpen`, the last one being completed. */
 async function offered(...typed: string[]): Promise<string[]> {
-	const reply = await complete(main, ["--", ...typed]);
+	const reply = await complete(main, ["--", ...typed], ALIASES);
 	return reply.split("\n").slice(1);
 }
 
@@ -31,13 +31,13 @@ test("offers every command at the top level", async () => {
 		"completion",
 		"doctor",
 		"image",
-		"ls",
-		"rm",
+		"list",
+		"remove",
 		"run",
 		"setup",
 		"shell",
+		"start",
 		"stop",
-		"up",
 	]);
 });
 
@@ -54,7 +54,7 @@ test("offers the off switch for a flag that is already on", async () => {
 });
 
 test("offers a one-letter alias with a single dash", async () => {
-	const candidates = await offered("rm", "-");
+	const candidates = await offered("remove", "-");
 	assert.ok(candidates.includes("-y"), `no -y among ${candidates}`);
 });
 
@@ -79,7 +79,7 @@ test("offers nothing at all after a command that does not exist", async () => {
 });
 
 test("stops offering a flag once it is on the line", async () => {
-	assert.deepEqual(await offered("ls", "--help", ""), []);
+	assert.deepEqual(await offered("list", "--help", ""), []);
 });
 
 test("stops offering the off switch once the flag itself is on the line", async () => {
@@ -91,7 +91,7 @@ test("stops offering the off switch once the flag itself is on the line", async 
 });
 
 test("stops offering an alias of a flag already on the line", async () => {
-	const candidates = await offered("rm", "--yes", "-");
+	const candidates = await offered("remove", "--yes", "-");
 	assert.ok(!candidates.includes("-y"), `--yes is set, yet: ${candidates}`);
 });
 
@@ -102,7 +102,7 @@ test("counts a flag given as --name=value as already on the line", async () => {
 
 test("offers --version only at the top level", async () => {
 	assert.ok((await offered("")).includes("--version"), "missing at the root");
-	const inside = await offered("ls", "");
+	const inside = await offered("list", "");
 	assert.ok(!inside.includes("--version"), `offered inside list: ${inside}`);
 });
 
@@ -144,7 +144,24 @@ test("the zsh script asks for descriptions, since its menu shows them", () => {
 	assert.match(zshScript("playpen"), /__complete --describe/);
 });
 
+test("offers the full name of a command, not its short alias", async () => {
+	const candidates = await offered("l");
+	assert.deepEqual(candidates, ["list"]);
+});
 
+test("replaces a short alias with the command it stands for", async () => {
+	assert.deepEqual(await offered("ls"), ["list"]);
+	assert.deepEqual(await offered("rm"), ["remove"]);
+});
 
+test("reaches a command whose alias is the only thing that matches", async () => {
+	assert.deepEqual(await offered("u"), ["start"]);
+});
 
+test("does not expand an alias inside a subcommand, where it means nothing", async () => {
+	assert.deepEqual(await offered("image", "ls"), []);
+});
 
+test("completes a command typed by its short alias", async () => {
+	assert.deepEqual(await offered("ls", "--h"), ["--help"]);
+});

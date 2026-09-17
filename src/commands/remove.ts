@@ -5,9 +5,9 @@ import { withLock } from "../session/lock.ts";
 
 export default defineCommand({
 	meta: {
-		name: "rm",
+		name: "remove",
 		description:
-			"Delete the sandbox VM for this directory (your files are untouched)",
+			"Delete the sandbox VM for this directory, your files untouched (alias: rm)",
 	},
 	args: {
 		yes: {
@@ -30,7 +30,7 @@ export default defineCommand({
 			console.error(`${sb.cwd} is a host mount and is not affected.`);
 			console.error(`Installed packages and other guest-local state are lost.`);
 			console.error(
-				`Claude transcripts and memory are saved, and restored by the next up.`,
+				`Claude transcripts and memory are saved, and restored by the next start.`,
 			);
 			console.error(`Re-run with --yes to proceed.`);
 			process.exitCode = 1;
@@ -40,7 +40,7 @@ export default defineCommand({
 		// Checked and destroyed under one lock: unlocked, a session attaching in
 		// between would have its guest disk deleted underneath it, which is what
 		// the gate exists to prevent. Worse than stopping, so it is gated on a
-		// live lease rather than on rm itself.
+		// live lease rather than on removal itself.
 		const deleted = await withLock(sb.sandbox, async () => {
 			const others = await leases.live(sb.sandbox);
 			if (others.length > 0 && !args.force) {

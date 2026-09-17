@@ -180,7 +180,7 @@ export async function loadTrustedConfig(
 				`warning: ${name} is ${state === "changed" ? "changed since you approved it" : "not yet approved"}, and there is no terminal to ask.`,
 			);
 			console.error(`  not executing it; this sandbox will run unmasked.`);
-			console.error(`  approve it with an interactive: playpen up`);
+			console.error(`  approve it with an interactive: playpen start`);
 			return skipped(state);
 		}
 

@@ -6,7 +6,7 @@ export const INSTANCE_PREFIX = "playpen-";
 /**
  * The basename keeps it recognizable; the path hash keeps two projects with the
  * same directory name distinct. Same directory, same name, which is what makes
- * `playpen up` reattach instead of creating a second VM.
+ * `playpen start` reattach instead of creating a second VM.
  */
 export function sandboxName(cwd: string): string {
 	const abs = resolve(cwd);
@@ -27,7 +27,7 @@ export function instanceName(sandbox: string): string {
 }
 
 /**
- * Bases carry their build date so `playpen ls` can show how old one is; it is a
+ * Bases carry their build date so `playpen list` can show how old one is; it is a
  * label, not an expiry. A sandbox instance always ends in six hex characters,
  * so this shape cannot collide with one -- not even for a directory named
  * "base", whose instance would end in a six-character hash rather than a

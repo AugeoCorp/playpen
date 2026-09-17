@@ -66,7 +66,7 @@ export async function ensureBase(): Promise<{
 	if (!found) return { instance: await buildBase(), built: true };
 
 	// A base should never be running, but a stray `limactl start` should not
-	// leave `up` unable to clone.
+	// leave `start` unable to clone.
 	if (lima.isRunning(instances.find((i) => i.name === found) ?? null))
 		await lima.stop(found);
 	return { instance: found, built: false };

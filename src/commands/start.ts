@@ -3,9 +3,9 @@ import { attached, identify } from "../session/lifecycle.ts";
 
 export default defineCommand({
 	meta: {
-		name: "up",
+		name: "start",
 		description:
-			"Create or start the sandbox for this directory, and leave it running",
+			"Create or start the sandbox for this directory, and leave it running (alias: up)",
 	},
 	async run() {
 		const sb = await identify(process.cwd());
@@ -21,7 +21,7 @@ export default defineCommand({
 				: `running; ${sb.cwd} is mounted read-write`,
 		);
 		// The sandbox is up either way, so this is the exit code rather than a
-		// throw -- but `up` is the command that reports whether it is ready.
+		// throw -- but `start` is the command that reports whether it is ready.
 		if (!setupOk) process.exitCode = 1;
 		console.log(`next: playpen shell   or   playpen claude`);
 	},

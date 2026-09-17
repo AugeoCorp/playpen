@@ -19,7 +19,7 @@ function age(iso: string | undefined): string {
 }
 
 export default defineCommand({
-	meta: { name: "ls", description: "List playpen sandboxes" },
+	meta: { name: "list", description: "List playpen sandboxes (alias: ls)" },
 	async run() {
 		const instances = (await lima.list()).filter(
 			(i) => isPlaypenInstance(i.name) && !isBaseInstance(i.name),

@@ -8,20 +8,20 @@ not be inverted are in `AGENTS.md`. Update this when status changes.
 Works end to end on Bazzite, Lima 2.2.0, Node 24. Baking the base takes ~75s
 once; a sandbox then clones from it and boots in 10s. Restart ~20s.
 
-| Area                                                             | State                  |
-| ---------------------------------------------------------------- | ---------------------- |
-| `up` `shell` `run` `ls` `stop` `rm` `doctor` `image show`        | done                   |
-| `playpen claude` with `~/.claude` allowlist sync and `--no-auth` | done                   |
-| `playpen.config.ts` masks, trust gate on config execution        | done, verified on host |
-| `image build`, base image + clone                                | done, verified on host |
-| `completion bash\|zsh`, generated from the citty command tree    | done; zsh unverified   |
+| Area                                                               | State                  |
+| ------------------------------------------------------------------ | ---------------------- |
+| `start` `shell` `run` `list` `stop` `remove` `doctor` `image show` | done                   |
+| `playpen claude` with `~/.claude` allowlist sync and `--no-auth`   | done                   |
+| `playpen.config.ts` masks, trust gate on config execution          | done, verified on host |
+| `image build`, base image + clone                                  | done, verified on host |
+| `completion bash\|zsh`, generated from the citty command tree      | done; zsh unverified   |
 
 ## Known problems
 
 - An existing sandbox does not pick up image or config changes, or a rebaked
-  base, on its own. `up` notices both and offers a ~10s rebuild; declining keeps
-  the old one running.
-- `up` leaves 8GiB running until `stop`. Idle auto-stop deferred to v1; a
+  base, on its own. `start` notices both and offers a ~10s rebuild; declining
+  keeps the old one running.
+- `start` leaves 8GiB running until `stop`. Idle auto-stop deferred to v1; a
   forgotten VM happened twice in the first half hour, so revisit.
 - Nothing collects old sandboxes, old bases, or history archives. A clone costs
   almost nothing, but every `image build --force` and every image change leaves
@@ -60,8 +60,8 @@ is free -- 0.07s, 0.00B exclusive against 2.03GiB shared. Cold boot of a clone
 is 10s, against ~90s to reprovision. The unlayered base provisioned in 38s; the
 real layered one takes ~75s, most of it installing Claude Code. Two constraints
 it turned up: `clone` refuses a running source, so a baked base is stopped and
-never started again; and it prompts to start the new instance, so `up` must pass
-`--tty=false`.
+never started again; and it prompts to start the new instance, so `start` must
+pass `--tty=false`.
 
 Base names carry the build date so you can see how old one is:
 `playpen-base-<hash>-2026-09-15`. It is a label, not an expiry. Since the date
@@ -71,32 +71,32 @@ which is how you pick up current packages.
 
 Two things make a sandbox stale: its rendered template no longer matches the one
 written at creation, or a newer base exists than the one it was cloned from.
-`up` offers a rebuild rather than doing it -- a reclone is ~10s but discards
-installed packages and masked directories, and `up` is routine. Claude
+`start` offers a rebuild rather than doing it -- a reclone is ~10s but discards
+installed packages and masked directories, and `start` is routine. Claude
 transcripts and memory are archived across it. Without a TTY it declines.
 
 One base for now. `playpen.config.ts` does not choose an image.
 
 A clone inherits the base's instance config, which is Lima's _resolved_ yaml:
 `base:` consumed, `images:` filled in. Lima rejects a config that still has
-`base:`, so playpen's rendered template cannot replace it -- `up` rewrites only
-the empty `mounts` key the base leaves behind. Not `limactl edit --set` either:
-lima builds yq with env operations disabled, so the cwd cannot be passed as
-`strenv()`, and interpolating it is injectable. `guard()` markers are baked in,
-so provisioning stays skipped.
+`base:`, so playpen's rendered template cannot replace it -- `start` rewrites
+only the empty `mounts` key the base leaves behind. Not `limactl edit --set`
+either: lima builds yq with env operations disabled, so the cwd cannot be passed
+as `strenv()`, and interpolating it is injectable. `guard()` markers are baked
+in, so provisioning stays skipped.
 
 Masks therefore cannot be a provision entry -- nothing can add one to a clone.
 They run from the host over `limactl shell` after every start, which they had to
 do anyway since a bind does not survive a reboot. Changing `masked` now takes
-effect on the next `up` without a rebuild.
+effect on the next `start` without a rebuild.
 
 Consequence: cpus, memory, disk and mountType come from the base, so they cannot
 yet vary per sandbox. They are global defaults today.
 
 - [x] `image build`, with `--force` for a fresh dated bake
 - [x] base naming, lookup by hash, newest wins
-- [x] `up` clones and fills in the clone's empty `mounts`
-- [x] `ls` hides bases
+- [x] `start` clones and fills in the clone's empty `mounts`
+- [x] `list` hides bases
 - [x] a stale sandbox offers a rebuild instead of only warning
 - [x] a sandbox on an older base than the newest is offered one too
 - [x] `~/.claude/projects` is archived on destroy and restored on create, so a
@@ -128,10 +128,11 @@ The open cost is where qemu and limactl live. In the base image they are ~100MB
 every sandbox carries; installed on demand they are ~700MB re-downloaded after
 every reclone. Decide alongside preset bases.
 
-First test to write once this works: `up`, write a file under
-`~/.claude/projects`, `rm --yes`, `up` again, assert it came back. Verified by
-hand once already, so this is about keeping it true. Automated checks otherwise
-stay out of the way -- manual testing has been finding the real bugs.
+First test to write once this works: `start`, write a file under
+`~/.claude/projects`, `remove --yes`, `start` again, assert it came back.
+Verified by hand once already, so this is about keeping it true. Automated
+checks otherwise stay out of the way -- manual testing has been finding the real
+bugs.
 
 ### 4. Later, each small
 

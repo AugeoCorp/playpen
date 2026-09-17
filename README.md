@@ -27,15 +27,17 @@ ln -s "$PWD/src/cli.ts" ~/.local/bin/playpen
 ## Commands
 
 ```
-playpen up                       create or start the sandbox for this directory
+playpen start                    create or start the sandbox for this directory
 playpen shell                    shell in the guest
 playpen run [--keep] -- <cmd>    run a command, then stop the VM
 playpen claude [--keep] [args]   run Claude Code, then stop the VM
 playpen setup                    re-run the project's setup steps
-playpen ls | stop [--force] | rm --yes [--force]
+playpen list | stop [--force] | remove --yes [--force]
 playpen image show | doctor
 playpen completion bash|zsh      print a completion script for that shell
 ```
+
+`up`, `ls` and `rm` still work, and tab-complete to the full name.
 
 Tab completion, once per shell:
 
@@ -46,8 +48,8 @@ playpen completion zsh  > "${fpath[1]}/_playpen"
 
 Sessions in the same project share one VM. The last one to exit stops it, so
 quitting one `playpen claude` no longer cuts off another. `stop --force` and
-`rm --force` override that and cut every session off; they are only needed while
-one is attached. `playpen ls` shows the count under `ATT`.
+`remove --force` override that and cut every session off; they are only needed
+while one is attached. `playpen list` shows the count under `ATT`.
 
 `playpen claude` copies an allowlist from `~/.claude` (instructions, settings,
 skills, plugins, OAuth token). `--no-auth` withholds the token, API-key settings

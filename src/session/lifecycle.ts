@@ -214,7 +214,7 @@ async function outdatedBase(sb: Sandbox): Promise<string | null> {
 /**
  * Offered rather than done: a reclone is ~10s, but the guest disk goes with it
  * -- installed packages and masked directories. Claude transcripts and memory
- * are archived across it. `up` is routine, so it asks.
+ * are archived across it. `start` is routine, so it asks.
  */
 async function confirmRebuild(reason: string): Promise<boolean> {
 	console.error(reason);
@@ -223,7 +223,7 @@ async function confirmRebuild(reason: string): Promise<boolean> {
 	);
 	if (!ok)
 		console.error(
-			`  keeping it; rebuild later with: playpen rm --yes && playpen up`,
+			`  keeping it; rebuild later with: playpen remove --yes && playpen start`,
 		);
 	return ok;
 }
@@ -269,7 +269,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 	const base = await ensureBase();
 	if (base.built) console.error(`baked base image ${base.instance}`);
 
-	// A clone that never came up is worse than no clone at all: `up` would find
+	// A clone that never came up is worse than no clone at all: `start` would find
 	// it, see nothing stale, and try to start the broken instance forever.
 	await lima.clone(base.instance, sb.instance);
 	try {
@@ -291,7 +291,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 	}
 
 	// Recorded before setup, not after: setup can run for minutes, and an
-	// instance that exists with no record is one `up` will neither finish nor
+	// instance that exists with no record is one `start` will neither finish nor
 	// offer to rebuild.
 	const now = new Date().toISOString();
 	await store.save({

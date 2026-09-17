@@ -46,11 +46,11 @@ Deciding "ephemeral or named?" at create time is impossible — you don't yet kn
 whether the session will matter. So playpen never asks. Sessions accumulate and
 are collected by budget; you intervene only to keep one.
 
-| State         | Entered by                                        | Resume cost  |
-| ------------- | ------------------------------------------------- | ------------ |
-| **running**   | `playpen up`, or any command on a stopped session | —            |
-| **stopped**   | `playpen run` exiting, or explicit `playpen stop` | ~10–20s boot |
-| **collected** | `playpen gc` when over the disk budget            | gone         |
+| State         | Entered by                                           | Resume cost  |
+| ------------- | ---------------------------------------------------- | ------------ |
+| **running**   | `playpen start`, or any command on a stopped session | —            |
+| **stopped**   | `playpen run` exiting, or explicit `playpen stop`    | ~10–20s boot |
+| **collected** | `playpen gc` when over the disk budget               | gone         |
 
 `playpen pin <n>` exempts a session from collection. That _is_ the "named
 sandbox" feature — no separate concept, and the decision happens after you have
@@ -61,11 +61,11 @@ the information to make it.
 Explicitly, rather than via a background timer:
 
 - **`playpen run` stops the VM on exit.** Tidy one-shot.
-- **`playpen up` leaves it running.** For iterative work: `up` once, then
+- **`playpen start` leaves it running.** For iterative work: `start` once, then
   `run`/`shell` freely with no boot cost between commands.
-- **`playpen stop`** for when you're done with an `up` session.
+- **`playpen stop`** for when you're done with a `start` session.
 
-The consequence, stated plainly: an `up` session stays running until you stop
+The consequence, stated plainly: a `start` session stays running until you stop
 it. Nothing auto-stops a _running_ VM in v0, because the only safe way to do
 that is a timer, and a timer that can stop a running VM risks killing a long
 agent run. Idle auto-stop and pause both defer to v1, where a timer earns its
@@ -86,7 +86,7 @@ invocation calls `reap()` before its own work. A stopped VM costs only disk, so
 "collected slightly later than ideal" is a non-issue.
 
 Retention is **disk-budgeted, not count-based** — N sessions is meaningless when
-session size depends on whether `limactl clone` reflinks. `playpen ls` shows
+session size depends on whether `limactl clone` reflinks. `playpen list` shows
 per-session disk usage.
 
 Reboot needs no handling: it kills all VMs and sessions reappear as `stopped`,
@@ -252,20 +252,20 @@ a broken-and-retaken lock cannot be released by the process it was taken from.
 Without it a session can release its lease, see none left, and decide to stop
 while another is attaching -- the new session would find the VM running and then
 lose it. Under the lock the newcomer is either counted or starts the VM itself.
-`ensureRunning` is inside the lock too, which also stops two concurrent `up`
+`ensureRunning` is inside the lock too, which also stops two concurrent `start`
 from racing on `limactl clone`; the cost is that a second session waits while
 the first creates a sandbox, including through `setup`.
 
-`stop --force` and `rm --force` cut every session off deliberately, and clear
-the leases with them -- they describe a VM that is about to be gone. Both count
-and act under the same lock: unlocked, a session attaching between the count and
-the stop would be cut off anyway, or have its disk deleted underneath it, which
-is the gate's whole purpose.
+`stop --force` and `remove --force` cut every session off deliberately, and
+clear the leases with them -- they describe a VM that is about to be gone. Both
+count and act under the same lock: unlocked, a session attaching between the
+count and the stop would be cut off anyway, or have its disk deleted underneath
+it, which is the gate's whole purpose.
 
 A session that dies without running its cleanup leaves its lease behind, and the
 VM does not auto-stop that time. Nothing is corrupted: the lease is dead, so the
-next read reaps it, `playpen ls` stops counting it, and `playpen stop` needs no
-`--force`.
+next read reaps it, `playpen list` stops counting it, and `playpen stop` needs
+no `--force`.
 
 ---
 
@@ -307,14 +307,14 @@ so nothing is blocked on the outcome.
 
 | Command                                    | Behavior                                                               |
 | ------------------------------------------ | ---------------------------------------------------------------------- |
-| `playpen up`                               | Create or start the session for cwd, and leave it running. Idempotent. |
-| `playpen shell [name]`                     | Interactive shell. Implies `up`.                                       |
+| `playpen start`                            | Create or start the session for cwd, and leave it running. Idempotent. |
+| `playpen shell [name]`                     | Interactive shell. Implies `start`.                                    |
 | `playpen run [name] -- <cmd...>`           | Exec a command, then stop the VM.                                      |
 | `playpen claude [name] -- [args...]`       | Shorthand for Claude Code in the sandbox.                              |
-| `playpen ls`                               | Sessions with title, state, age, disk usage, pin marker.               |
+| `playpen list`                             | Sessions with title, state, age, disk usage, pin marker.               |
 | `playpen resume [n]`                       | Start a stopped session; bare form takes the most recent.              |
 | `playpen pin <n> [--as "title"]` / `unpin` | Exempt from collection.                                                |
-| `playpen stop` / `rm` / `status`           | Lifecycle passthroughs, scoped to playpen instances.                   |
+| `playpen stop` / `remove` / `status`       | Lifecycle passthroughs, scoped to playpen instances.                   |
 | `playpen gc [--dry-run]`                   | Collect unpinned stopped sessions over the disk budget.                |
 | `playpen image build [--force]` / `show`   | Bake/refresh base; print rendered YAML + hash.                         |
 | `playpen doctor`                           | limactl present, Node version, btrfs/CoW warning, mount type sanity.   |
@@ -327,7 +327,7 @@ so nothing is blocked on the outcome.
 src/
   cli.ts                  runMain(main), lazy subCommands
   commands/
-    up.ts shell.ts run.ts claude.ts ls.ts resume.ts pin.ts
+    start.ts shell.ts run.ts claude.ts list.ts resume.ts pin.ts
     stop.ts rm.ts status.ts gc.ts doctor.ts
     image/{build,show}.ts
   lima/
@@ -349,7 +349,7 @@ src/
 ```
 
 citty subcommands load lazily
-(`() => import("./commands/up.ts").then(m => m.default)`) so `playpen ls`
+(`() => import("./commands/up.ts").then(m => m.default)`) so `playpen list`
 doesn't pay for the image module graph.
 
 ### Node-without-a-build constraints
@@ -371,8 +371,9 @@ Install is a shim in `~/.local/bin/playpen` invoking `node <repo>/src/cli.ts`.
 2. **Image as code** — `src/image/*` + `image show` / `image build`. Done when
    `playpen image show | limactl validate -` passes and an unchanged definition
    skips rebuild.
-3. **Lifecycle** — `up`, `shell`, `run` (with stop-on-exit), `ls`, `stop`, `rm`,
-   `status`. Clone vs plain-start gets measured here, where it first matters.
+3. **Lifecycle** — `start`, `shell`, `run` (with stop-on-exit), `list`, `stop`,
+   `remove`, `status`. Clone vs plain-start gets measured here, where it first
+   matters.
 4. **Sessions** — titles, `resume`, `pin`, `gc`.
 5. **Agent ergonomics** — `playpen claude`, auth copy.
 6. **Polish** — config file, `~/.local/bin` shim, README with measured timings.
@@ -393,21 +394,22 @@ Install is a shim in `~/.local/bin/playpen` invoking `node <repo>/src/cli.ts`.
 **Integration** — gated behind `PLAYPEN_E2E=1`, boots real VMs:
 
 1. `playpen image build` → `limactl list` shows `playpen-base-<hash>` stopped.
-2. `playpen up` in a scratch dir → instance running.
+2. `playpen start` in a scratch dir → instance running.
 3. `playpen run -- ls <cwd>` → lists host files, proving the mount.
 4. Write a file guest-side, assert it appears on the host — proves `:w`
    round-trips.
 5. `playpen run -- true` → session reports `stopped` afterward.
-6. `playpen up` then `playpen run -- true` → session still `running` afterward.
+6. `playpen start` then `playpen run -- true` → session still `running`
+   afterward.
 7. `playpen resume` → back to `running`.
-8. `playpen up` again in the same dir → reattaches, does **not** create a second
-   instance.
+8. `playpen start` again in the same dir → reattaches, does **not** create a
+   second instance.
 9. `playpen claude -- -p "reply with OK"` → proves auth passthrough end-to-end.
 10. `playpen gc --dry-run` with a tiny budget → selects oldest unpinned stopped
     only.
-11. `playpen rm` → `limactl list` clean, metadata gone.
+11. `playpen remove` → `limactl list` clean, metadata gone.
 
-**Manual:** `time playpen up` cold vs warm, recorded in the README so the
+**Manual:** `time playpen start` cold vs warm, recorded in the README so the
 clone-vs-start tradeoff rests on numbers rather than a guess.
 
 ---
