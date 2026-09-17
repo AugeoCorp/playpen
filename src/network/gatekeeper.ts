@@ -66,6 +66,9 @@ export async function startGatekeeper(
 
 	const server = new Server({
 		port: opts.port ?? 0,
+		// Reached only over loopback -- from the fence's relay, never from the
+		// network -- so it is never published on one.
+		host: "127.0.0.1",
 		prepareRequestFunction: ({
 			hostname,
 			port,
