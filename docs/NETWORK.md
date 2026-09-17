@@ -172,3 +172,103 @@ Lima question, not a mitmproxy one.
   agent can push a branch full of secrets. This blocks unknown destinations; it
   is not a data-loss control.
 - **The mount.** It is the sharing channel, by design.
+
+## Option C -- seal qemu, relay out through a socket file
+
+Where this landed, and it replaces step 4 of the order of work above: the
+default-deny on a cgroup wanted root, and the point of this is to need none.
+
+Options A and B both treat the proxy as something bolted onto a working network.
+Fence qemu instead, give it no network at all, and the proxy stops being a
+detour off a road that still exists. It becomes the only road.
+
+### The shape
+
+An unprivileged network namespace (`unshare -Urn`) holds qemu and hostagent,
+with nothing in it but loopback. mitmproxy runs outside, where the real network
+is. The two sides meet at a socket file, which crosses the fence because the
+filesystem was never unshared -- only the network was.
+
+```
+╭─ guest ── its own kernel, only reachable through qemu ───────────╮
+│    agent ──TCP──► 192.168.5.2:1080             sshd :22          │
+╰───────────────────────│─────────────────────────────▲────────────╯
+  ═══════════════════════════ VM boundary ══════════════════════════
+╭─ host, inside the fence ── no route anywhere ────────────────────╮
+│                       ▼                             │            │
+│                     qemu ───────────────────────────╯            │
+│                       │            hostagent                     │
+│             127.0.0.1:1080               127.0.0.1:<ssh port>    │
+│                     relay                      relay             │
+╰───────────────────────│─────────────────────────────▲────────────╯
+           socket file  │                             │  socket file
+╭─ host, outside the fence ────────────────────────────────────────╮
+│                       ▼                             │            │
+│                    bridge                        bridge          │
+│                       │                             ▲            │
+│                   mitmproxy                   limactl shell      │
+│                       │                                          │
+│                    internet                                      │
+╰──────────────────────────────────────────────────────────────────╯
+```
+
+The left column is the agent getting out, the right is us getting in. Same
+mechanism, opposite directions.
+
+**The host-loopback hole becomes the door.** `192.168.5.2` is how the guest
+reaches our loopback, which this document lists above as a problem. Fenced, that
+address resolves to the namespace's loopback, where the only thing listening is
+our relay. Nothing else is on it, so nothing else is reachable.
+
+**Guest root has nothing to undo.** It can rewrite `resolv.conf`, flush
+firewalls and reconfigure its interface, and none of it matters: the guest
+cannot make a syscall on this machine. Only qemu can, and qemu is fenced. That
+also means the guest's proxy settings need no defending. Deleting them costs it
+everything and buys it nothing.
+
+**The control path bridges out the same way**, so `limactl shell` and friends
+run from outside with no `nsenter` wrapper. That was the expensive part of
+option B and most of it goes away.
+
+### What it drops
+
+The eBPF redirector, and with it the passwordless sudo, the leaked privileged
+helper, and the fail-open that made option A observation only. mitmproxy keeps
+its job as the policy and the log; it stops being asked to be the boundary.
+
+### Configuration
+
+mitmproxy runs in `socks5` mode with hostnames passed rather than addresses, so
+name lookups land on our side and the guest needs no resolver at all. That is
+also how the DNS hole above closes: `hostResolver` starves inside the fence, and
+should be turned off explicitly rather than left waiting on lookups that can
+never finish. The guest needs one setting,
+`ALL_PROXY=socks5h://192.168.5.2:1080`.
+
+`spike/mitmproxy/allowlist.py` works unchanged in `socks5` mode -- measured.
+Allow passes through undecrypted, deny answers 403, log-only records the verdict
+and passes.
+
+### Traps
+
+- **Abstract sockets do not cross the fence.** They are scoped to the network
+  namespace. A path socket connects through it; an abstract one gets connection
+  refused, with nothing in the error to say why. Measured both ways.
+- **A socket file outlives its process**, so a stale one refuses connections and
+  blocks a rebind. Unlink before binding.
+- **The guest's network will look healthy.** Interface up, route present, lease
+  held, every connection failing the instant it tries to leave. Worth saying so
+  in `doctor`, because it reads as a bug.
+- **mitmproxy listens on TCP only**, so the outside end of each socket file is a
+  small bridge rather than mitmproxy itself.
+
+### Untested
+
+All of it. The assumption everything rests on is that qemu owns the ssh listener
+and hostagent only connects to it; if that is backwards, the control-path bridge
+does not work. Also unconfirmed: that Lima tolerates hostagent having no network
+of its own, and that `unshare -Urn` is available unprivileged on Bazzite.
+
+This holds only while Lima's default user-mode networking translates on the
+guest's behalf. Give the VM a real network card and the guest gets its own path
+to the wire, the translation stops, and the fence stops meaning anything.
