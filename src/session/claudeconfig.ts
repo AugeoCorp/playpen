@@ -3,7 +3,8 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { exists } from "../fs.ts";
-import { captureBuffer, feed } from "../sh.ts";
+import * as lima from "../lima/client.ts";
+import { captureBuffer } from "../sh.ts";
 
 export interface SyncEntry {
 	/** Path relative to ~/.claude. Directories are copied recursively. */
@@ -196,9 +197,9 @@ async function pushFile(
 		`mkdir -p "$(dirname "$HOME/${rel}")"`,
 		`cat > "$HOME/${rel}"`,
 	].join("\n");
-	const result = await feed(
-		"limactl",
-		["shell", instance, "sh", "-c", script],
+	const result = await lima.shellInput(
+		instance,
+		["sh", "-c", script],
 		contents,
 	);
 	return result.code === 0
@@ -303,9 +304,9 @@ export async function pushClaudeConfig(
 			'mkdir -p "$HOME/.claude"',
 			'tar -xf - -C "$HOME/.claude"',
 		].join("\n");
-		const result = await feed(
-			"limactl",
-			["shell", instance, "sh", "-c", script],
+		const result = await lima.shellInput(
+			instance,
+			["sh", "-c", script],
 			tar.stdout,
 		);
 		if (result.code !== 0) {
