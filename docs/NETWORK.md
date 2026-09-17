@@ -262,22 +262,39 @@ and passes.
 - **mitmproxy listens on TCP only**, so the outside end of each socket file is a
   small bridge rather than mitmproxy itself.
 
-### What is proven, and what is not
+### What is proven
 
-`spike/netns/` builds the fence, the proxy and both socket-file crossings, and
-asserts each property above. Seven checks pass: nothing escapes the namespace by
-any route, the socket file carries traffic that policy still governs, killing
-mitmproxy severs egress rather than releasing it, and the control path bridges
-back out with no `nsenter` on our side. `unshare -Urn` as an unprivileged user
-was confirmed separately.
+`spike/netns/` asserts the properties above twice: once with no VM
+(`prototype.sh`, 7 checks) and once with a real Lima 2.2.0 VM inside the fence
+(`lima-fenced.sh`, 13 checks). All pass, and the guest pulled 46MB through the
+chain, so this is traffic rather than a handshake.
 
-qemu is the gap. The prototype runs its client inside the fence directly, where
-the real thing has the guest reach `192.168.5.2` and qemu translate it onto the
-namespace's loopback. Everything Lima-shaped is still reasoning: whether qemu
-owns the ssh listener and hostagent only connects to it, whether hostagent
-tolerates having no network of its own, and whether a VM survives `stop`/`start`
-inside the fence. If the ssh listener belongs to hostagent rather than qemu, the
-control-path bridge does not work as drawn.
+The two assumptions this rested on were confirmed against the real thing:
+
+- **qemu owns the ssh listener.** Lima builds
+  `-netdev user,...,hostfwd=tcp:<addr>:<port>-:22`, and `ss` names
+  `qemu-system-x86` as the process holding it.
+- **`192.168.5.2` reaches the fence's own loopback.** The guest fetched a page
+  from a server bound to `127.0.0.1` inside the namespace. The hole this
+  document lists above really does become the door.
+
+Two things came out better or worse than drawn. **Bubblewrap is the fence**, not
+`unshare`: `unshare -Urn` makes you root inside and `limactl` refuses to run as
+root, while `--map-current-user` keeps your uid but loses the capability to
+bring loopback up. `bwrap --unshare-net` gets your own uid, loopback up and no
+route out, unprivileged. And **the control path may need no bridge at all**:
+Lima leaves an ssh control socket in `~/.lima/<instance>/`, which is a file, so
+`limactl shell` reached the guest from outside before anything was bridged. The
+bridge still earns its place for when that master connection is gone.
+
+One more trap, found the hard way: Lima copies the host's proxy environment into
+the guest, `no_proxy` included, and a `no_proxy` entry turns the guest's proxy
+setting off for exactly those hosts. In a sealed box that makes them unreachable
+rather than direct, and the guest reports `Could not resolve host`.
+
+Untested still: the VM ran under software emulation, so nothing here speaks to
+timing, and `stop`/`start` of a fenced instance across a restart of the fence
+has not been exercised.
 
 This holds only while Lima's default user-mode networking translates on the
 guest's behalf. Give the VM a real network card and the guest gets its own path
