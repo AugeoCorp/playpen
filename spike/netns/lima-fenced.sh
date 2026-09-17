@@ -9,27 +9,30 @@
 set -uo pipefail
 
 INSTANCE=${INSTANCE:-pp}
+URL=${URL:-https://pypi.org/simple/}
+HOST=${HOST:-pypi.org}
+DENIED_URL=${DENIED_URL:-https://files.pythonhosted.org/}
 # An allowed host is passed through undecrypted, so the guest verifies the real
 # certificate. Where this machine's own egress is TLS-intercepted, the guest has
 # no reason to trust the intercepting CA: set GUEST_CURL_OPTS=-k, or install it.
 GUEST_CURL_OPTS=${GUEST_CURL_OPTS:-}
-URL=${URL:-https://pypi.org/simple/}
-HOST=${HOST:-pypi.org}
 HERE="$(cd "$(dirname "$0")" && pwd)"
-RELAY="$HERE/relay.ts"
-ADDON="$HERE/../mitmproxy/allowlist.py"
+ADDON="$HERE/../mitmproxy/verdict.py"
+POLICY="$HERE/../policy/policy.ts"
 RUN=${RUN:-$HOME/fence}
 EGRESS="$RUN/egress.sock"
 CONTROL="$RUN/control.sock"
+DECIDE="$RUN/policy.sock"
 
 # ---------------------------------------------------------------- inside ---
 if [ "${1-}" = "--inside" ]; then
-	node "$RELAY" tcp-to-unix 1080 "$EGRESS" >>"$RUN/inside.log" 2>&1 &
+	socat TCP-LISTEN:1080,fork,bind=127.0.0.1 "UNIX-CONNECT:$EGRESS" \
+		>>"$RUN/inside.log" 2>&1 &
 	python3 -m http.server 7788 --bind 127.0.0.1 >/dev/null 2>&1 &
 	limactl start --name="$INSTANCE" --tty=false "$RUN/vm.yaml" >>"$RUN/inside.log" 2>&1
 	port=$(limactl list --format '{{.SSHLocalPort}}' "$INSTANCE" | tr -d '[:space:]')
 	echo "$port" >"$RUN/sshport"
-	node "$RELAY" unix-to-tcp "$CONTROL" "$port" >>"$RUN/inside.log" 2>&1 &
+	socat "UNIX-LISTEN:$CONTROL,fork" "TCP:127.0.0.1:$port" >>"$RUN/inside.log" 2>&1 &
 	# Prove from in here that the fence holds, before anything is bridged.
 	limactl shell "$INSTANCE" -- sh -c \
 		"env -u https_proxy -u HTTPS_PROXY -u http_proxy -u HTTP_PROXY -u no_proxy -u NO_PROXY \
@@ -38,7 +41,6 @@ if [ "${1-}" = "--inside" ]; then
 	limactl shell "$INSTANCE" -- sh -c \
 		"env -u no_proxy -u NO_PROXY curl -sS -o /dev/null -w '%{http_code}' --max-time 15 http://192.168.5.2:7788/" \
 		>"$RUN/guest-loopback" 2>/dev/null
-	ls "$HOME/.lima/$INSTANCE" | grep -c "ssh.sock" >"$RUN/has-ssh-sock"
 	touch "$RUN/ready"
 	sleep 1800
 	exit 0
@@ -66,15 +68,22 @@ check() {
 		fail=$((fail + 1))
 	fi
 }
-# Runs in the guest, through the bridged control path, from out here.
+# Runs in the guest, through the bridged control path, from out here. Lima
+# copies our proxy environment into the guest, and a no_proxy entry there makes
+# curl ignore the proxy we pass on the command line.
 guest() {
 	limactl shell "$INSTANCE" -- sh -c \
 		"env -u https_proxy -u HTTPS_PROXY -u http_proxy -u HTTP_PROXY -u no_proxy -u NO_PROXY $1" \
 		2>/dev/null | tail -c 3
 }
-proxy() { # proxy <allowlist> <enforce>
-	PLAYPEN_ALLOW="$1" PLAYPEN_ENFORCE="$2" bg mitmdump --mode socks5@1081 \
-		-s "$ADDON" --set connection_strategy=lazy
+policy() { # policy <allow> <enforce|report>
+	bg node "$POLICY" "$DECIDE" "$1" "$2"
+	POLICY_PID=${PIDS[-1]}
+	until [ -S "$DECIDE" ]; do sleep 1; done
+}
+proxy() {
+	PLAYPEN_POLICY_SOCKET="$DECIDE" bg mitmdump --mode socks5@1081 -s "$ADDON" \
+		--set connection_strategy=lazy
 	MITM=${PIDS[-1]}
 	until grep -q "SOCKS v5 proxy listening" "$RUN/log" 2>/dev/null; do
 		kill -0 "$MITM" 2>/dev/null || {
@@ -109,8 +118,9 @@ hostResolver:
   enabled: false
 YAML
 
-proxy "$HOST" 1
-bg node "$RELAY" unix-to-tcp "$EGRESS" 1081 
+policy "$HOST" enforce
+proxy
+bg socat "UNIX-LISTEN:$EGRESS,fork" TCP:127.0.0.1:1081
 until [ -S "$EGRESS" ]; do sleep 1; done
 
 echo "1. the fence"
@@ -137,37 +147,39 @@ echo "  ssh port: $SSHPORT"
 
 echo
 echo "3. the control path"
-echo "  lima leaves an ssh control socket behind: $(cat "$RUN/has-ssh-sock")"
-check "limactl reaches the VM from out here, before any bridge" "0" \
-	"$(limactl shell "$INSTANCE" -- true >/dev/null 2>&1; echo $?)"
-bg node "$RELAY" tcp-to-unix "$SSHPORT" "$CONTROL"
+check "limactl reaches the VM over lima's own ssh socket" "0" \
+	"$(
+		limactl shell "$INSTANCE" -- true >/dev/null 2>&1
+		echo $?
+	)"
+bg socat "TCP-LISTEN:$SSHPORT,fork,bind=127.0.0.1" "UNIX-CONNECT:$CONTROL"
 sleep 3
-check "and reaches it once bridged, with nothing joining the fence" "0" \
-	"$(limactl shell "$INSTANCE" -- true >/dev/null 2>&1; echo $?)"
+check "and over our bridge, with nothing joining the fence" "0" \
+	"$(
+		limactl shell "$INSTANCE" -- true >/dev/null 2>&1
+		echo $?
+	)"
 
 echo
 echo "4. what the guest can and cannot reach"
-check "no internet from the guest" "000" "$(cat "$RUN/guest-direct" | tail -c 3)"
+check "no internet from the guest" "000" "$(tail -c 3 "$RUN/guest-direct")"
 check "192.168.5.2 reaches the fence's own loopback" "200" \
-	"$(cat "$RUN/guest-loopback" | tail -c 3)"
-check "the egress chain works from outside the fence" "200" \
-	"$(env no_proxy= NO_PROXY= https_proxy= HTTPS_PROXY= curl -sS -o /dev/null -w '%{http_code}' --max-time 30 --socks5-hostname 127.0.0.1:1081 "$URL" 2>/dev/null | tail -c 3)"
-check "and the relay on 192.168.5.2 carries the guest out" "200" \
+	"$(tail -c 3 "$RUN/guest-loopback")"
+check "and the relay on it carries the guest out" "200" \
 	"$(guest "curl -sS $GUEST_CURL_OPTS -o /dev/null -w '%{http_code}' --max-time 120 --socks5-hostname 192.168.5.2:1080 $URL")"
 
 echo
 echo "5. policy still governs what comes through"
+check "a denied host is blocked, not merely unreachable" "403" \
+	"$(guest "curl -sS $GUEST_CURL_OPTS -o /dev/null -w '%{http_code}' --max-time 120 --socks5-hostname 192.168.5.2:1080 $DENIED_URL")"
+kill -9 "$POLICY_PID" 2>/dev/null
+sleep 1
+check "losing the policy denies rather than releases" "403" \
+	"$(guest "curl -sS $GUEST_CURL_OPTS -o /dev/null -w '%{http_code}' --max-time 120 --socks5-hostname 192.168.5.2:1080 $URL")"
 kill -9 "$MITM" 2>/dev/null
 sleep 2
 check "killing the proxy severs the guest (fails closed)" "000" \
-	"$(guest "curl -sS -o /dev/null -w '%{http_code}' --max-time 90 --socks5-hostname 192.168.5.2:1080 $URL")"
-
-echo "--- second proxy ---" >>"$RUN/log"
-proxy "nothing.invalid" 1
-got=$(guest "curl -sS -o /dev/null -w '%{http_code}' --max-time 120 --socks5-hostname 192.168.5.2:1080 $URL")
-check "the proxy saw the domain and denied it" "yes" \
-	"$(sed -n '/--- second proxy ---/,$p' "$RUN/log" | grep -q "PLAYPEN deny sni='$HOST'" && echo yes || echo no)"
-check "and the guest got nothing" "000" "$got"
+	"$(guest "curl -sS $GUEST_CURL_OPTS -o /dev/null -w '%{http_code}' --max-time 90 --socks5-hostname 192.168.5.2:1080 $URL")"
 
 echo
 echo "$pass passed, $fail failed"

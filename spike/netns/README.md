@@ -3,13 +3,13 @@
 Two scripts, both asserting the properties `docs/NETWORK.md` claims under
 "Option C". Measured 2026-09-17 on Linux 6.18.
 
-- `prototype.sh` -- the mechanism with no VM. 7 checks, all passing.
+- `prototype.sh` -- the mechanism with no VM. 8 checks, all passing.
 - `lima-fenced.sh` -- the same thing with a real Lima 2.2.0 VM inside the fence.
-  13 checks, all passing.
+  12 checks, all passing.
 
-`relay.ts` carries connections across the fence, and `../mitmproxy/allowlist.py`
-is the policy, unchanged from the earlier spike and unchanged by the move from
-local mode to `socks5`.
+`socat` carries connections across the fence. `../mitmproxy/verdict.py` is the
+mitmproxy addon, reduced to asking a question and applying the answer, and
+`../policy/` decides, in TypeScript, unit-tested without a proxy anywhere.
 
 ## What the Lima run proves
 
@@ -21,17 +21,16 @@ local mode to `socks5`.
 2. Lima inside it
   ok    the VM boots with no network under it
 3. the control path
-  ok    limactl reaches the VM from out here, before any bridge
-  ok    and reaches it once bridged, with nothing joining the fence
+  ok    limactl reaches the VM over lima's own ssh socket
+  ok    and over our bridge, with nothing joining the fence
 4. what the guest can and cannot reach
   ok    no internet from the guest
   ok    192.168.5.2 reaches the fence's own loopback
-  ok    the egress chain works from outside the fence
-  ok    and the relay on 192.168.5.2 carries the guest out
+  ok    and the relay on it carries the guest out
 5. policy still governs what comes through
+  ok    a denied host is blocked, not merely unreachable
+  ok    losing the policy denies rather than releases
   ok    killing the proxy severs the guest (fails closed)
-  ok    the proxy saw the domain and denied it
-  ok    and the guest got nothing
 ```
 
 The guest pulled 46MB of the PyPI index through that chain, so this is real
@@ -84,19 +83,20 @@ master connection going away, but the free path is worth knowing about.
   Measured both ways. An abstract socket gets connection refused with nothing in
   the error to say why.
 - **A socket file outlives its process**, so a stale one refuses connections and
-  blocks a rebind. `relay.ts` unlinks before binding.
+  blocks a rebind. Whatever binds it has to unlink first.
 - **A fresh namespace has loopback down.** bubblewrap handles it; anything else
   has to.
 
 ## Running them
 
 `prototype.sh` needs `mitmdump` on PATH
-(`uv tool install --python 3.13 mitmproxy`) and `iproute2`.
+(`uv tool install --python 3.13 mitmproxy`), plus `socat`, `node` and
+`iproute2`.
 
-`lima-fenced.sh` also needs `bwrap`, `node`, and Lima **2.2.0 or newer** run as
-an ordinary user. Lima 1.0 passes `accel=kvm` unconditionally and cannot start
-without `/dev/kvm`; 2.2.0 falls back to software emulation, which is how this
-ran. Nothing here needs root.
+`lima-fenced.sh` also needs `bwrap`, `socat`, `node`, and Lima **2.2.0 or
+newer** run as an ordinary user. Lima 1.0 passes `accel=kvm` unconditionally and
+cannot start without `/dev/kvm`; 2.2.0 falls back to software emulation, which
+is how this ran. Nothing here needs root.
 
 ```
 GUEST_CURL_OPTS=-k ./lima-fenced.sh

@@ -1,8 +1,10 @@
 # mitmproxy local mode -- spike
 
 Answers the questions `docs/NETWORK.md` left open under "Option A". Run
-`./probe.sh` to reproduce; `allowlist.py` is the addon it drives, and is the
-shape the real policy surface would take.
+`./probe.sh` to reproduce. It drove an addon that has since been replaced by
+`verdict.py`, which asks `../policy/` for each verdict instead of holding the
+policy itself; the probe's findings are unaffected, since none of them are about
+the policy.
 
 Measured 2026-09-17 on Linux 6.18, mitmproxy 12.2.3, mitmproxy_linux 0.12.11,
 against a plain `curl`. **Not** against qemu -- this box has no Lima, so every

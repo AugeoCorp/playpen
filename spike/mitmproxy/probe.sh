@@ -6,7 +6,7 @@ set -uo pipefail
 TARGET=${TARGET:-curl}
 URL=${URL:-https://example.com/}
 CONFDIR=${CONFDIR:-$HOME/.mitmproxy}
-ADDON="$(cd "$(dirname "$0")" && pwd)/allowlist.py"
+ADDON="$(cd "$(dirname "$0")" && pwd)/verdict.py"
 
 command -v mitmdump >/dev/null || {
 	echo "mitmdump not on PATH: uv tool install --python 3.13 mitmproxy" >&2

@@ -299,3 +299,59 @@ has not been exercised.
 This holds only while Lima's default user-mode networking translates on the
 guest's behalf. Give the VM a real network card and the guest gets its own path
 to the wire, the translation stops, and the fence stops meaning anything.
+
+## Option C, revised
+
+What changed after the measurements above, and why. The shape is unchanged; the
+parts are different.
+
+**socat replaces the hand-written relay.** It does the same job in a tool that
+has been carrying connections between sockets for two decades. Four invocations,
+two per direction:
+
+```
+outside  socat UNIX-LISTEN:egress.sock,fork           TCP:127.0.0.1:1081
+inside   socat TCP-LISTEN:1080,fork,bind=127.0.0.1    UNIX-CONNECT:egress.sock
+inside   socat UNIX-LISTEN:control.sock,fork          TCP:127.0.0.1:<ssh>
+outside  socat TCP-LISTEN:<ssh>,fork,bind=127.0.0.1   UNIX-CONNECT:control.sock
+```
+
+**The control bridge stays**, even though Lima's own ssh control socket turned
+out to cross the fence. That socket only works while hostagent's master
+connection is alive; when it drops, ssh falls back to opening its own
+connection, which needs a port only reachable inside the fence. The free path
+would therefore fail exactly when something else has already gone wrong.
+
+**`hostResolver` is off.** Name lookups happen at the proxy, so the guest needs
+no resolver, and the exfiltration channel this document lists under "what none
+of this solves" closes with it.
+
+**The policy is TypeScript behind a bridge.** mitmproxy loads Python addons and
+nothing else, so `spike/mitmproxy/verdict.py` stays Python. It is reduced to
+asking a question over a unix socket and applying the answer, with no policy in
+it. `spike/policy/` decides, in the language the rest of playpen is written in,
+and is unit-tested without a proxy anywhere. The bridge fails closed: no answer
+means deny.
+
+### The guest side is still an open choice
+
+Two ways to point the guest at the relay, and they fail differently.
+
+**An environment variable**, `ALL_PROXY=socks5h://192.168.5.2:1080`. What was
+measured. Nothing to install, and `socks5h` hands hostnames to the proxy so the
+guest needs no DNS at all. But a program has to read the variable and speak
+SOCKS, and many do not. The sandbox this work was done in is the evidence:
+making the same trick work there took `HTTPS_PROXY`, `npm_config_https_proxy`,
+`YARN_HTTPS_PROXY`, `GLOBAL_AGENT_HTTPS_PROXY`, `ELECTRON_GET_USE_PROXY`,
+`CLOUDSDK_PROXY_*` and a `JAVA_TOOL_OPTIONS` line, one per ecosystem, and raw
+sockets still escape it. Check early whether Claude Code's HTTP client honours
+proxy variables, because if it does not, the variable approach fails at the one
+thing the sandbox exists to run.
+
+**A route**, `tun2socks` on a tun device the guest's default route points at.
+Nothing in the guest needs to know, which covers raw sockets and proxy-ignorant
+tools alike, and no `no_proxy` can route around a route. Costs a layer in the
+base image, and DNS becomes ours to handle rather than the proxy's. Untested.
+
+So: proxy-aware programs and no DNS problem, or any program at all and a DNS
+problem to solve.
