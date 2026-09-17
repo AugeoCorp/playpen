@@ -326,12 +326,13 @@ would therefore fail exactly when something else has already gone wrong.
 no resolver, and the exfiltration channel this document lists under "what none
 of this solves" closes with it.
 
-**The policy is TypeScript behind a bridge.** mitmproxy loads Python addons and
-nothing else, so `spike/mitmproxy/verdict.py` stays Python. It is reduced to
-asking a question over a unix socket and applying the answer, with no policy in
-it. `spike/policy/` decides, in the language the rest of playpen is written in,
-and is unit-tested without a proxy anywhere. The bridge fails closed: no answer
-means deny.
+**The policy is a JSON file the addon reads.** `spike/mitmproxy/verdict.py`
+re-reads it per connection, so playpen changes the file and nothing restarts. A
+policy that cannot be read is a denial, so losing it severs egress rather than
+releasing it, which the tests check by deleting it mid-run. The matching rules
+are unit-tested on their own
+(`python3 -m unittest discover -s spike/mitmproxy -p '*_test.py'`); everything
+touching a flow is covered by the integration scripts.
 
 ### The guest side: a setting, or a route
 

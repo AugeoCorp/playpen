@@ -21,11 +21,10 @@ GUEST_CURL_OPTS=${GUEST_CURL_OPTS:-}
 TUN2PROXY=${TUN2PROXY:-}
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ADDON="$HERE/../mitmproxy/verdict.py"
-POLICY="$HERE/../policy/policy.ts"
 RUN=${RUN:-$HOME/fence}
 EGRESS="$RUN/egress.sock"
 CONTROL="$RUN/control.sock"
-DECIDE="$RUN/policy.sock"
+DECIDE="$RUN/policy.json"
 
 # ---------------------------------------------------------------- inside ---
 if [ "${1-}" = "--inside" ]; then
@@ -80,13 +79,11 @@ guest_raw() {
 		2>/dev/null
 }
 guest() { guest_raw "$1" | tail -c 3; }
-policy() { # policy <allow> <enforce|report>
-	bg node "$POLICY" "$DECIDE" "$1" "$2"
-	POLICY_PID=${PIDS[-1]}
-	until [ -S "$DECIDE" ]; do sleep 1; done
+policy() { # policy <allow> <true|false>
+	printf '{"allow":["%s"],"enforce":%s}\n' "$1" "$2" >"$DECIDE"
 }
 proxy() {
-	PLAYPEN_POLICY_SOCKET="$DECIDE" bg mitmdump --mode socks5@1081 -s "$ADDON" \
+	PLAYPEN_POLICY="$DECIDE" bg mitmdump --mode socks5@1081 -s "$ADDON" \
 		--set connection_strategy=lazy
 	MITM=${PIDS[-1]}
 	until grep -q "SOCKS v5 proxy listening" "$RUN/log" 2>/dev/null; do
@@ -122,7 +119,7 @@ hostResolver:
   enabled: false
 YAML
 
-policy "$HOST" enforce
+policy "$HOST" true
 proxy
 bg socat "UNIX-LISTEN:$EGRESS,fork" TCP:127.0.0.1:1081
 until [ -S "$EGRESS" ]; do sleep 1; done
@@ -204,9 +201,9 @@ echo
 echo "6. policy still governs what comes through"
 check "a denied host is blocked, not merely unreachable" "403" \
 	"$(guest "curl -sS $GUEST_CURL_OPTS -o /dev/null -w '%{http_code}' --max-time 120 --socks5-hostname 192.168.5.2:1080 $DENIED_URL")"
-kill -9 "$POLICY_PID" 2>/dev/null
+rm -f "$DECIDE"
 sleep 1
-check "losing the policy denies rather than releases" "403" \
+check "losing the policy file denies rather than releases" "403" \
 	"$(guest "curl -sS $GUEST_CURL_OPTS -o /dev/null -w '%{http_code}' --max-time 120 --socks5-hostname 192.168.5.2:1080 $URL")"
 kill -9 "$MITM" 2>/dev/null
 sleep 2

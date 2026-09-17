@@ -7,7 +7,6 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ADDON="$HERE/../mitmproxy/verdict.py"
-POLICY="$HERE/../policy/policy.ts"
 URL=${URL:-https://pypi.org/simple/}
 HOST=${HOST:-pypi.org}
 CONFDIR=${CONFDIR:-$HOME/.mitmproxy}
@@ -15,7 +14,7 @@ CONFDIR=${CONFDIR:-$HOME/.mitmproxy}
 RUN=$(mktemp -d)
 EGRESS="$RUN/egress.sock"
 CONTROL="$RUN/control.sock"
-DECIDE="$RUN/policy.sock"
+DECIDE="$RUN/policy.json"
 PIDS=()
 pass=0
 fail=0
@@ -46,13 +45,11 @@ fetch() {
 		curl -sS -o /dev/null -w "%{http_code}" --max-time 15 "$@" 2>/dev/null | tail -c 3
 }
 
-policy() { # policy <allow> <enforce|report>
-	bg node "$POLICY" "$DECIDE" "$1" "$2"
-	POLICY_PID=${PIDS[-1]}
-	until [ -S "$DECIDE" ]; do sleep 1; done
+policy() { # policy <allow> <true|false>
+	printf '{"allow":["%s"],"enforce":%s}\n' "$1" "$2" >"$DECIDE"
 }
 proxy() {
-	PLAYPEN_POLICY_SOCKET="$DECIDE" bg mitmdump --mode socks5@1081 -s "$ADDON" \
+	PLAYPEN_POLICY="$DECIDE" bg mitmdump --mode socks5@1081 -s "$ADDON" \
 		--set connection_strategy=lazy --set confdir="$CONFDIR"
 	MITM=${PIDS[-1]}
 	until grep -q "SOCKS v5 proxy listening" "$RUN/log" 2>/dev/null; do
@@ -85,7 +82,7 @@ check "and it fails fast rather than hanging" "yes" \
 	"$([ $((t1 - t0)) -lt 5 ] && echo yes || echo no)"
 
 # --- egress ---------------------------------------------------------------
-policy "$HOST" enforce
+policy "$HOST" true
 proxy
 bg socat "UNIX-LISTEN:$EGRESS,fork" TCP:127.0.0.1:1081
 until [ -S "$EGRESS" ]; do sleep 1; done
@@ -106,9 +103,9 @@ echo "3. policy still applies through the relay"
 proxy
 check "a denied host is blocked, not merely unreachable" "403" \
 	"$(inside bash -c "$(declare -f fetch); fetch --socks5-hostname 127.0.0.1:1080 --cacert $CONFDIR/mitmproxy-ca-cert.pem https://files.pythonhosted.org/")"
-kill -9 "$POLICY_PID" 2>/dev/null
+rm -f "$DECIDE"
 sleep 1
-check "losing the policy denies rather than releases" "403" \
+check "losing the policy file denies rather than releases" "403" \
 	"$(inside bash -c "$(declare -f fetch); fetch --socks5-hostname 127.0.0.1:1080 --cacert $CONFDIR/mitmproxy-ca-cert.pem $URL")"
 
 # --- control path ---------------------------------------------------------

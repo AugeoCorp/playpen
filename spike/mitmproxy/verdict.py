@@ -1,44 +1,64 @@
-"""Bridge between mitmproxy and playpen's policy.
+"""Egress policy for mitmproxy: which hosts the guest may reach.
 
-mitmproxy loads Python addons and nothing else, so this file is Python. It
-holds no policy: it asks over a unix socket and applies the answer. The policy
-lives in spike/policy/, in TypeScript, and is tested without a proxy anywhere.
+The policy is a JSON file playpen writes, re-read per connection so a change
+takes effect without restarting the proxy:
 
-An unreachable or silent policy is a denial, so losing it severs egress rather
-than releasing it.
+    {"allow": ["anthropic.com", "pypi.org"], "enforce": true}
 
-PLAYPEN_POLICY_SOCKET  path to the policy server's socket
+An empty allow list reaches anything. `enforce: false` records a verdict and
+lets the connection through, which is how the domain list gets collected before
+there is an allow list worth writing.
+
+A policy that cannot be read is a denial, so losing the file severs egress
+rather than releasing it.
+
+PLAYPEN_POLICY  path to that file
 """
 
+import json
 import logging
 import os
-import socket
 
 from mitmproxy import http, tcp, tls
 
-SOCKET = os.environ.get("PLAYPEN_POLICY_SOCKET", "")
+POLICY = os.environ.get("PLAYPEN_POLICY", "")
 
 # The SNI is only available in tls_clienthello and the block has to happen in a
 # later hook, so the verdict is carried across on the client address.
 _verdicts: dict[tuple, str] = {}
 
 
-def ask(host: str) -> str:
+def matches(allow: list[str], host: str) -> bool:
+    if not allow:
+        return True
+    name = host.lower().rstrip(".")
+    for entry in allow:
+        suffix = entry.lower().strip(".")
+        if name == suffix or name.endswith("." + suffix):
+            return True
+    return False
+
+
+def decide(policy: dict, host: str) -> str:
+    if matches(policy.get("allow") or [], host):
+        return "allow"
+    return "deny" if policy.get("enforce") else "report"
+
+
+def verdict(host: str) -> str:
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-            s.settimeout(2)
-            s.connect(SOCKET)
-            s.sendall(host.encode() + b"\n")
-            return s.recv(64).decode().strip() or "deny"
-    except OSError as e:
-        logging.warning(f"PLAYPEN policy unreachable ({e}), denying {host!r}")
+        with open(POLICY) as f:
+            policy = json.load(f)
+    except (OSError, ValueError) as e:
+        logging.warning(f"PLAYPEN policy unreadable ({e}), denying {host!r}")
         return "deny"
+    return decide(policy, host)
 
 
 class Verdict:
     def tls_clienthello(self, data: tls.ClientHelloData) -> None:
         sni = data.client_hello.sni or ""
-        reply = ask(sni)
+        reply = verdict(sni)
         logging.warning(f"PLAYPEN {reply} sni={sni!r}")
         _verdicts[data.context.client.peername] = reply
         # Allowed traffic is passed through undecrypted. Only a denial is

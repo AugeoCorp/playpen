@@ -8,9 +8,8 @@ Two scripts, both asserting the properties `docs/NETWORK.md` claims under
   16 checks, all passing, including the guest reaching the relay by route as
   well as by proxy setting.
 
-`socat` carries connections across the fence. `../mitmproxy/verdict.py` is the
-mitmproxy addon, reduced to asking a question and applying the answer, and
-`../policy/` decides, in TypeScript, unit-tested without a proxy anywhere.
+`socat` carries connections across the fence, and `../mitmproxy/verdict.py`
+decides what may pass, from a JSON policy file it re-reads per connection.
 
 ## What the Lima run proves
 
@@ -35,7 +34,7 @@ mitmproxy addon, reduced to asking a question and applying the answer, and
   ok    a denied host is still denied on this path
 6. policy still governs what comes through
   ok    a denied host is blocked, not merely unreachable
-  ok    losing the policy denies rather than releases
+  ok    losing the policy file denies rather than releases
   ok    killing the proxy severs the guest (fails closed)
 ```
 
