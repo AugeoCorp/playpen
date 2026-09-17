@@ -63,10 +63,11 @@ Optional `playpen.config.ts` in the project root:
 export default { masked: ["node_modules"], setup: ["npm ci"] };
 ```
 
-| Key      | Type       | Effect                                                  |
-| -------- | ---------- | ------------------------------------------------------- |
-| `masked` | `string[]` | Project-relative dirs given guest-local storage, not 9p |
-| `setup`  | `string[]` | Shell commands run in the guest, after masks, in order  |
+| Key       | Type                                              | Effect                                                         |
+| --------- | ------------------------------------------------- | -------------------------------------------------------------- |
+| `masked`  | `string[]`                                        | Project-relative dirs given guest-local storage, not 9p        |
+| `setup`   | `string[]`                                        | Shell commands run in the guest, after masks, in order         |
+| `network` | `{ allow?: string[]; mode?: "enforce" \| "log" }` | Hosts this project may reach, on top of the ones playpen ships |
 
 - `masked` gives host and guest their own copy of a path: the 9p share is slow,
   and the two often need different contents there — native modules and toolchain
@@ -75,6 +76,13 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
   root. Keep secrets outside the project.
 - `setup` runs on create and after a rebuild, never on start. Nothing is
   inferred from a lockfile. `playpen setup` re-runs it.
+- `network.allow` is a list of names, not addresses: an entry is a hostname,
+  optionally with a port, and covers that name and everything under it, so
+  `*.example.com` is rejected — `example.com` already says it. An IPv4 literal
+  is the one address you can name. `localhost:PORT` is a service on your own
+  machine, and the port is required.
+- `mode: "log"` records what the sandbox reaches and blocks nothing. Use it to
+  find the hosts a project needs, then list them; the default is `enforce`.
 - The file is imported on the host and runs as you. `setup` commands do not —
   they run in the guest.
 - playpen prints the file and asks before executing it, again whenever it or

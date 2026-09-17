@@ -7,6 +7,7 @@ import {
 	LEGACY_IGNORE_FILE,
 	loadProjectConfig,
 	validateMasks,
+	validateNetwork,
 	validateSetup,
 } from "./projectconfig.ts";
 
@@ -224,4 +225,173 @@ test("an invalid setup entry is dropped, not fatal", async (t) => {
 	assert.deepEqual(r.setup, ["npm ci"]);
 	assert.deepEqual(r.rejectedSetup, [""]);
 	assert.equal(r.error, undefined);
+});
+
+test("allows a hostname on its own or with a port", () => {
+	const r = validateNetwork({
+		allow: ["api.example.com", "registry.npmjs.org:443"],
+	});
+	assert.deepEqual(r.allow, ["api.example.com", "registry.npmjs.org:443"]);
+	assert.deepEqual(r.rejected, []);
+});
+
+test("allows an IPv4 address, the one address form a project can name", () => {
+	const r = validateNetwork({ allow: ["10.0.0.1", "192.168.1.20:8080"] });
+	assert.deepEqual(r.allow, ["10.0.0.1", "192.168.1.20:8080"]);
+	assert.deepEqual(r.rejected, []);
+});
+
+test("allows localhost only with a port, never all of its ports at once", () => {
+	const r = validateNetwork({ allow: ["localhost:3000", "localhost"] });
+	assert.deepEqual(r.allow, ["localhost:3000"]);
+	assert.deepEqual(r.rejected, ["localhost"]);
+});
+
+test("rejects a wildcard, since a listed name already covers its subdomains", () => {
+	const r = validateNetwork({ allow: ["*.example.com", "exa*ple.com", "*"] });
+	assert.deepEqual(r.allow, []);
+	assert.deepEqual(r.rejected, ["*.example.com", "exa*ple.com", "*"]);
+});
+
+test("rejects a URL, which is a destination rather than a name to match", () => {
+	const r = validateNetwork({
+		allow: ["https://example.com", "example.com/v1"],
+	});
+	assert.deepEqual(r.allow, []);
+	assert.deepEqual(r.rejected, ["https://example.com", "example.com/v1"]);
+});
+
+test("rejects an entry with a space inside it", () => {
+	const r = validateNetwork({ allow: ["exa mple.com", "a.com b.com"] });
+	assert.deepEqual(r.allow, []);
+	assert.deepEqual(r.rejected, ["exa mple.com", "a.com b.com"]);
+});
+
+test("rejects empty entries and anything that is not a string", () => {
+	const r = validateNetwork({ allow: ["", "   ", 42, null] });
+	assert.deepEqual(r.allow, []);
+	assert.deepEqual(r.rejected, ["", "   ", "42", "null"]);
+});
+
+test("rejects a name with no dot in it", () => {
+	const r = validateNetwork({ allow: ["example", "intranet"] });
+	assert.deepEqual(r.allow, []);
+	assert.deepEqual(r.rejected, ["example", "intranet"]);
+});
+
+test("rejects a name with an empty label or a label edged by a hyphen", () => {
+	const r = validateNetwork({
+		allow: [".example.com", "example.com.", "-bad.example.com", "bad-.com"],
+	});
+	assert.deepEqual(r.allow, []);
+	assert.deepEqual(r.rejected, [
+		".example.com",
+		"example.com.",
+		"-bad.example.com",
+		"bad-.com",
+	]);
+});
+
+test("rejects a name longer than 253 characters", () => {
+	const tooLong = `${"a".repeat(250)}.example.com`;
+	const r = validateNetwork({ allow: [tooLong] });
+	assert.deepEqual(r.allow, []);
+	assert.deepEqual(r.rejected, [tooLong]);
+});
+
+test("rejects a port that is not a number from 1 to 65535", () => {
+	const r = validateNetwork({
+		allow: ["example.com:0", "example.com:65536", "example.com:http"],
+	});
+	assert.deepEqual(r.allow, []);
+	assert.deepEqual(r.rejected, [
+		"example.com:0",
+		"example.com:65536",
+		"example.com:http",
+	]);
+});
+
+test("rejects IPv6 addresses, which are not supported yet", () => {
+	const r = validateNetwork({
+		allow: ["::1", "2001:db8::1", "[2001:db8::1]:443"],
+	});
+	assert.deepEqual(r.allow, []);
+	assert.deepEqual(r.rejected, ["::1", "2001:db8::1", "[2001:db8::1]:443"]);
+});
+
+test("collapses repeats after trimming and lowercasing, keeping the first", () => {
+	const r = validateNetwork({
+		allow: ["Example.com", "  example.com  ", "api.example.com", "EXAMPLE.COM"],
+	});
+	assert.deepEqual(r.allow, ["example.com", "api.example.com"]);
+	assert.deepEqual(r.rejected, []);
+});
+
+test("blocking is enforced when the config does not ask for anything else", () => {
+	assert.equal(validateNetwork({ allow: ["example.com"] }).mode, "enforce");
+});
+
+test("log mode is kept, so a project can be watched without being blocked", () => {
+	assert.equal(validateNetwork({ allow: [], mode: "log" }).mode, "log");
+});
+
+test("reads network from a default export", async (t) => {
+	const dir = await project(t, {
+		"playpen.config.js":
+			'export default { network: { allow: ["example.com"], mode: "log" } };',
+	});
+	const r = await loadProjectConfig(dir);
+	assert.deepEqual(r.network.allow, ["example.com"]);
+	assert.equal(r.network.mode, "log");
+	assert.equal(r.error, undefined);
+});
+
+test("a config with no network key allows nothing and still enforces", async (t) => {
+	const dir = await project(t, {
+		"playpen.config.js": 'export default { masked: ["node_modules"] };',
+	});
+	const r = await loadProjectConfig(dir);
+	assert.deepEqual(r.network.allow, []);
+	assert.equal(r.network.mode, "enforce");
+	assert.deepEqual(r.rejectedNetwork, []);
+	assert.equal(r.error, undefined);
+});
+
+test("an invalid network entry is dropped, not fatal", async (t) => {
+	const dir = await project(t, {
+		"playpen.config.js":
+			'export default { network: { allow: ["example.com", "*.example.com"] } };',
+	});
+	const r = await loadProjectConfig(dir);
+	assert.deepEqual(r.network.allow, ["example.com"]);
+	assert.deepEqual(r.rejectedNetwork, ["*.example.com"]);
+	assert.equal(r.error, undefined);
+});
+
+test("reports a non-array network.allow instead of throwing", async (t) => {
+	const dir = await project(t, {
+		"playpen.config.js":
+			'export default { network: { allow: "example.com" } };',
+	});
+	const r = await loadProjectConfig(dir);
+	assert.match(r.error ?? "", /`network\.allow` must be an array/);
+	assert.deepEqual(r.network.allow, []);
+});
+
+test("an unknown mode is an error, not a silent fall back to enforcing", async (t) => {
+	const dir = await project(t, {
+		"playpen.config.js":
+			'export default { network: { allow: ["example.com"], mode: "warn" } };',
+	});
+	const r = await loadProjectConfig(dir);
+	assert.match(r.error ?? "", /`network\.mode` must be "enforce" or "log"/);
+	assert.deepEqual(r.network.allow, []);
+});
+
+test("reports a network key that is not an object", async (t) => {
+	const dir = await project(t, {
+		"playpen.config.js": 'export default { network: ["example.com"] };',
+	});
+	const r = await loadProjectConfig(dir);
+	assert.match(r.error ?? "", /`network` must be an object/);
 });

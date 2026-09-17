@@ -10,6 +10,25 @@ export const CONFIG_FILES = [CONFIG_FILE, "playpen.config.js"] as const;
 /** The file this replaced. Detected only so we can say it is no longer read. */
 export const LEGACY_IGNORE_FILE = ".playpenignore";
 
+export type NetworkMode = "enforce" | "log";
+
+/**
+ * `allow` is matched by name: an entry is a hostname, optionally with a port,
+ * and covers that name and everything under it — which is why `*.example.com`
+ * is refused rather than read as a longer spelling of `example.com`. The name
+ * is checked before it resolves, so a bare address normally matches nothing;
+ * the two spellings that do are an IPv4 literal and `localhost:PORT`, where
+ * the port is required so that one entry cannot reach every service listening
+ * on your machine.
+ *
+ * `mode: "log"` records verdicts and refuses nothing, for finding out what a
+ * project reaches. It is never the default.
+ */
+export interface NetworkConfig {
+	allow?: string[];
+	mode?: NetworkMode;
+}
+
 export interface PlaypenConfig {
 	/**
 	 * Project-relative paths given guest-local storage instead of the 9p share.
@@ -37,6 +56,12 @@ export interface PlaypenConfig {
 	 * saying nothing.
 	 */
 	setup?: string[];
+
+	/**
+	 * Hosts this project may reach, on top of the list playpen ships. Every
+	 * outbound connection from the sandbox is checked against the two together.
+	 */
+	network?: NetworkConfig;
 }
 
 /**
@@ -50,10 +75,13 @@ export function defineConfig(config: PlaypenConfig): PlaypenConfig {
 export interface LoadedConfig {
 	masked: string[];
 	setup: string[];
+	network: { allow: string[]; mode: NetworkMode };
 	/** `masked` entries dropped by validation, verbatim, for warning about. */
 	rejected: string[];
 	/** `setup` entries dropped by validation, verbatim. */
 	rejectedSetup: string[];
+	/** `network.allow` entries dropped by validation, verbatim. */
+	rejectedNetwork: string[];
 	/** Set when the file exists but could not be loaded. Masking is skipped. */
 	error?: string;
 }
@@ -126,6 +154,94 @@ export function validateSetup(entries: readonly unknown[]): {
 	return { setup, rejected };
 }
 
+/**
+ * An entry names what the guest asks for, not what it ends up connecting to,
+ * so anything that is not a name to compare against — a scheme, a path, a
+ * wildcard — is dropped rather than guessed at. IPv6 literals are dropped for
+ * the same reason and are simply not supported yet.
+ *
+ * Shape problems — `allow` that is not an array, a `mode` that is neither
+ * spelling — come back as `error` rather than as dropped entries: a `mode`
+ * meant to say "log" that was quietly dropped would enforce instead.
+ */
+export function validateNetwork(raw: unknown): {
+	allow: string[];
+	mode: NetworkMode;
+	rejected: string[];
+	error?: string;
+} {
+	const none = { allow: [], mode: "enforce" as const, rejected: [] };
+	if (raw === undefined) return none;
+	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+		return { ...none, error: "`network` must be an object" };
+	}
+
+	const { allow, mode } = raw as NetworkConfig;
+	if (allow !== undefined && !Array.isArray(allow)) {
+		return { ...none, error: "`network.allow` must be an array of strings" };
+	}
+	if (mode !== undefined && mode !== "enforce" && mode !== "log") {
+		return { ...none, error: '`network.mode` must be "enforce" or "log"' };
+	}
+
+	const entries: readonly unknown[] = allow ?? [];
+	const accepted: string[] = [];
+	const rejected: string[] = [];
+
+	for (const entry of entries) {
+		if (typeof entry !== "string") {
+			rejected.push(String(entry));
+			continue;
+		}
+		const host = entry.trim().toLowerCase();
+		if (!isAllowedHost(host)) {
+			rejected.push(entry);
+			continue;
+		}
+		if (!accepted.includes(host)) accepted.push(host);
+	}
+
+	return { allow: accepted, mode: mode ?? "enforce", rejected };
+}
+
+function isAllowedHost(entry: string): boolean {
+	if (entry === "" || /[\s*/]/.test(entry)) return false;
+
+	const colon = entry.indexOf(":");
+	const host = colon === -1 ? entry : entry.slice(0, colon);
+	const port = colon === -1 ? null : entry.slice(colon + 1);
+	if (port !== null && !isPort(port)) return false;
+
+	if (host === "localhost") return port !== null;
+	return isHostname(host) || isIpv4(host);
+}
+
+function isPort(port: string): boolean {
+	return /^\d{1,5}$/.test(port) && Number(port) >= 1 && Number(port) <= 65535;
+}
+
+function isHostname(host: string): boolean {
+	const labels = host.split(".");
+	return (
+		host.length <= 253 &&
+		labels.length > 1 &&
+		labels.every(
+			(label) =>
+				/^[a-z0-9-]+$/.test(label) &&
+				!label.startsWith("-") &&
+				!label.endsWith("-"),
+		)
+	);
+}
+
+function isIpv4(host: string): boolean {
+	const octets = host.split(".");
+	return (
+		octets.length === 4 &&
+		octets.every((octet) => /^\d{1,3}$/.test(octet) && Number(octet) <= 255)
+	);
+}
+
 export async function hasLegacyIgnore(projectDir: string): Promise<boolean> {
 	return exists(join(projectDir, LEGACY_IGNORE_FILE));
 }
@@ -161,8 +277,10 @@ export async function importConfig(file: string): Promise<LoadedConfig> {
 	const empty: LoadedConfig = {
 		masked: [],
 		setup: [],
+		network: { allow: [], mode: "enforce" },
 		rejected: [],
 		rejectedSetup: [],
+		rejectedNetwork: [],
 	};
 
 	let loaded: unknown;
@@ -180,7 +298,7 @@ export async function importConfig(file: string): Promise<LoadedConfig> {
 		return { ...empty, error: `${name} must default-export an object` };
 	}
 
-	const { masked, setup } = config as PlaypenConfig;
+	const { masked, network, setup } = config as PlaypenConfig;
 	if (masked !== undefined && !Array.isArray(masked)) {
 		return {
 			...empty,
@@ -194,13 +312,20 @@ export async function importConfig(file: string): Promise<LoadedConfig> {
 		};
 	}
 
+	const net = validateNetwork(network);
+	if (net.error !== undefined) {
+		return { ...empty, error: `${name}: ${net.error}` };
+	}
+
 	const masks = validateMasks(masked ?? []);
 	const steps = validateSetup(setup ?? []);
 	return {
 		masked: masks.masked,
 		setup: steps.setup,
+		network: { allow: net.allow, mode: net.mode },
 		rejected: masks.rejected,
 		rejectedSetup: steps.rejected,
+		rejectedNetwork: net.rejected,
 	};
 }
 
@@ -214,8 +339,10 @@ export async function loadProjectConfig(
 		return {
 			masked: [],
 			setup: [],
+			network: { allow: [], mode: "enforce" },
 			rejected: [],
 			rejectedSetup: [],
+			rejectedNetwork: [],
 			legacyIgnore,
 		};
 	return { ...(await importConfig(join(projectDir, name))), legacyIgnore };
