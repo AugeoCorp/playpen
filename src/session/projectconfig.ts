@@ -25,6 +25,11 @@ export type NetworkMode = "enforce" | "log";
  * Link-local addresses and the 0.0.0.0 spelling of loopback are never
  * reached, port or not.
  *
+ * `localhost:PORT` means this machine, the one running playpen, not the
+ * guest: the guest's own `localhost` never leaves the VM, and it reaches this
+ * machine by the name `host.playpen.internal`, which maps to that port only
+ * when the entry exists. The port is required.
+ *
  * `mode: "log"` records verdicts and refuses nothing, for finding out what a
  * project reaches. It is never the default.
  */

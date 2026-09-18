@@ -92,8 +92,13 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
   alone; named without one, it must resolve to a public address. Link-local
   addresses and the 0.0.0.0 spelling of loopback are never reached either way.
   An IPv4 literal is the other address you can name: it needs a port, it may be
-  on your LAN, and it is never a loopback one. `localhost:PORT` is a service on
-  your own machine, and the port is required there too.
+  on your LAN, and it is never a loopback one.
+- `localhost:PORT` means your machine, not the guest's: the computer running
+  playpen, on that one port. Inside the guest, `localhost` still means the guest
+  itself and never leaves the VM, so the guest reaches your machine by the name
+  `host.playpen.internal` instead: `http://host.playpen.internal:11434/` gets to
+  your Ollama if and only if `localhost:11434` is listed. The port is required;
+  a bare `localhost` would mean every service on your machine and is rejected.
 - `mode: "log"` records what the sandbox reaches and blocks nothing on the
   internet side; your own machine's localhost stays closed in every mode. Use it
   to find the hosts a project needs, then list them; the default is `enforce`.

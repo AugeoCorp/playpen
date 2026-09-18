@@ -203,13 +203,16 @@ already merged -- and a mode, and applies these rules to every `CONNECT`:
   what its reach permits, and when nothing is left closes the tunnel and logs a
   second line naming the refused address. IPv4 only: a name with nothing but
   AAAA records is refused.
-- **`localhost:PORT` in the config** is the deliberate, explicit way to reach a
-  service on the host machine itself, and the only one that does not depend on
-  some other name's DNS happening to answer there. The guest cannot ask for it
-  directly: it has to `CONNECT` to the literal name `host.playpen.internal`,
-  which the gatekeeper maps to `127.0.0.1:PORT` only when a matching
-  `localhost:PORT` entry exists. The port is required, so one entry cannot open
-  every service on the host.
+- **`localhost:PORT` means the host machine, not the guest.** The config is read
+  on the host, so `localhost` there is the computer running playpen, and the
+  entry opens that one port on it. Inside the guest, `localhost` is the guest
+  itself and that traffic never reaches the gatekeeper, so the guest asks for
+  the host by the name `host.playpen.internal` instead, which the gatekeeper
+  maps to `127.0.0.1:PORT` only when a matching `localhost:PORT` entry exists.
+  It is the honest spelling when no DNS name is involved, and the only route to
+  the host that does not depend on some other name's DNS answering there. The
+  port is required: a bare `localhost` would mean every service on the host, and
+  is rejected when the config is read.
 - **The guest's own idea of loopback never reaches the gatekeeper** -- that
   traffic stays inside the guest. A `CONNECT` that literally names `localhost`
   or `127.0.0.1` is therefore read as an attempt to reach the _host's_ loopback
