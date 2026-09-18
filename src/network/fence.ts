@@ -1,5 +1,12 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdir, open, readFile, readlink, unlink } from "node:fs/promises";
+import {
+	mkdir,
+	open,
+	readFile,
+	readlink,
+	stat,
+	unlink,
+} from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dataDir, limaHome } from "../config.ts";
@@ -96,13 +103,33 @@ export async function liveHelper(
 	return (await isLive(record)) ? record : null;
 }
 
+/** Returns whether this changed what was on disk, so a caller can say that a
+ * sandbox which is already running has a new policy coming. */
 export async function writePolicy(
 	sandbox: string,
 	policy: Policy,
-): Promise<void> {
+): Promise<boolean> {
 	const paths = fencePaths(sandbox);
 	await mkdir(paths.dir, { recursive: true });
-	await writeAtomic(paths.policy, `${JSON.stringify(policy)}\n`);
+	const next = `${JSON.stringify(policy)}\n`;
+	const previous = await readFile(paths.policy, "utf8").catch(() => "");
+	await writeAtomic(paths.policy, next);
+	return next !== previous;
+}
+
+/**
+ * A value that changes whenever policy.json is rewritten, for the helper
+ * polling it while a sandbox runs. The size goes in alongside the mtime
+ * because a filesystem with coarse timestamps can date two writes the same.
+ * An absent file stamps as "", which is a change once one appears.
+ */
+export async function policyStamp(sandbox: string): Promise<string> {
+	try {
+		const { mtimeMs, size } = await stat(fencePaths(sandbox).policy);
+		return `${mtimeMs}:${size}`;
+	} catch {
+		return "";
+	}
 }
 
 /**
@@ -245,15 +272,21 @@ export interface BringUpOptions {
  * Start the sandbox VM inside its fence and return once the guest answers.
  *
  * Returns without spawning anything when a ready helper is already running for
- * this sandbox, since a second one would fight it for the egress socket.
+ * this sandbox, since a second one would fight it for the egress socket. The
+ * policy is written either way: it is the running helper's source of truth,
+ * which it re-reads, so this is how a sandbox that is already up is retightened.
  */
 export async function bringUp(opts: BringUpOptions): Promise<void> {
 	const { sandbox, instance } = opts;
-	await writePolicy(sandbox, opts.policy);
+	const changed = await writePolicy(sandbox, opts.policy);
 
 	const state = await fenceStatus(sandbox, instance);
 	if (state === "sealed" || state === "sealed-no-egress") {
-		opts.log(`warning: ${sandbox} is already running fenced; leaving it\n`);
+		if (changed) {
+			opts.log(
+				`network policy updated; the running sandbox picks it up within a few seconds\n`,
+			);
+		}
 		return;
 	}
 

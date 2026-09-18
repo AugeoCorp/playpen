@@ -325,13 +325,12 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 						`  stop it and start it again: playpen stop --force && playpen start`,
 				);
 			}
-			// Also when the VM is up but its fence lost the gatekeeper: the VM
-			// survives a killed helper, and nothing else brings egress back.
-			if (fence === "stopped" || fence === "sealed-no-gatekeeper") {
-				await startFenced(sb, template);
-			} else if (fence === "sealed-no-egress") {
-				await warnWithoutEgress(sb);
-			}
+			// In every other state, including a sandbox that is already up: a
+			// stopped VM is started, one that survived its helper gets another
+			// gatekeeper, and a running one has its policy rewritten, which is
+			// what its helper reads to decide on -- so a list tightened since it
+			// started takes effect without a restart.
+			await startFenced(sb, template);
 			await applyMasks(sb, template.masks);
 			await store.touch(sb.sandbox);
 			return { created: false, setupOk: true, setup: template.setup };

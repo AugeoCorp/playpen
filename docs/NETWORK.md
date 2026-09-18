@@ -107,9 +107,20 @@ the command that started it. The helper starts the gatekeeper and the two
 relays, brings the VM up inside a fresh `bwrap` namespace, and waits for the
 guest to answer before returning -- streaming its own log to the terminal in the
 meantime. If a VM is already running and fenced with a live helper, `start`
-leaves it alone. If the VM is up but its helper died, `start` reattaches: a new
+leaves the VM alone but still writes the policy, and says so when the file
+changed. If the VM is up but its helper died, `start` reattaches: a new
 gatekeeper and relay, no new namespace, since qemu and the inside relays were
 never the helper's children to lose.
+
+**policy.json is what the gatekeeper decides on**, not the copy the helper
+started with. The helper stats the file on the same few-second pass that watches
+the VM, and re-reads it whenever it has been rewritten, logging the new entry
+count to helper.log; so a project that tightens its `network.allow` and
+re-approves needs no restart, and a host removed from the list stops being
+reachable within a few seconds. A policy.json that will not parse is a corrupt
+file rather than a half-written one -- it is written by rename -- so the helper
+swaps in an empty enforcing policy and says so: the sandbox loses its network
+until the next `playpen start` rather than keeping a list nobody can read.
 
 **The guest is then asked to prove it can reach the gatekeeper**, because none
 of the above does: everything the helper knows is from outside the fence, where

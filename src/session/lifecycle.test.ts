@@ -25,6 +25,8 @@ let fenceState:
 	| "unsealed" = "sealed";
 /** Whether the fake helper says the guest reached the gatekeeper. */
 let helperEgress = true;
+/** Whether the fake fence has been brought up already in this test. */
+let fenced = false;
 
 mock.module("../network/fence.ts", {
 	// @ts-expect-error @types/node still types this as `namedExports`, which the
@@ -39,8 +41,17 @@ mock.module("../network/fence.ts", {
 			ready: true,
 			egress: helperEgress,
 		}),
+		// Like the real one: the policy is written whatever state the fence is
+		// in, and a sandbox that is already up behind a gatekeeper is left where
+		// it is rather than started a second time.
 		async bringUp(opts: { policy: { allow: string[]; mode: string } }) {
 			fencedWith = opts.policy;
+			const up = fenceState === "sealed" || fenceState === "sealed-no-egress";
+			if (fenced && up) {
+				calls.push("leave the fence alone");
+				return;
+			}
+			fenced = true;
 			calls.push("start behind the gatekeeper");
 		},
 	},
@@ -102,6 +113,7 @@ async function sandboxFor(
 	fencedWith = null;
 	fenceState = "sealed";
 	helperEgress = true;
+	fenced = false;
 	t.after(() => {
 		process.env.XDG_DATA_HOME = before.xdg;
 		process.env.LIMA_HOME = before.lima;
@@ -160,7 +172,22 @@ test("a sandbox already running behind its gatekeeper is not started again", asy
 	await run();
 	calls.length = 0;
 	await run();
-	assert.deepEqual(calls, ["apply masks"]);
+	assert.deepEqual(calls, ["leave the fence alone", "apply masks"]);
+});
+
+test("a sandbox already running is handed the project's policy again, so a tightened list reaches it", async (t) => {
+	const { run } = await sandboxFor(
+		t,
+		'export default { network: { allow: ["example.com"] } };',
+	);
+	await run();
+	fencedWith = null;
+	await run();
+	const { BUILTIN_ALLOW } = await import("../network/policy.ts");
+	assert.deepEqual(fencedWith, {
+		allow: [...BUILTIN_ALLOW, "example.com"],
+		mode: "enforce",
+	});
 });
 
 test("a sandbox running with no gatekeeper gets one back", async (t) => {
@@ -200,7 +227,7 @@ test("a sandbox already running without egress warns again instead of restarting
 		.map((c) => String(c.arguments[0]))
 		.join("\n");
 	assert.match(said, /has no network/);
-	assert.deepEqual(calls, ["apply masks"]);
+	assert.deepEqual(calls, ["leave the fence alone", "apply masks"]);
 });
 
 test("a sandbox running outside its fence is refused, not attached to", async (t) => {

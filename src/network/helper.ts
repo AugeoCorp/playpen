@@ -11,6 +11,7 @@ import {
 	fencePaths,
 	fenceStatus,
 	liveHelper,
+	policyStamp,
 	readPolicy,
 	removeSocket,
 	socatPath,
@@ -21,7 +22,7 @@ import {
 	type LogEntry,
 	startGatekeeper,
 } from "./gatekeeper.ts";
-import { PROBE_HOST } from "./policy.ts";
+import { type Policy, PROBE_HOST } from "./policy.ts";
 
 /**
  * The two processes fence.ts describes, as commands: `__net-helper` outside the
@@ -65,6 +66,46 @@ async function waitWhileRunning(instance: string): Promise<void> {
 	while (await vmRunning(instance)) await sleep(POLL_MS);
 }
 
+/**
+ * policy.json is written whole, by rename, so a policy that will not parse is
+ * a corrupt file rather than a half-written one. The sandbox loses its network
+ * until the next `playpen start` instead of keeping a policy nobody can read.
+ */
+async function reloadPolicy(sandbox: string): Promise<Policy> {
+	try {
+		const policy = await readPolicy(sandbox);
+		say(
+			`policy.json was rewritten: ${policy.allow.length} entries, mode ${policy.mode}`,
+		);
+		return policy;
+	} catch (err) {
+		say(
+			`policy.json is unreadable (${err}); denying everything until the next start`,
+		);
+		return { allow: [], mode: "enforce" };
+	}
+}
+
+/**
+ * Waits for the VM to go away, keeping the gatekeeper's policy in step with
+ * the file `playpen start` writes -- which is how a sandbox that is already up
+ * picks up a tightened allow list.
+ */
+async function serveWhileRunning(
+	sandbox: string,
+	instance: string,
+	swap: (policy: Policy) => void,
+): Promise<void> {
+	let stamp = await policyStamp(sandbox);
+	while (await vmRunning(instance)) {
+		await sleep(POLL_MS);
+		const now = await policyStamp(sandbox);
+		if (now === stamp) continue;
+		stamp = now;
+		swap(await reloadPolicy(sandbox));
+	}
+}
+
 /** Appends are serialized so the log keeps the order the verdicts happened in. */
 function jsonLineAppender(path: string): (entry: LogEntry) => void {
 	let tail: Promise<void> = Promise.resolve();
@@ -88,7 +129,7 @@ export async function runHelper(
 	instance: string,
 ): Promise<number> {
 	const paths = fencePaths(sandbox);
-	const policy = await readPolicy(sandbox);
+	let policy = await readPolicy(sandbox);
 
 	const running = await liveHelper(sandbox);
 	if (running !== null) {
@@ -112,7 +153,7 @@ export async function runHelper(
 
 	const logFrom = await sizeOf(paths.gatekeeperLog);
 	const gatekeeper = await startGatekeeper({
-		policy,
+		policy: () => policy,
 		log: jsonLineAppender(paths.gatekeeperLog),
 	});
 	say(`gatekeeper listening on 127.0.0.1:${gatekeeper.port}`);
@@ -191,7 +232,9 @@ export async function runHelper(
 		say(`  check its side: playpen run -- systemctl status playpen-tun2proxy`);
 	}
 
-	await waitWhileRunning(instance);
+	await serveWhileRunning(sandbox, instance, (next) => {
+		policy = next;
+	});
 	say(`${instance} is no longer running; shutting the fence down`);
 	await teardown(true);
 	return 0;

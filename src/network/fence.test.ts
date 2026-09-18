@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
-import { classifyFence, fencePaths } from "./fence.ts";
+import { type TestContext, test } from "node:test";
+import {
+	classifyFence,
+	fencePaths,
+	policyStamp,
+	writePolicy,
+} from "./fence.ts";
 
 const OURS = "net:[4026531840]";
 const THEIRS = "net:[4026532999]";
@@ -86,5 +93,45 @@ test("qemu in our own network namespace is unsealed, helper or not", () => {
 	assert.equal(
 		classifyFence({ guestNetNs: OURS, ourNetNs: OURS, helper }),
 		"unsealed",
+	);
+});
+
+/** The data directory the fence writes under, pointed somewhere disposable. */
+async function dataDir(t: TestContext): Promise<void> {
+	const root = await mkdtemp(join(tmpdir(), "playpen-fence-"));
+	const before = process.env.XDG_DATA_HOME;
+	process.env.XDG_DATA_HOME = root;
+	t.after(async () => {
+		process.env.XDG_DATA_HOME = before;
+		await rm(root, { recursive: true, force: true });
+	});
+}
+
+test("a policy that has not been written yet stamps differently from one that has", async (t) => {
+	await dataDir(t);
+	assert.equal(await policyStamp("api-abc123"), "");
+	await writePolicy("api-abc123", { allow: [], mode: "enforce" });
+	assert.notEqual(await policyStamp("api-abc123"), "");
+});
+
+test("rewriting a policy with different hosts changes its stamp", async (t) => {
+	await dataDir(t);
+	await writePolicy("api-abc123", { allow: [], mode: "enforce" });
+	const before = await policyStamp("api-abc123");
+	await writePolicy("api-abc123", {
+		allow: ["example.com:443"],
+		mode: "enforce",
+	});
+	assert.notEqual(await policyStamp("api-abc123"), before);
+});
+
+test("writing a policy says whether it changed what was already on disk", async (t) => {
+	await dataDir(t);
+	const policy = { allow: ["example.com:443"], mode: "enforce" } as const;
+	assert.equal(await writePolicy("api-abc123", policy), true);
+	assert.equal(await writePolicy("api-abc123", policy), false);
+	assert.equal(
+		await writePolicy("api-abc123", { allow: [], mode: "enforce" }),
+		true,
 	);
 });

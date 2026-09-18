@@ -29,7 +29,11 @@ export interface LogEntry {
 export type Resolve = (host: string) => Promise<dns.LookupAddress[]>;
 
 export interface StartGatekeeperOptions {
-	policy: Policy;
+	/**
+	 * Read once per decision rather than captured, so a sandbox that is already
+	 * running decides on the policy on disk now, not the one it started with.
+	 */
+	policy: () => Policy;
 	/** Listen port. Defaults to 0, letting the OS assign one. */
 	port?: number;
 	log: (line: LogEntry) => void;
@@ -150,7 +154,7 @@ export async function startGatekeeper(
 			hostname,
 			port,
 		}: PrepareRequestFunctionOpts): PrepareRequestFunctionResult => {
-			const verdict = decide(policy, hostname, port);
+			const verdict = decide(policy(), hostname, port);
 			log({
 				time: new Date().toISOString(),
 				host: hostname,
