@@ -1,7 +1,8 @@
 # Plan
 
-Updated 2026-09-15. Design and reasoning are in `spec.md`; constraints that must
-not be inverted are in `AGENTS.md`. Update this when status changes.
+Updated 2026-09-17. Design and reasoning are in `spec.md`; constraints that must
+not be inverted are in `AGENTS.md`. The network fence's mechanism is in
+`docs/NETWORK.md`. Update this when status changes.
 
 ## Status
 
@@ -15,6 +16,7 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
 | `playpen.config.ts` masks, trust gate on config execution          | done, verified on host |
 | `image build`, base image + clone                                  | done, verified on host |
 | `completion bash\|zsh`, generated from the citty command tree      | done; zsh unverified   |
+| network fence (mechanism in `docs/NETWORK.md`)                     | done, see below        |
 
 ## Known problems
 
@@ -48,6 +50,28 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
   script is syntax-unchecked and untried.
 - No git identity or credentials in the guest; agents can commit, not push. Step
   2, and the only thing that blocks the core workflow.
+- The network fence's mechanism -- the namespace, the gatekeeper, the two socket
+  relays, the policy rules -- is described in `docs/NETWORK.md`, not here.
+  Proved end to end against a real Lima VM by `src/network/e2e.ts`, in a
+  container, on the probe template: boot behind the gatekeeper, `limactl shell`
+  over the control socket once Lima's own ssh master is killed, an allowed host
+  through tun2proxy and a denied one refused, the VM surviving a SIGKILLed
+  helper, a reattach restoring egress, and teardown on `limactl stop`. What that
+  run did not cover: `playpen start` itself, which reaches the fence through
+  `ensureRunning` and is only unit-tested with the fence module faked, and the
+  base image's tun2proxy unit, which the probe VM does not have (the e2e copies
+  the binary in and starts it by hand).
+- `destroy` still boots a stopped sandbox unfenced to archive Claude history. It
+  is about to be deleted, but for those seconds its egress is unfiltered.
+- `playpen stop` followed at once by `playpen start` can report "running" while
+  the VM is still shutting down: Lima's status and `qemu.pid` lag the stop for a
+  few seconds. Seen once in the container; the helper's record disappearing is
+  the reliable signal that the stop has finished.
+- The base's `claude code to be installed` readiness probe waits up to 600s for
+  `claude` even when a provision layer already failed loudly in
+  `cloud-init-output.log`, so a broken bake reports a timeout rather than its
+  cause. A probe that also fails when a provisioning marker is missing would fix
+  that.
 
 ## Next
 
@@ -141,10 +165,24 @@ bugs.
 - macOS: `doctor` crashes on missing `findmnt`/`lsattr`; `vmType` is hardcoded
   to `qemu` where `vz` + `virtiofs` is native; the bash completion script uses
   `mapfile`, which the bash 3.2 Apple ships does not have.
-- Idle auto-stop. Host-side egress filtering per `NETWORK.md`.
+- Idle auto-stop.
 - Preset bases, selected from `playpen.config.ts`; later, defined there. Needs a
   cap or a GC story first: bases share no extents with each other, so one image
   per project is one full copy per project.
+
+### 5. A measured built-in host list
+
+`BUILTIN_ALLOW` in `src/network/policy.ts` is a guess, and says so in its own
+comment. Replace it: run Claude Code against real projects on the maintainer's
+machine with `network.mode: "log"`, read the hosts it actually reached out of
+`gatekeeper.log`, then swap that list in for `BUILTIN_ALLOW` and drop the
+"guess" wording from its comment and from `docs/NETWORK.md`.
+
+### 6. `list` and `doctor` show fence state
+
+In progress on this branch, by another agent: `playpen list` gains a `NET`
+column and `playpen doctor` checks for `bwrap` and `socat`. Lands with this
+branch.
 
 ## Tests
 

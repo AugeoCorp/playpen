@@ -21,6 +21,20 @@ export function sandboxName(cwd: string): string {
 	return `${slug}-${hash}`;
 }
 
+const SANDBOX_NAME = /^[a-z0-9][a-z0-9-]*$/;
+
+/**
+ * The shape `sandboxName` produces, and the one every caller that joins a
+ * sandbox name into a path — later read, written, or unlinked at that path —
+ * must check first, so a stray `..` or `/` in the name cannot escape the
+ * directory it was joined into.
+ */
+export function assertSandboxName(name: string, what = "sandbox"): void {
+	if (!SANDBOX_NAME.test(name)) {
+		throw new Error(`invalid ${what} name: ${JSON.stringify(name)}`);
+	}
+}
+
 /** Prefixed so playpen never touches foreign instances. */
 export function instanceName(sandbox: string): string {
 	return `${INSTANCE_PREFIX}${sandbox}`;
