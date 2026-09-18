@@ -1,7 +1,7 @@
 import { basename, join, normalize } from "node:path";
 import { pathToFileURL } from "node:url";
 import { exists } from "../fs.ts";
-import { isHostname, isIpv4, isPort } from "../network/names.ts";
+import { parseEntry } from "../network/policy.ts";
 
 export const CONFIG_FILE = "playpen.config.ts";
 
@@ -17,10 +17,12 @@ export type NetworkMode = "enforce" | "log";
  * `allow` is matched by name: an entry is a hostname, optionally with a port,
  * and covers that name and everything under it — which is why `*.example.com`
  * is refused rather than read as a longer spelling of `example.com`. The name
- * is checked before it resolves, so a bare address normally matches nothing;
- * the two spellings that do are an IPv4 literal and `localhost:PORT`, where
- * the port is required so that one entry cannot reach every service listening
- * on your machine.
+ * is checked before it resolves, and it is only allowed to resolve to a public
+ * address, so a service on your machine or your LAN is reachable by address
+ * alone. The two spellings that name one are `localhost:PORT`, for your own
+ * machine, and an IPv4 literal, which may be a LAN address but never a
+ * loopback one. Both require the port, so that one entry cannot reach every
+ * service at an address.
  *
  * `mode: "log"` records verdicts and refuses nothing, for finding out what a
  * project reaches. It is never the default.
@@ -159,7 +161,9 @@ export function validateSetup(entries: readonly unknown[]): {
  * An entry names what the guest asks for, not what it ends up connecting to,
  * so anything that is not a name to compare against — a scheme, a path, a
  * wildcard — is dropped rather than guessed at. IPv6 literals are dropped for
- * the same reason and are simply not supported yet.
+ * the same reason and are simply not supported yet. `parseEntry` in
+ * network/policy.ts decides all of that, because it is also what matches a
+ * request: an entry that passes here cannot mean something else there.
  *
  * Shape problems — `allow` that is not an array, a `mode` that is neither
  * spelling — come back as `error` rather than as dropped entries: a `mode`
@@ -194,29 +198,15 @@ export function validateNetwork(raw: unknown): {
 			rejected.push(String(entry));
 			continue;
 		}
-		const host = entry.trim().toLowerCase();
-		if (!isAllowedHost(host)) {
+		const parsed = parseEntry(entry);
+		if (parsed === null) {
 			rejected.push(entry);
 			continue;
 		}
-		if (!accepted.includes(host)) accepted.push(host);
+		if (!accepted.includes(parsed.text)) accepted.push(parsed.text);
 	}
 
 	return { allow: accepted, mode: mode ?? "enforce", rejected };
-}
-
-function isAllowedHost(entry: string): boolean {
-	if (entry === "" || /[\s*/]/.test(entry)) return false;
-
-	const colon = entry.indexOf(":");
-	const host = colon === -1 ? entry : entry.slice(0, colon);
-	const port = colon === -1 ? null : entry.slice(colon + 1);
-	if (port !== null && (!/^\d{1,5}$/.test(port) || !isPort(Number(port)))) {
-		return false;
-	}
-
-	if (host === "localhost") return port !== null;
-	return isHostname(host) || isIpv4(host);
 }
 
 export async function hasLegacyIgnore(projectDir: string): Promise<boolean> {

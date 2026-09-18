@@ -170,6 +170,11 @@ already merged -- and a mode, and applies these rules to every `CONNECT`:
   to resolve to it, because the gatekeeper decides on the name, not the address.
   A bare IP address in the request that is not explicitly listed is refused (or
   reported, in log mode), the same as any other unlisted host.
+- **An IPv4 entry needs a port**, so one entry cannot open every service at an
+  address, and it may name a LAN address -- the database on your network is one
+  an operator can legitimately approve -- but never a loopback one, nor 0/8,
+  link-local or multicast. Since a name is only allowed to resolve to a public
+  address, a LAN service is reachable by its address and no other way.
 - **An address that is not a public one is refused in every mode**, listed or
   not: 0/8 (which Linux reads as loopback), 127/8, 169.254/16 with the cloud
   metadata service in it, the RFC1918 and CGNAT ranges, multicast, and 240/4.
@@ -182,8 +187,8 @@ already merged -- and a mode, and applies these rules to every `CONNECT`:
   name at all in log mode -- is a way to reach this machine's own loopback. IPv4
   only: a name with nothing but AAAA records is refused here.
 - **`localhost:PORT` in the config** is the one way to reach a service on the
-  host machine. The guest cannot ask for it directly: it has to `CONNECT` to the
-  literal name `host.playpen.internal`, which the gatekeeper maps to
+  host machine itself. The guest cannot ask for it directly: it has to `CONNECT`
+  to the literal name `host.playpen.internal`, which the gatekeeper maps to
   `127.0.0.1:PORT` only when a matching `localhost:PORT` entry exists. The port
   is required, so one entry cannot open every service on the host.
 - **The guest's own idea of loopback never reaches the gatekeeper** -- that

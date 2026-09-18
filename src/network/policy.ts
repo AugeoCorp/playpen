@@ -1,4 +1,10 @@
-import { isGlobalIpv4, isHostname, isIpv4, isPort } from "./names.ts";
+import {
+	isGlobalIpv4,
+	isHostname,
+	isIpv4,
+	isLanIpv4,
+	isPort,
+} from "./names.ts";
 
 /**
  * Pure allow/deny policy for outbound guest connections. No I/O: the
@@ -45,10 +51,13 @@ export type Verdict =
 	| { kind: "probe"; reason: string }
 	| { kind: "report"; target: { host: string; port: number }; reason: string };
 
-type Entry =
-	| { kind: "host"; host: string; port: number | null; raw: string }
-	| { kind: "ip"; host: string; port: number | null; raw: string }
-	| { kind: "local"; port: number; raw: string };
+/** `text` is the spelling the entry is stored and reported as, so the config
+ * file's own capitalization and trailing dots cannot make two entries out of
+ * one, or make a stored entry read differently from the one being matched. */
+export type Entry =
+	| { kind: "host"; host: string; port: number | null; text: string }
+	| { kind: "ip"; host: string; port: number; text: string }
+	| { kind: "local"; port: number; text: string };
 
 function normalizeRequestHost(hostname: string): string | null {
 	const host = hostname.trim().toLowerCase().replace(/\.$/, "");
@@ -56,9 +65,15 @@ function normalizeRequestHost(hostname: string): string | null {
 	return host;
 }
 
-/** A malformed entry is dropped rather than matched, so a policy assembled
- * from bad input denies instead of surprising. */
-function parseEntry(raw: string): Entry | null {
+/**
+ * The one reading of an allow-list entry: `validateNetwork` in
+ * session/projectconfig.ts drops whatever this rejects, so an entry can never
+ * pass validation and then match something else here.
+ *
+ * A malformed entry is dropped rather than matched, so a policy assembled from
+ * bad input denies instead of surprising.
+ */
+export function parseEntry(raw: string): Entry | null {
 	const entry = raw.trim().toLowerCase().replace(/\.$/, "");
 	const colon = entry.lastIndexOf(":");
 	const hostPart = colon === -1 ? entry : entry.slice(0, colon);
@@ -72,10 +87,23 @@ function parseEntry(raw: string): Entry | null {
 	}
 
 	if (hostPart === "localhost") {
-		return port === null ? null : { kind: "local", port, raw };
+		return port === null
+			? null
+			: { kind: "local", port, text: `localhost:${port}` };
 	}
-	if (isIpv4(hostPart)) return { kind: "ip", host: hostPart, port, raw };
-	if (isHostname(hostPart)) return { kind: "host", host: hostPart, port, raw };
+	if (isIpv4(hostPart)) {
+		// A port is required, so one entry cannot open every service at an
+		// address, and the address has to be somewhere other than this machine: a
+		// database on the LAN is an entry an operator may legitimately approve,
+		// loopback is never one.
+		const reachable = isGlobalIpv4(hostPart) || isLanIpv4(hostPart);
+		if (port === null || !reachable) return null;
+		return { kind: "ip", host: hostPart, port, text: `${hostPart}:${port}` };
+	}
+	if (isHostname(hostPart)) {
+		const text = port === null ? hostPart : `${hostPart}:${port}`;
+		return { kind: "host", host: hostPart, port, text };
+	}
 	return null;
 }
 
@@ -147,31 +175,29 @@ function decideTarget(
 	}
 
 	if (isIpv4(host)) {
+		const matched = entries.find(
+			(e) => e.kind === "ip" && e.host === host && e.port === port,
+		);
+		if (matched) {
+			return {
+				allowed: true,
+				target: { host, port },
+				reason: `ip literal ${host}:${port} is explicitly allowed`,
+			};
+		}
 		if (!isGlobalIpv4(host)) {
 			return {
 				allowed: false,
 				final: true,
 				target: { host, port },
-				reason: `${host} is not a public address; it is refused in every mode`,
+				reason: `${host} is not a public address and is not an allowed entry`,
 			};
 		}
-		const matched = entries.find(
-			(e) =>
-				e.kind === "ip" &&
-				e.host === host &&
-				(e.port === null || e.port === port),
-		);
-		return matched
-			? {
-					allowed: true,
-					target: { host, port },
-					reason: `ip literal ${host} is explicitly allowed`,
-				}
-			: {
-					allowed: false,
-					target: { host, port },
-					reason: `ip literal ${host} is not in the allow list`,
-				};
+		return {
+			allowed: false,
+			target: { host, port },
+			reason: `ip literal ${host} is not in the allow list`,
+		};
 	}
 
 	const matched = entries.find(
@@ -184,7 +210,7 @@ function decideTarget(
 		? {
 				allowed: true,
 				target: { host, port },
-				reason: `matches allow entry "${matched.raw}"`,
+				reason: `matches allow entry "${matched.text}"`,
 			}
 		: {
 				allowed: false,

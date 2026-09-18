@@ -46,19 +46,28 @@ test("a host:port entry still covers subdomains, at that port", () => {
 });
 
 test("an IPv4 entry allows only that exact address", () => {
-	const v = decide(enforcing(["93.184.216.34"]), "93.184.216.34", 443);
-	assert.equal(v.kind, "allow");
+	const allow = ["93.184.216.34:443"];
+	assert.equal(decide(enforcing(allow), "93.184.216.34", 443).kind, "allow");
+	assert.equal(decide(enforcing(allow), "93.184.216.35", 443).kind, "deny");
 });
 
-test("an IPv4 entry does not allow a different address", () => {
-	const v = decide(enforcing(["93.184.216.34"]), "93.184.216.35", 443);
-	assert.equal(v.kind, "deny");
-});
-
-test("an IPv4 entry with a port allows only that port", () => {
+test("an IPv4 entry allows only the port it names", () => {
 	const allow = ["93.184.216.34:443"];
 	assert.equal(decide(enforcing(allow), "93.184.216.34", 443).kind, "allow");
 	assert.equal(decide(enforcing(allow), "93.184.216.34", 80).kind, "deny");
+});
+
+test("an IPv4 entry without a port opens nothing, since the port is required", () => {
+	const allow = ["93.184.216.34"];
+	assert.equal(decide(enforcing(allow), "93.184.216.34", 443).kind, "deny");
+	assert.equal(decide(logging(allow), "93.184.216.34", 443).kind, "report");
+});
+
+test("a LAN address the project names is reachable, on that port alone", () => {
+	const allow = ["192.168.1.50:5432"];
+	assert.equal(decide(enforcing(allow), "192.168.1.50", 5432).kind, "allow");
+	assert.equal(decide(enforcing(allow), "192.168.1.50", 5433).kind, "deny");
+	assert.equal(decide(logging(allow), "192.168.1.50", 5433).kind, "deny");
 });
 
 test("a bare IP literal that is not listed is denied", () => {

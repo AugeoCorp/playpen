@@ -235,10 +235,30 @@ test("allows a hostname on its own or with a port", () => {
 	assert.deepEqual(r.rejected, []);
 });
 
-test("allows an IPv4 address, the one address form a project can name", () => {
-	const r = validateNetwork({ allow: ["10.0.0.1", "192.168.1.20:8080"] });
-	assert.deepEqual(r.allow, ["10.0.0.1", "192.168.1.20:8080"]);
+test("allows an IPv4 address with a port, the one address form a project can name", () => {
+	const r = validateNetwork({
+		allow: ["93.184.216.34:443", "192.168.1.50:5432"],
+	});
+	assert.deepEqual(r.allow, ["93.184.216.34:443", "192.168.1.50:5432"]);
 	assert.deepEqual(r.rejected, []);
+});
+
+test("rejects an IPv4 address with no port, which would open every service at it", () => {
+	const r = validateNetwork({ allow: ["93.184.216.34", "192.168.1.50"] });
+	assert.deepEqual(r.allow, []);
+	assert.deepEqual(r.rejected, ["93.184.216.34", "192.168.1.50"]);
+});
+
+test("rejects an address on this machine, however it is spelled", () => {
+	const r = validateNetwork({
+		allow: ["0.0.0.0:22", "127.0.0.2:80", "169.254.169.254:80"],
+	});
+	assert.deepEqual(r.allow, []);
+	assert.deepEqual(r.rejected, [
+		"0.0.0.0:22",
+		"127.0.0.2:80",
+		"169.254.169.254:80",
+	]);
 });
 
 test("allows localhost only with a port, never all of its ports at once", () => {
@@ -281,15 +301,20 @@ test("rejects a name with no dot in it", () => {
 
 test("rejects a name with an empty label or a label edged by a hyphen", () => {
 	const r = validateNetwork({
-		allow: [".example.com", "example.com.", "-bad.example.com", "bad-.com"],
+		allow: [".example.com", "-bad.example.com", "bad-.com"],
 	});
 	assert.deepEqual(r.allow, []);
 	assert.deepEqual(r.rejected, [
 		".example.com",
-		"example.com.",
 		"-bad.example.com",
 		"bad-.com",
 	]);
+});
+
+test("keeps a name with a trailing dot, as the one name it also is when matched", () => {
+	const r = validateNetwork({ allow: ["example.com.", "example.com"] });
+	assert.deepEqual(r.allow, ["example.com"]);
+	assert.deepEqual(r.rejected, []);
 });
 
 test("rejects a name longer than 253 characters", () => {
