@@ -252,6 +252,118 @@ test("an allowed name that resolves onto this machine is refused, and the refusa
 	assert.match(entries[1]?.reason ?? "", /127\.0\.0\.1/);
 });
 
+test("a name entry with a port may resolve inside and reach it, banner first", async (t) => {
+	const localPort = await bannerServer(t);
+	const resolver = resolverFor("127.0.0.1");
+	const gatekeeper = await startGatekeeper({
+		policy: () => ({
+			allow: [`internal.example:${localPort}`],
+			mode: "enforce",
+		}),
+		log: () => {},
+		resolve: resolver.resolve,
+	});
+	t.after(() => gatekeeper.close());
+
+	const { status, socket, afterHeaders } = await connectRaw(
+		t,
+		gatekeeper.port,
+		`internal.example:${localPort}`,
+	);
+	assert.match(status, / 200 /);
+
+	const banner = await readAtLeast(socket, afterHeaders, "banner\r\n".length);
+	assert.equal(banner.toString(), "banner\r\n");
+});
+
+test("the same name without a port in the entry still may not resolve inside", async (t) => {
+	const localPort = await bannerServer(t);
+	const resolver = resolverFor("127.0.0.1");
+	const entries: Array<{ verdict: string; reason: string }> = [];
+	const gatekeeper = await startGatekeeper({
+		policy: () => ({ allow: ["internal.example"], mode: "enforce" }),
+		log: (line) => entries.push(line),
+		resolve: resolver.resolve,
+	});
+	t.after(() => gatekeeper.close());
+
+	const status = await connectStatus(
+		t,
+		gatekeeper.port,
+		`internal.example:${localPort}`,
+	);
+	assert.equal(status, "closed");
+	assert.deepEqual(
+		entries.map((e) => e.verdict),
+		["allow", "deny"],
+	);
+	assert.match(entries[1]?.reason ?? "", /not a public address/);
+});
+
+test("a ported name entry may still not resolve to link-local, cloud metadata included", async (t) => {
+	const resolver = resolverFor("169.254.169.254");
+	const entries: Array<{ verdict: string; reason: string }> = [];
+	const gatekeeper = await startGatekeeper({
+		policy: () => ({ allow: ["internal.example:8080"], mode: "enforce" }),
+		log: (line) => entries.push(line),
+		resolve: resolver.resolve,
+	});
+	t.after(() => gatekeeper.close());
+
+	const status = await connectStatus(
+		t,
+		gatekeeper.port,
+		"internal.example:8080",
+	);
+	assert.equal(status, "closed");
+	assert.deepEqual(
+		entries.map((e) => e.verdict),
+		["allow", "deny"],
+	);
+	assert.match(entries[1]?.reason ?? "", /not a reachable address/);
+});
+
+test("a ported name entry is dispatched to resolution rather than refused outright, which is what lets a LAN address through", async (t) => {
+	const asked: string[] = [];
+	let notify: () => void = () => {};
+	const ready = new Promise<void>((r) => {
+		notify = r;
+	});
+	const entries: Array<{ verdict: string; reason: string }> = [];
+	const gatekeeper = await startGatekeeper({
+		policy: () => ({ allow: ["internal.example:5432"], mode: "enforce" }),
+		log: (line) => entries.push(line),
+		// Records the ask and then never settles, so the gatekeeper is never
+		// handed a real address to dial: this sandbox has no route to a LAN
+		// address, and net.connect does not fail fast on one, it hangs. Whether
+		// 192.168.1.50 itself clears the filter is names.test.ts's job
+		// (isReachableIpv4), which is the same check this path runs.
+		resolve: async (host) => {
+			asked.push(host);
+			notify();
+			return new Promise(() => {});
+		},
+	});
+	t.after(() => gatekeeper.close());
+
+	const socket = net.connect(gatekeeper.port, "127.0.0.1");
+	t.after(() => socket.destroy());
+	socket.on("error", () => {});
+	socket.once("connect", () => {
+		socket.write(
+			"CONNECT internal.example:5432 HTTP/1.1\r\nHost: internal.example:5432\r\n\r\n",
+		);
+	});
+
+	await ready;
+
+	assert.deepEqual(asked, ["internal.example"]);
+	assert.deepEqual(
+		entries.map((e) => e.verdict),
+		["allow"],
+	);
+});
+
 test("in log mode, an unlisted name is reported rather than refused, and still cannot land on this machine", async (t) => {
 	const resolver = resolverFor("127.0.0.1");
 	const entries: Array<{ verdict: string; reason: string }> = [];

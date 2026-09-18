@@ -87,11 +87,13 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
   inferred from a lockfile. `playpen setup` re-runs it.
 - `network.allow` is a list of names, not addresses: an entry is a hostname,
   optionally with a port, and covers that name and everything under it, so
-  `*.example.com` is rejected — `example.com` already says it. A name is only
-  allowed to resolve to a public address. An IPv4 literal is the one address you
-  can name: it needs a port, it may be on your LAN, and it is never a loopback
-  one. `localhost:PORT` is a service on your own machine, and the port is
-  required there too.
+  `*.example.com` is rejected — `example.com` already says it. Named with a
+  port, it may resolve inside — to loopback or a LAN address — on that port
+  alone; named without one, it must resolve to a public address. Link-local
+  addresses and the 0.0.0.0 spelling of loopback are never reached either way.
+  An IPv4 literal is the other address you can name: it needs a port, it may be
+  on your LAN, and it is never a loopback one. `localhost:PORT` is a service on
+  your own machine, and the port is required there too.
 - `mode: "log"` records what the sandbox reaches and blocks nothing on the
   internet side; your own machine's localhost stays closed in every mode. Use it
   to find the hosts a project needs, then list them; the default is `enforce`.

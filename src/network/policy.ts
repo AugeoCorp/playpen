@@ -1,9 +1,9 @@
 import {
-	isGlobalIpv4,
 	isHostname,
 	isIpv4,
 	isLanIpv4,
 	isPort,
+	isPublicIpv4,
 } from "./names.ts";
 
 /**
@@ -55,11 +55,29 @@ export interface Policy {
 	mode: "enforce" | "log";
 }
 
+/**
+ * What the matched entry permits a resolved name to dial: `"public"` for a
+ * port-less entry, `"any"` for one with a port -- which still excludes
+ * link-local, 0.0.0.0/8, multicast and the reserved range; see
+ * `isReachableIpv4` in names.ts.
+ */
+export type Reach = "public" | "any";
+
 export type Verdict =
-	| { kind: "allow"; target: { host: string; port: number }; reason: string }
+	| {
+			kind: "allow";
+			target: { host: string; port: number };
+			reach: Reach;
+			reason: string;
+	  }
 	| { kind: "deny"; reason: string }
 	| { kind: "probe"; reason: string }
-	| { kind: "report"; target: { host: string; port: number }; reason: string };
+	| {
+			kind: "report";
+			target: { host: string; port: number };
+			reach: Reach;
+			reason: string;
+	  };
 
 /** `text` is the spelling the entry is stored and reported as, so the config
  * file's own capitalization and trailing dots cannot make two entries out of
@@ -106,7 +124,7 @@ export function parseEntry(raw: string): Entry | null {
 		// address, and the address has to be somewhere other than this machine: a
 		// database on the LAN is an entry an operator may legitimately approve,
 		// loopback is never one.
-		const reachable = isGlobalIpv4(hostPart) || isLanIpv4(hostPart);
+		const reachable = isPublicIpv4(hostPart) || isLanIpv4(hostPart);
 		if (port === null || !reachable) return null;
 		return { kind: "ip", host: hostPart, port, text: `${hostPart}:${port}` };
 	}
@@ -128,6 +146,11 @@ function decideTarget(
 ): {
 	allowed: boolean;
 	target: { host: string; port: number };
+	/**
+	 * Unused where `target.host` is already an address (the alias mapping, an
+	 * IP-literal entry): those dial it directly and never resolve a name.
+	 */
+	reach: Reach;
 	reason: string;
 	/** Refused in every mode: log mode opens the internet, never this machine. */
 	final?: true;
@@ -143,6 +166,7 @@ function decideTarget(
 			allowed: false,
 			final: true,
 			target: { host: hostname, port },
+			reach: "public",
 			reason: `cannot parse host "${hostname}" or port ${port}`,
 		};
 	}
@@ -152,6 +176,7 @@ function decideTarget(
 			allowed: false,
 			probe: true,
 			target: { host, port },
+			reach: "public",
 			reason: `${PROBE_HOST} is the fence's own liveness check; nothing is dialed`,
 		};
 	}
@@ -162,12 +187,14 @@ function decideTarget(
 			? {
 					allowed: true,
 					target: { host: "127.0.0.1", port },
+					reach: "public",
 					reason: `${HOST_ALIAS}:${port} maps to 127.0.0.1 via a localhost:${port} entry`,
 				}
 			: {
 					allowed: false,
 					final: true,
 					target: { host: "127.0.0.1", port },
+					reach: "public",
 					reason: `${HOST_ALIAS}:${port} has no matching localhost:${port} entry`,
 				};
 	}
@@ -180,6 +207,7 @@ function decideTarget(
 			allowed: false,
 			final: true,
 			target: { host, port },
+			reach: "public",
 			reason: `${host} is refused; use ${HOST_ALIAS} to reach the host's loopback`,
 		};
 	}
@@ -192,20 +220,23 @@ function decideTarget(
 			return {
 				allowed: true,
 				target: { host, port },
+				reach: "public",
 				reason: `ip literal ${host}:${port} is explicitly allowed`,
 			};
 		}
-		if (!isGlobalIpv4(host)) {
+		if (!isPublicIpv4(host)) {
 			return {
 				allowed: false,
 				final: true,
 				target: { host, port },
+				reach: "public",
 				reason: `${host} is not a public address and is not an allowed entry`,
 			};
 		}
 		return {
 			allowed: false,
 			target: { host, port },
+			reach: "public",
 			reason: `ip literal ${host} is not in the allow list`,
 		};
 	}
@@ -220,11 +251,15 @@ function decideTarget(
 		? {
 				allowed: true,
 				target: { host, port },
+				// A port on the entry is what opens loopback and LAN, mirroring an
+				// address entry that names one of them directly with a port.
+				reach: matched.port === null ? "public" : "any",
 				reason: `matches allow entry "${matched.text}"`,
 			}
 		: {
 				allowed: false,
 				target: { host, port },
+				reach: "public",
 				reason: `${host} is not in the allow list`,
 			};
 }
@@ -234,14 +269,14 @@ export function decide(
 	hostname: string,
 	port: number,
 ): Verdict {
-	const { allowed, target, reason, final, probe } = decideTarget(
+	const { allowed, target, reach, reason, final, probe } = decideTarget(
 		policy,
 		hostname,
 		port,
 	);
 	if (probe) return { kind: "probe", reason };
-	if (allowed) return { kind: "allow", target, reason };
+	if (allowed) return { kind: "allow", target, reach, reason };
 	if (policy.mode === "log" && !final)
-		return { kind: "report", target, reason };
+		return { kind: "report", target, reach, reason };
 	return { kind: "deny", reason };
 }

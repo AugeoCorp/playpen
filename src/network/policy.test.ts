@@ -15,8 +15,31 @@ test("a bare hostname entry allows the host itself", () => {
 	assert.deepEqual(v, {
 		kind: "allow",
 		target: { host: "github.com", port: 443 },
+		reach: "public",
 		reason: 'matches allow entry "github.com"',
 	});
+});
+
+test("a bare hostname entry's reach is public only: it may not resolve inside", () => {
+	const v = decide(enforcing(["github.com"]), "github.com", 443);
+	assert.equal(v.kind, "allow");
+	assert.equal(v.reach, "public");
+});
+
+test("a host:port entry's reach is any: it may resolve to loopback or a LAN address", () => {
+	const v = decide(
+		enforcing(["internal.foo.com:8080"]),
+		"internal.foo.com",
+		8080,
+	);
+	assert.equal(v.kind, "allow");
+	assert.equal(v.reach, "any");
+});
+
+test("an unlisted name in log mode is reported with reach public, same as a bare entry", () => {
+	const v = decide(logging([]), "unlisted.example", 443);
+	assert.equal(v.kind, "report");
+	assert.equal(v.reach, "public");
 });
 
 test("a bare hostname entry allows any subdomain", () => {
@@ -125,6 +148,7 @@ test("host.playpen.internal is allowed and mapped to 127.0.0.1 when its port has
 	assert.deepEqual(v, {
 		kind: "allow",
 		target: { host: "127.0.0.1", port: 9001 },
+		reach: "public",
 		reason: `${HOST_ALIAS}:9001 maps to 127.0.0.1 via a localhost:9001 entry`,
 	});
 });
@@ -169,6 +193,7 @@ test("in log mode, a host that would be denied is reported and allowed instead",
 	assert.deepEqual(v, {
 		kind: "report",
 		target: { host: "example.com", port: 443 },
+		reach: "public",
 		reason: "example.com is not in the allow list",
 	});
 });

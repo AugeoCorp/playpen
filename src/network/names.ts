@@ -30,24 +30,46 @@ export function isPort(port: number): boolean {
 }
 
 /**
- * The addresses a name is allowed to resolve to, and the ones a bare literal
- * request may name: everything outside this machine, the networks it is on,
- * and the ranges the kernel treats specially (0/8, which Linux reads as
- * loopback, 127/8, 169.254/16, the RFC1918 and CGNAT ranges, multicast and
- * the reserved 240/4 with 255.255.255.255 in it).
+ * Never dialed, no matter what named it or what port an entry carries: a
+ * cloud metadata service hands out credentials on link-local (169.254/16),
+ * and 0.0.0.0/8 is a spelling Linux itself reads as loopback rather than a
+ * real destination. Multicast (224/4) and the reserved 240/4 block, including
+ * 255.255.255.255, are never a real single host either.
  */
-export function isGlobalIpv4(host: string): boolean {
-	if (!isIpv4(host)) return false;
+function isNeverDialedIpv4(host: string): boolean {
 	const [a = 0, b = 0] = host.split(".").map(Number);
-	if (a === 0 || a === 127 || a >= 224) return false;
-	if (a === 169 && b === 254) return false;
+	if (a === 0 || a >= 224) return true;
+	return a === 169 && b === 254;
+}
+
+/**
+ * A port-less allow entry's reach, and the address a bare IPv4 literal in a
+ * request must be: everything outside this machine and the networks it is
+ * on.
+ */
+export function isPublicIpv4(host: string): boolean {
+	if (!isIpv4(host)) return false;
+	const [a = 0] = host.split(".").map(Number);
+	if (a === 127) return false;
+	if (isNeverDialedIpv4(host)) return false;
 	return !isLanIpv4(host);
+}
+
+/**
+ * A ported allow entry's reach: public, this machine's own loopback
+ * (127/8), or a LAN/CGNAT address -- the same addresses an entry naming one
+ * of them directly, with a port, may already dial.
+ */
+export function isReachableIpv4(host: string): boolean {
+	if (!isIpv4(host)) return false;
+	return !isNeverDialedIpv4(host);
 }
 
 /**
  * The private ranges an operator may point an allow entry at -- RFC1918 plus
  * CGNAT. Not reachable from the internet, but not this machine either: a
- * database on the LAN lives here.
+ * database on the LAN lives here. Also part of what a ported name entry may
+ * resolve to; see `isReachableIpv4`.
  */
 export function isLanIpv4(host: string): boolean {
 	if (!isIpv4(host)) return false;

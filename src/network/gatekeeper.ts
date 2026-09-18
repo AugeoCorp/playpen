@@ -5,8 +5,8 @@ import type {
 	PrepareRequestFunctionResult,
 } from "proxy-chain";
 import { RequestError, Server } from "proxy-chain";
-import { isGlobalIpv4, isIpv4 } from "./names.ts";
-import type { Policy } from "./policy.ts";
+import { isIpv4, isPublicIpv4, isReachableIpv4 } from "./names.ts";
+import type { Policy, Reach } from "./policy.ts";
 import { decide } from "./policy.ts";
 
 export interface Gatekeeper {
@@ -71,21 +71,25 @@ const systemResolver: Resolve = (host) =>
 	dns.promises.lookup(host, { all: true });
 
 /**
- * Resolves `host` and hands `net.connect` only the addresses the policy would
- * have allowed as literals, so a name cannot be the way to an address a
- * request for it would have been refused. IPv6 is left out entirely: the fence
- * has no answer for it yet, so a name with only AAAA records fails here.
+ * Resolves `host` and hands `net.connect` only the addresses the matched
+ * entry's reach permits: a public address for a port-less entry, or
+ * additionally this machine's loopback and a LAN/CGNAT address for one
+ * matched with a port -- so a name cannot be the way to an address a request
+ * for it would have been refused. IPv6 is left out entirely: the fence has no
+ * answer for it yet, so a name with only AAAA records fails here.
  *
  * Failing the lookup is what refuses the connection -- proxy-chain closes the
  * tunnel rather than answering it -- so the refusal is logged from in here.
  * The verdict line for this connection has already been written by then.
  */
-function lookupGlobal(
+function lookupReachable(
 	host: string,
 	port: number,
+	reach: Reach,
 	resolve: Resolve,
 	log: (line: LogEntry) => void,
 ): typeof dns.lookup {
+	const isAllowed = reach === "any" ? isReachableIpv4 : isPublicIpv4;
 	const refuse = (reason: string): Error => {
 		log({
 			time: new Date().toISOString(),
@@ -108,21 +112,25 @@ function lookupGlobal(
 	): void => {
 		resolve(host).then(
 			(addresses) => {
-				const global = addresses.filter(
-					(a) => a.family === 4 && isGlobalIpv4(a.address),
+				const matching = addresses.filter(
+					(a) => a.family === 4 && isAllowed(a.address),
 				);
-				const first = global[0];
+				const first = matching[0];
 				if (first === undefined) {
 					const found = addresses.map((a) => a.address).join(", ");
+					const rule =
+						reach === "any"
+							? "not a reachable address"
+							: "not a public address";
 					callback(
 						refuse(
-							`${host} resolves to ${found === "" ? "no IPv4 address" : found}, which is not a public address`,
+							`${host} resolves to ${found === "" ? "no IPv4 address" : found}, which is ${rule}`,
 						),
 						[],
 					);
 					return;
 				}
-				if (options.all) callback(null, global);
+				if (options.all) callback(null, matching);
 				else callback(null, first.address, 4);
 			},
 			(err: unknown) => {
@@ -169,10 +177,16 @@ export async function startGatekeeper(
 			// The target's host, not the one the request spelled: the two differ in
 			// case, in a trailing dot, and wherever the policy mapped the name to an
 			// address of its own.
-			const target = verdict.target;
+			const { target, reach } = verdict;
 			if (isIpv4(target.host)) return { dnsLookup: lookupAt(target.host) };
 			return {
-				dnsLookup: lookupGlobal(target.host, target.port, resolve, log),
+				dnsLookup: lookupReachable(
+					target.host,
+					target.port,
+					reach,
+					resolve,
+					log,
+				),
 			};
 		},
 	});

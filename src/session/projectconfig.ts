@@ -17,12 +17,13 @@ export type NetworkMode = "enforce" | "log";
  * `allow` is matched by name: an entry is a hostname, optionally with a port,
  * and covers that name and everything under it — which is why `*.example.com`
  * is refused rather than read as a longer spelling of `example.com`. The name
- * is checked before it resolves, and it is only allowed to resolve to a public
- * address, so a service on your machine or your LAN is reachable by address
- * alone. The two spellings that name one are `localhost:PORT`, for your own
- * machine, and an IPv4 literal, which may be a LAN address but never a
- * loopback one. Both require the port, so that one entry cannot reach every
- * service at an address.
+ * is checked before it resolves. Named with a port, it may resolve inside —
+ * to this machine's own loopback or a LAN address — on that port alone;
+ * named without one, it must resolve to a public address, on any port. An
+ * IPv4 literal is the other way to name a LAN address directly, and it too
+ * needs a port, so that one entry cannot reach every service at an address.
+ * Link-local addresses and the 0.0.0.0 spelling of loopback are never
+ * reached, port or not.
  *
  * `mode: "log"` records verdicts and refuses nothing, for finding out what a
  * project reaches. It is never the default.

@@ -184,24 +184,36 @@ already merged -- and a mode, and applies these rules to every `CONNECT`:
 - **An IPv4 entry needs a port**, so one entry cannot open every service at an
   address, and it may name a LAN address -- the database on your network is one
   an operator can legitimately approve -- but never a loopback one, nor 0/8,
-  link-local or multicast. Since a name is only allowed to resolve to a public
-  address, a LAN service is reachable by its address and no other way.
+  link-local or multicast. A ported name entry can reach the same kind of
+  address too, if its DNS happens to answer there; see the next rule.
 - **An address that is not a public one is refused in every mode**, listed or
-  not: 0/8 (which Linux reads as loopback), 127/8, 169.254/16 with the cloud
-  metadata service in it, the RFC1918 and CGNAT ranges, multicast, and 240/4.
-  This machine and the networks it sits on are not what log mode opens.
-- **An allowed name may only resolve to a public address.** The gatekeeper
-  resolves the name it decided on and dials only the addresses that a request
-  naming them literally would have been allowed to name; if none are left, the
-  tunnel is closed and a second log line records the address that was refused.
-  Without this, any name whose DNS the operator does not control -- and every
-  name at all in log mode -- is a way to reach this machine's own loopback. IPv4
-  only: a name with nothing but AAAA records is refused here.
-- **`localhost:PORT` in the config** is the one way to reach a service on the
-  host machine itself. The guest cannot ask for it directly: it has to `CONNECT`
-  to the literal name `host.playpen.internal`, which the gatekeeper maps to
-  `127.0.0.1:PORT` only when a matching `localhost:PORT` entry exists. The port
-  is required, so one entry cannot open every service on the host.
+  not, when the guest's request names it directly: 0/8 (which Linux reads as
+  loopback), 127/8, 169.254/16 with the cloud metadata service in it, the
+  RFC1918 and CGNAT ranges, multicast, and 240/4. This machine and the networks
+  it sits on are not what log mode opens.
+- **A name's port decides how far it may resolve, mirroring an address entry.**
+  Named with a port, an entry matches only that port, and the name may resolve
+  to a public address, this machine's own loopback, or a LAN or CGNAT address --
+  the same reach a `localhost:PORT` or LAN-address entry already has once it
+  names one directly. Named without one, it may only resolve to a public
+  address, on any port -- today's rule, kept because nothing pins that name's
+  DNS to a port an operator chose. Either way, a link-local address and the
+  0.0.0.0 spelling of loopback are never dialed: link-local is where a cloud
+  metadata service hands out credentials, and 0.0.0.0 is only a strange spelling
+  of loopback. The gatekeeper resolves the name it decided on and dials only the
+  addresses its reach permits; if none are left, the tunnel is closed and a
+  second log line records the address that was refused, and why: not public, or
+  not reachable at all. Without the port-less rule, any name whose DNS the
+  operator does not control -- and every name at all in log mode, which has no
+  entry to carry a port -- would be a way to reach this machine's own loopback.
+  IPv4 only: a name with nothing but AAAA records is refused here.
+- **`localhost:PORT` in the config** is the deliberate, explicit way to reach a
+  service on the host machine itself, and the only one that does not depend on
+  some other name's DNS happening to answer there. The guest cannot ask for it
+  directly: it has to `CONNECT` to the literal name `host.playpen.internal`,
+  which the gatekeeper maps to `127.0.0.1:PORT` only when a matching
+  `localhost:PORT` entry exists. The port is required, so one entry cannot open
+  every service on the host.
 - **The guest's own idea of loopback never reaches the gatekeeper** -- that
   traffic stays inside the guest. A `CONNECT` that literally names `localhost`
   or `127.0.0.1` is therefore read as an attempt to reach the _host's_ loopback
