@@ -144,8 +144,10 @@ export async function loadTrustedConfig(
 	const skipped = (state: TrustState, error?: string): TrustedConfig => ({
 		masked: [],
 		setup: [],
+		network: { allow: [], mode: "enforce" },
 		rejected: [],
 		rejectedSetup: [],
+		rejectedNetwork: [],
 		legacyIgnore,
 		state,
 		loaded: false,
