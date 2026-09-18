@@ -137,6 +137,12 @@ function build(
 		// Inheriting _default/mounts instead would add a read-only host home.
 		base: [def.distro.baseTemplate],
 		vmType: "qemu",
+		// Lima defaults this to true and copies the host's proxy variables into
+		// the guest, rewriting localhost to the guest's host address. The host's
+		// proxy is not reachable from inside the fence, and the guest reaches out
+		// through a route rather than a setting, so a copied variable can only
+		// point programs at something that is not there.
+		propagateProxyEnv: false,
 		cpus: opts.cpus,
 		memory: opts.memory,
 		disk: opts.disk,
