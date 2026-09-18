@@ -191,22 +191,18 @@ already merged -- and a mode, and applies these rules to every `CONNECT`:
   loopback), 127/8, 169.254/16 with the cloud metadata service in it, the
   RFC1918 and CGNAT ranges, multicast, and 240/4. This machine and the networks
   it sits on are not what log mode opens.
-- **A name's port decides how far it may resolve, mirroring an address entry.**
-  Named with a port, an entry matches only that port, and the name may resolve
-  to a public address, this machine's own loopback, or a LAN or CGNAT address --
-  the same reach a `localhost:PORT` or LAN-address entry already has once it
-  names one directly. Named without one, it may only resolve to a public
-  address, on any port -- today's rule, kept because nothing pins that name's
-  DNS to a port an operator chose. Either way, a link-local address and the
-  0.0.0.0 spelling of loopback are never dialed: link-local is where a cloud
-  metadata service hands out credentials, and 0.0.0.0 is only a strange spelling
-  of loopback. The gatekeeper resolves the name it decided on and dials only the
-  addresses its reach permits; if none are left, the tunnel is closed and a
-  second log line records the address that was refused, and why: not public, or
-  not reachable at all. Without the port-less rule, any name whose DNS the
-  operator does not control -- and every name at all in log mode, which has no
-  entry to carry a port -- would be a way to reach this machine's own loopback.
-  IPv4 only: a name with nothing but AAAA records is refused here.
+- **A name's port decides how far it may resolve.** Named with a port, an entry
+  matches only that port, and the name may resolve to a public address, this
+  machine's loopback, or a LAN address: the same reach an address entry with a
+  port already has. Named without one, it must resolve to a public address. The
+  port is what makes the difference: an entry like `internal.foo.com:8080` is as
+  deliberate as `localhost:8080`, while a bare name's DNS is the domain owner's
+  to change, so it is never let inside. Either way, link-local (where a cloud
+  metadata service hands out credentials) and the `0.0.0.0` spelling of loopback
+  are never dialed. The gatekeeper resolves the name it decided on, dials only
+  what its reach permits, and when nothing is left closes the tunnel and logs a
+  second line naming the refused address. IPv4 only: a name with nothing but
+  AAAA records is refused.
 - **`localhost:PORT` in the config** is the deliberate, explicit way to reach a
   service on the host machine itself, and the only one that does not depend on
   some other name's DNS happening to answer there. The guest cannot ask for it
