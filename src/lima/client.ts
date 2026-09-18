@@ -70,6 +70,11 @@ export async function get(name: string): Promise<Instance | null> {
 	return (await list()).find((i) => i.name === name) ?? null;
 }
 
+/**
+ * Only used to bake a base. A healthy bake takes ~75s with KVM, ~10 minutes
+ * without; `--timeout` is what ends one whose provisioning has failed, so it
+ * is not raised any further than that.
+ */
 export async function createAndStart(
 	name: string,
 	templatePath: string,
@@ -79,6 +84,7 @@ export async function createAndStart(
 		"start",
 		`--name=${name}`,
 		"--tty=false",
+		"--timeout=20m",
 		templatePath,
 	]);
 	if (code !== 0)

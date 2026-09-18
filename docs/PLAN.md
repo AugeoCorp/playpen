@@ -63,6 +63,11 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
   the binary in and starts it by hand).
 - `destroy` still boots a stopped sandbox unfenced to archive Claude history. It
   is about to be deleted, but for those seconds its egress is unfiltered.
+- The base's `claude code to be installed` readiness probe waits up to 600s for
+  `claude` even when a provision layer already failed loudly in
+  `cloud-init-output.log`, so a broken bake reports a timeout rather than its
+  cause. A probe that also fails when a provisioning marker is missing would fix
+  that.
 
 ## Next
 

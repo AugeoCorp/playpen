@@ -19,7 +19,13 @@ import { exists } from "../fs.ts";
 import * as lima from "../lima/client.ts";
 import { instanceName } from "../session/identity.ts";
 import { capture } from "../sh.ts";
-import { bringUp, fencePaths, fenceStatus, liveHelper } from "./fence.ts";
+import {
+	bringUp,
+	fencePaths,
+	fenceStatus,
+	liveHelper,
+	removeSocket,
+} from "./fence.ts";
 import type { LogEntry } from "./gatekeeper.ts";
 import { BUILTIN_ALLOW } from "./policy.ts";
 
@@ -30,6 +36,20 @@ const tun2proxy = process.env.PLAYPEN_E2E_TUN2PROXY ?? "";
 const allowedHost = process.env.PLAYPEN_E2E_ALLOWED ?? "nodejs.org";
 const deniedHost = process.env.PLAYPEN_E2E_DENIED ?? "example.com";
 const paths = fencePaths(sandbox);
+
+/**
+ * Argv substrings that identify a process as belonging to this sandbox's
+ * fence: the outside relay and the two inside socats all name `paths.egress`
+ * or `paths.control` on their command line, and `__net-inside` names the
+ * sandbox itself. A SIGKILLed helper leaves these orphaned with no other
+ * record of them, so this is how a later step finds and kills them without
+ * touching another sandbox's fence.
+ */
+const LEFTOVER_PATTERNS = [
+	paths.egress,
+	paths.control,
+	`__net-inside ${sandbox} `,
+];
 
 /**
  * `-k` because this container's own egress is TLS-intercepted, so the
@@ -128,35 +148,70 @@ async function main(): Promise<void> {
 	}
 	console.log(`sandbox ${sandbox} (${instance}), runtime dir ${paths.dir}`);
 
-	console.log("\n1. the sandbox comes up behind the gatekeeper");
-	if (!(await step("the instance exists", createIfMissing))) return;
-	if (!(await step("the helper reports it ready", startFenced))) return;
+	try {
+		console.log("\n1. the sandbox comes up behind the gatekeeper");
+		if (!(await step("the instance exists", createIfMissing))) return;
+		if (!(await step("the helper reports it ready", startFenced))) return;
 
-	console.log("\n2. reaching the guest from outside the fence");
-	await step("limactl shell works over Lima's own socket", overLimaSocket);
-	await step(
-		"and still works once that socket's master is killed",
-		overControl,
-	);
+		console.log("\n2. reaching the guest from outside the fence");
+		await step("limactl shell works over Lima's own socket", overLimaSocket);
+		await step(
+			"and still works once that socket's master is killed",
+			overControl,
+		);
 
-	console.log("\n3. what the guest can reach");
-	await step("tun2proxy routes the guest at the gatekeeper", startTun2proxy);
-	await step(`${allowedHost} answers through the chain`, allowedAnswers);
-	await step(`${deniedHost} is refused`, deniedRefused);
-	await step("a raw socket with no proxy setting gets out", rawSocket);
-	await step("the gatekeeper logged both verdicts", bothVerdicts);
+		console.log("\n3. what the guest can reach");
+		await step("tun2proxy routes the guest at the gatekeeper", startTun2proxy);
+		await step(`${allowedHost} answers through the chain`, allowedAnswers);
+		await step(`${deniedHost} is refused`, deniedRefused);
+		await step("a raw socket with no proxy setting gets out", rawSocket);
+		await step("the gatekeeper logged both verdicts", bothVerdicts);
 
-	console.log("\n4. killing the helper");
-	await step("the VM survives it, still fenced", helperKilled);
-	await step("with no way out until a helper comes back", noEgress);
-	await step("and a new helper reattaches to it", reattach);
-	await step(`${allowedHost} answers again`, allowedAnswers);
+		console.log("\n4. killing the helper");
+		await step("the VM survives it, still fenced", helperKilled);
+		await step("with no way out until a helper comes back", noEgress);
+		await step("and a new helper reattaches to it", reattach);
+		await step(`${allowedHost} answers again`, allowedAnswers);
 
-	console.log("\n5. stopping the VM from outside");
-	await step("the helper tears the fence down and exits", stopped);
+		console.log("\n5. stopping the VM from outside");
+		await step("the helper tears the fence down and exits", stopped);
+	} finally {
+		console.log("\n6. leftover processes for this sandbox");
+		await step(
+			"no socat or __net-inside process left running",
+			noLeftoverProcesses,
+		);
+	}
 
 	console.log(`\n${passed} passed, ${failed} failed`);
 	process.exitCode = failed === 0 ? 0 : 1;
+}
+
+async function running(pattern: string): Promise<boolean> {
+	const { stdout } = await capture("pgrep", ["-f", pattern]);
+	return stdout.trim() !== "";
+}
+
+/** Best effort, like `removeSocket`: a process already gone is the outcome wanted. */
+async function killLeftovers(): Promise<void> {
+	for (const pattern of LEFTOVER_PATTERNS)
+		await capture("pkill", ["-9", "-f", pattern]);
+	await removeSocket(paths.egress);
+	await removeSocket(paths.control);
+}
+
+/**
+ * Runs on every exit path, including a failed step: the reattach in section 4
+ * leaves the killed run's inside socats holding the fence's sockets, and a
+ * thrown step would otherwise skip cleanup entirely.
+ */
+async function noLeftoverProcesses(): Promise<string | null> {
+	await killLeftovers();
+	await sleep(200);
+	const stillUp = await Promise.all(LEFTOVER_PATTERNS.map(running));
+	return stillUp.some(Boolean)
+		? "a socat or __net-inside process for this sandbox is still running"
+		: null;
 }
 
 async function createIfMissing(): Promise<string | null> {
