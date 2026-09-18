@@ -8,6 +8,8 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import { dataDir } from "../config.ts";
+import { sleep } from "../time.ts";
+import { assertSandboxName } from "./identity.ts";
 import { isLive, type Owner, self } from "./proc.ts";
 
 /**
@@ -19,14 +21,8 @@ import { isLive, type Owner, self } from "./proc.ts";
  * early enough to be counted or late enough to start the VM itself.
  */
 function lockPath(name: string): string {
-	if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) {
-		throw new Error(`invalid lock name: ${JSON.stringify(name)}`);
-	}
+	assertSandboxName(name, "lock");
 	return join(dataDir(), "locks", `${name}.lock`);
-}
-
-function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /** Who the lock file says holds it, or null if there is no readable lock. */

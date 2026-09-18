@@ -1,6 +1,7 @@
 import { mkdir, readdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { sessionsDir } from "../config.ts";
+import { assertSandboxName } from "./identity.ts";
 
 export interface SessionMeta {
 	name: string;
@@ -20,9 +21,7 @@ export interface SessionMeta {
  * `sandboxName()`, and this value is joined into a path that gets unlinked.
  */
 function metaPath(name: string): string {
-	if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) {
-		throw new Error(`invalid session name: ${JSON.stringify(name)}`);
-	}
+	assertSandboxName(name, "session");
 	return join(sessionsDir(), `${name}.json`);
 }
 

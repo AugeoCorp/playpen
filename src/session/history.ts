@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { historyDir } from "../config.ts";
 import * as lima from "../lima/client.ts";
+import { assertSandboxName } from "./identity.ts";
 
 /**
  * Claude Code keeps session transcripts and the persistent memory directory in
@@ -17,9 +18,7 @@ const GUEST_REL = ".claude/projects";
 
 /** Joined into a path that is written and read, so it is checked like `store`'s. */
 export function archivePath(sandbox: string): string {
-	if (!/^[a-z0-9][a-z0-9-]*$/.test(sandbox)) {
-		throw new Error(`invalid sandbox name: ${JSON.stringify(sandbox)}`);
-	}
+	assertSandboxName(sandbox);
 	return join(historyDir(), `${sandbox}.tar`);
 }
 

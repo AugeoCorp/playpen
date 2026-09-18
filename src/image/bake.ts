@@ -47,10 +47,27 @@ export async function buildBase(now = new Date()): Promise<string> {
 	const path = join(templatesDir(), `${name}.yaml`);
 	await writeFile(path, `${serialize(rendered)}\n`, "utf8");
 
-	await lima.createAndStart(name, path);
-	// `limactl clone` refuses a running source, so a base stops for good once it
-	// is baked.
-	await lima.stop(name);
+	try {
+		await lima.createAndStart(name, path);
+		// `limactl clone` refuses a running source, so a base stops for good once it
+		// is baked.
+		await lima.stop(name);
+	} catch (err) {
+		// A base that failed partway through provisioning still keeps its final
+		// name, so leaving it running would make the next `image build` call it
+		// finished and `start` clone a base with no Node, no Claude Code and no
+		// tun2proxy. The rendered template in templatesDir() is left in place --
+		// it's the evidence of what this bake tried to do.
+		if (lima.isRunning(await lima.get(name))) {
+			await lima
+				.stop(name, true)
+				.catch(() => console.error(`warning: could not stop ${name}`));
+		}
+		await lima
+			.remove(name)
+			.catch(() => console.error(`warning: could not remove ${name}`));
+		throw err;
+	}
 	return name;
 }
 
