@@ -6,6 +6,7 @@ import {
 	noatime,
 	node,
 	python,
+	tun2proxy,
 } from "./layers.ts";
 import { defineImage } from "./types.ts";
 
@@ -13,5 +14,13 @@ import { defineImage } from "./types.ts";
 export const baseImage = defineImage({
 	name: "playpen-base",
 	distro: ubuntu(),
-	layers: [buildTools(), node(), mise(), python(), noatime(), claudeCode()],
+	layers: [
+		buildTools(),
+		tun2proxy(),
+		node(),
+		mise(),
+		python(),
+		noatime(),
+		claudeCode(),
+	],
 });
