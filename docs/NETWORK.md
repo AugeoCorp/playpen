@@ -170,6 +170,17 @@ already merged -- and a mode, and applies these rules to every `CONNECT`:
   to resolve to it, because the gatekeeper decides on the name, not the address.
   A bare IP address in the request that is not explicitly listed is refused (or
   reported, in log mode), the same as any other unlisted host.
+- **An address that is not a public one is refused in every mode**, listed or
+  not: 0/8 (which Linux reads as loopback), 127/8, 169.254/16 with the cloud
+  metadata service in it, the RFC1918 and CGNAT ranges, multicast, and 240/4.
+  This machine and the networks it sits on are not what log mode opens.
+- **An allowed name may only resolve to a public address.** The gatekeeper
+  resolves the name it decided on and dials only the addresses that a request
+  naming them literally would have been allowed to name; if none are left, the
+  tunnel is closed and a second log line records the address that was refused.
+  Without this, any name whose DNS the operator does not control -- and every
+  name at all in log mode -- is a way to reach this machine's own loopback. IPv4
+  only: a name with nothing but AAAA records is refused here.
 - **`localhost:PORT` in the config** is the one way to reach a service on the
   host machine. The guest cannot ask for it directly: it has to `CONNECT` to the
   literal name `host.playpen.internal`, which the gatekeeper maps to

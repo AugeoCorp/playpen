@@ -66,6 +66,51 @@ test("a bare IP literal that is not listed is denied", () => {
 	assert.equal(v.kind, "deny");
 });
 
+/** What a request must not reach by naming its address: this machine (0/8,
+ * which Linux reads as loopback, and 127/8), the cloud metadata service, the
+ * networks this machine is on, and the ranges nothing routes. */
+const NOT_PUBLIC = [
+	"0.0.0.0",
+	"127.0.0.2",
+	"169.254.169.254",
+	"10.0.0.7",
+	"172.16.5.4",
+	"192.168.1.50",
+	"100.64.0.1",
+	"224.0.0.1",
+	"255.255.255.255",
+];
+
+test("an address that is not a public one is denied, and log mode does not soften it", () => {
+	for (const address of NOT_PUBLIC) {
+		assert.equal(
+			decide(enforcing([]), address, 22).kind,
+			"deny",
+			`expected ${address} to be denied`,
+		);
+		assert.equal(
+			decide(logging([]), address, 22).kind,
+			"deny",
+			`expected ${address} to be denied in log mode too`,
+		);
+	}
+});
+
+test("an address on this machine stays denied even when the allow list names it", () => {
+	for (const address of ["0.0.0.0", "127.0.0.2", "169.254.169.254"]) {
+		assert.equal(
+			decide(enforcing([`${address}:22`]), address, 22).kind,
+			"deny",
+			`expected ${address} to be denied although it is listed`,
+		);
+		assert.equal(
+			decide(logging([`${address}:22`]), address, 22).kind,
+			"deny",
+			`expected ${address} to be denied in log mode although it is listed`,
+		);
+	}
+});
+
 test("host.playpen.internal is allowed and mapped to 127.0.0.1 when its port has a localhost entry", () => {
 	const v = decide(enforcing(["localhost:9001"]), HOST_ALIAS, 9001);
 	assert.deepEqual(v, {

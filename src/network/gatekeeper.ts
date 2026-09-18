@@ -1,10 +1,11 @@
-import type dns from "node:dns";
+import dns from "node:dns";
 import { appendFile } from "node:fs/promises";
 import type {
 	PrepareRequestFunctionOpts,
 	PrepareRequestFunctionResult,
 } from "proxy-chain";
 import { RequestError, Server } from "proxy-chain";
+import { isGlobalIpv4, isIpv4 } from "./names.ts";
 import type { Policy } from "./policy.ts";
 import { decide } from "./policy.ts";
 
@@ -21,11 +22,18 @@ export interface LogEntry {
 	reason: string;
 }
 
+/**
+ * What a hostname resolves to. Injectable so a test can decide what a name
+ * answers with; the default asks the system resolver.
+ */
+export type Resolve = (host: string) => Promise<dns.LookupAddress[]>;
+
 export interface StartGatekeeperOptions {
 	policy: Policy;
 	/** Listen port. Defaults to 0, letting the OS assign one. */
 	port?: number;
 	log: (line: LogEntry) => void;
+	resolve?: Resolve;
 }
 
 /**
@@ -33,8 +41,8 @@ export interface StartGatekeeperOptions {
  * `{ all: true }` (see the Socket implementation in `lib/net.js`), so the
  * callback must take an address array even though the two-argument
  * `dns.lookup` overloads never require one. proxy-chain types `dnsLookup` as
- * the full overloaded `dns.lookup`; this implements only the shape it is
- * actually called with and is cast to match.
+ * the full overloaded `dns.lookup`; the hooks here implement only the shape
+ * they are actually called with and are cast to match.
  */
 function lookupAt(address: string): typeof dns.lookup {
 	const lookup = (
@@ -55,6 +63,72 @@ function lookupAt(address: string): typeof dns.lookup {
 	return lookup as typeof dns.lookup;
 }
 
+const systemResolver: Resolve = (host) =>
+	dns.promises.lookup(host, { all: true });
+
+/**
+ * Resolves `host` and hands `net.connect` only the addresses the policy would
+ * have allowed as literals, so a name cannot be the way to an address a
+ * request for it would have been refused. IPv6 is left out entirely: the fence
+ * has no answer for it yet, so a name with only AAAA records fails here.
+ *
+ * Failing the lookup is what refuses the connection -- proxy-chain closes the
+ * tunnel rather than answering it -- so the refusal is logged from in here.
+ * The verdict line for this connection has already been written by then.
+ */
+function lookupGlobal(
+	host: string,
+	port: number,
+	resolve: Resolve,
+	log: (line: LogEntry) => void,
+): typeof dns.lookup {
+	const refuse = (reason: string): Error => {
+		log({
+			time: new Date().toISOString(),
+			host,
+			port,
+			verdict: "deny",
+			reason,
+		});
+		return new Error(`playpen gatekeeper: ${reason}`);
+	};
+
+	const lookup = (
+		_hostname: string,
+		options: dns.LookupOptions,
+		callback: (
+			err: NodeJS.ErrnoException | null,
+			address: string | dns.LookupAddress[],
+			family?: number,
+		) => void,
+	): void => {
+		resolve(host).then(
+			(addresses) => {
+				const global = addresses.filter(
+					(a) => a.family === 4 && isGlobalIpv4(a.address),
+				);
+				const first = global[0];
+				if (first === undefined) {
+					const found = addresses.map((a) => a.address).join(", ");
+					callback(
+						refuse(
+							`${host} resolves to ${found === "" ? "no IPv4 address" : found}, which is not a public address`,
+						),
+						[],
+					);
+					return;
+				}
+				if (options.all) callback(null, global);
+				else callback(null, first.address, 4);
+			},
+			(err: unknown) => {
+				callback(refuse(`${host} could not be resolved: ${err}`), []);
+			},
+		);
+	};
+	return lookup as typeof dns.lookup;
+}
+
 /** Starts the CONNECT-gating proxy. Every outbound guest connection arrives
  * here as an HTTP CONNECT; `policy` decides whether it is piped through,
  * refused with a 403 before any upstream socket opens, or (in `"log"` mode)
@@ -65,6 +139,7 @@ export async function startGatekeeper(
 	opts: StartGatekeeperOptions,
 ): Promise<Gatekeeper> {
 	const { policy, log } = opts;
+	const resolve = opts.resolve ?? systemResolver;
 
 	const server = new Server({
 		port: opts.port ?? 0,
@@ -87,8 +162,14 @@ export async function startGatekeeper(
 			if (verdict.kind === "deny" || verdict.kind === "probe") {
 				throw new RequestError(`playpen gatekeeper: ${verdict.reason}`, 403);
 			}
-			if (verdict.target.host === hostname) return {};
-			return { dnsLookup: lookupAt(verdict.target.host) };
+			// The target's host, not the one the request spelled: the two differ in
+			// case, in a trailing dot, and wherever the policy mapped the name to an
+			// address of its own.
+			const target = verdict.target;
+			if (isIpv4(target.host)) return { dnsLookup: lookupAt(target.host) };
+			return {
+				dnsLookup: lookupGlobal(target.host, target.port, resolve, log),
+			};
 		},
 	});
 

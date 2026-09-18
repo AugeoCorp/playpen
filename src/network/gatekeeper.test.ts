@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
+import type { LookupAddress } from "node:dns";
 import * as net from "node:net";
-import * as os from "node:os";
 import { type TestContext, test } from "node:test";
 import { startGatekeeper } from "./gatekeeper.ts";
 import { HOST_ALIAS, type Policy, PROBE_HOST } from "./policy.ts";
@@ -56,6 +56,31 @@ function connectRaw(
 			resolve({ status, socket, afterHeaders: header.subarray(end + 4) });
 		});
 		socket.on("error", reject);
+	});
+}
+
+/** The CONNECT status line, or "closed" when the proxy hung up without
+ * answering -- which is what a refused address looks like on the wire, since
+ * the tunnel is torn down rather than answered once the dial is refused. */
+function connectStatus(
+	t: TestContext,
+	proxyPort: number,
+	target: string,
+): Promise<string> {
+	return new Promise((resolve) => {
+		const socket = net.connect(proxyPort, "127.0.0.1");
+		t.after(() => socket.destroy());
+		socket.once("connect", () => {
+			socket.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`);
+		});
+		let header = "";
+		socket.on("data", (chunk) => {
+			header += String(chunk);
+			if (header.includes("\r\n"))
+				resolve(header.slice(0, header.indexOf("\r\n")));
+		});
+		socket.on("error", () => resolve("closed"));
+		socket.on("close", () => resolve("closed"));
 	});
 }
 
@@ -142,47 +167,95 @@ test("a CONNECT to a bare IP literal is refused with 403", async (t) => {
 	assert.match(status, / 403 /);
 });
 
-/** A non-loopback address of this machine, so a test can dial an unlisted
- * IP literal that still lands on a server the test owns. */
-function outwardAddress(): string | null {
-	for (const iface of Object.values(os.networkInterfaces())) {
-		for (const info of iface ?? []) {
-			if (info.family === "IPv4" && !info.internal) return info.address;
-		}
-	}
-	return null;
+/** Resolves every name to `address`, and records the names it was asked for,
+ * so a test can say what a host answers with without touching the network. */
+function resolverFor(address: string): {
+	asked: string[];
+	resolve: (host: string) => Promise<LookupAddress[]>;
+} {
+	const asked: string[] = [];
+	return {
+		asked,
+		resolve: async (host) => {
+			asked.push(host);
+			return [{ address, family: 4 }];
+		},
+	};
 }
 
-test("in log mode, a host outside the policy is let through and logged as report", async (t) => {
-	// A real external host would make this depend on the network. An unlisted
-	// IP literal is refused the same way, and this machine's own outward
-	// address is one the banner server can be reached on without leaving it.
-	const address = outwardAddress();
-	if (address === null) {
-		t.skip("no non-loopback IPv4 address on this machine");
-		return;
-	}
+test("in log mode, a CONNECT to an address on this machine is refused with 403", async (t) => {
+	// Bound on every address, so both spellings below name a service that is
+	// really listening: what refuses them is the policy, not a dead port.
 	const localPort = await bannerServer(t, "0.0.0.0");
+	const gatekeeper = await startGatekeeper({
+		policy: { allow: [], mode: "log" },
+		log: () => {},
+	});
+	t.after(() => gatekeeper.close());
+
+	for (const address of ["127.0.0.2", "0.0.0.0"]) {
+		const status = await connectStatus(
+			t,
+			gatekeeper.port,
+			`${address}:${localPort}`,
+		);
+		assert.match(status, / 403 /, `expected ${address} to be refused`);
+	}
+});
+
+test("an allowed name that resolves onto this machine is refused, and the refusal is logged", async (t) => {
+	const localPort = await bannerServer(t);
+	const resolver = resolverFor("127.0.0.1");
+	const entries: Array<{ verdict: string; reason: string }> = [];
+	const gatekeeper = await startGatekeeper({
+		policy: { allow: ["mirror.example"], mode: "enforce" },
+		log: (line) => entries.push(line),
+		resolve: resolver.resolve,
+	});
+	t.after(() => gatekeeper.close());
+
+	const status = await connectStatus(
+		t,
+		gatekeeper.port,
+		`mirror.example:${localPort}`,
+	);
+	assert.equal(status, "closed");
+	assert.deepEqual(
+		entries.map((e) => e.verdict),
+		["allow", "deny"],
+	);
+	assert.match(entries[1]?.reason ?? "", /127\.0\.0\.1/);
+});
+
+test("in log mode, an unlisted name is reported rather than refused, and still cannot land on this machine", async (t) => {
+	const resolver = resolverFor("127.0.0.1");
 	const entries: Array<{ verdict: string; reason: string }> = [];
 	const gatekeeper = await startGatekeeper({
 		policy: { allow: [], mode: "log" },
 		log: (line) => entries.push(line),
+		resolve: resolver.resolve,
 	});
 	t.after(() => gatekeeper.close());
 
-	const { status, socket, afterHeaders } = await connectRaw(
-		t,
-		gatekeeper.port,
-		`${address}:${localPort}`,
-	);
-	assert.match(status, / 200 /);
-	const banner = await readAtLeast(socket, afterHeaders, "banner\r\n".length);
-	assert.equal(banner.toString(), "banner\r\n");
+	const status = await connectStatus(t, gatekeeper.port, "unlisted.example:80");
+	assert.equal(status, "closed");
 	assert.deepEqual(
 		entries.map((e) => e.verdict),
-		["report"],
+		["report", "deny"],
 	);
-	assert.match(entries[0]?.reason ?? "", /not in the allow list/);
+});
+
+test("an allowed name is resolved as the allow entry spells it, whatever the request's case and trailing dot", async (t) => {
+	const resolver = resolverFor("127.0.0.1");
+	const gatekeeper = await startGatekeeper({
+		policy: { allow: ["mirror.example"], mode: "enforce" },
+		log: () => {},
+		resolve: resolver.resolve,
+	});
+	t.after(() => gatekeeper.close());
+
+	await connectStatus(t, gatekeeper.port, "MIRROR.Example.:443");
+	assert.deepEqual(resolver.asked, ["mirror.example"]);
 });
 
 test("log mode still refuses this machine's loopback", async (t) => {

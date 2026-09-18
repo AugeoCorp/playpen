@@ -1,4 +1,4 @@
-import { isHostname, isIpv4, isPort } from "./names.ts";
+import { isGlobalIpv4, isHostname, isIpv4, isPort } from "./names.ts";
 
 /**
  * Pure allow/deny policy for outbound guest connections. No I/O: the
@@ -147,6 +147,14 @@ function decideTarget(
 	}
 
 	if (isIpv4(host)) {
+		if (!isGlobalIpv4(host)) {
+			return {
+				allowed: false,
+				final: true,
+				target: { host, port },
+				reason: `${host} is not a public address; it is refused in every mode`,
+			};
+		}
 		const matched = entries.find(
 			(e) =>
 				e.kind === "ip" &&
