@@ -52,7 +52,13 @@ playpen completion zsh  > "${fpath[1]}/_playpen"
 Sessions in the same project share one VM. The last one to exit stops it, so
 quitting one `playpen claude` no longer cuts off another. `stop --force` and
 `remove --force` override that and cut every session off; they are only needed
-while one is attached. `playpen list` shows the count under `ATT`.
+while one is attached. `playpen list` shows the count under `ATT`, and the
+sandbox's network fence under `NET`: `sealed` (fenced, gatekeeper answering, and
+the guest proved it can reach it), `no egress` (fenced with a gatekeeper, but
+the guest cannot reach it -- check
+`playpen run -- systemctl status playpen-tun2proxy`), `no gate` (fenced, but no
+gatekeeper is answering -- run `playpen start`), `OPEN` (running outside the
+fence -- stop it and start it again), or `-` (stopped).
 
 `playpen claude` copies an allowlist from `~/.claude` (instructions, settings,
 skills, plugins, OAuth token). `--no-auth` withholds the token, API-key settings
