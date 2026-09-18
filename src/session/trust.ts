@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { trustDir } from "../config.ts";
 import { confirm } from "../prompt.ts";
 import { type ConfigGraph, readConfigGraph } from "./configgraph.ts";
+import { assertSandboxName } from "./identity.ts";
 import {
 	type ConfigResult,
 	findConfigFile,
@@ -38,12 +39,6 @@ interface TrustRecord {
 	/** Per-file hashes, so a re-prompt can say which files moved. */
 	files: Record<string, string>;
 	approved: string;
-}
-
-function assertSandboxName(sandbox: string): void {
-	if (!/^[a-z0-9][a-z0-9-]*$/.test(sandbox)) {
-		throw new Error(`invalid sandbox name: ${JSON.stringify(sandbox)}`);
-	}
 }
 
 function recordPath(sandbox: string): string {
