@@ -1,5 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import {
+	chmod,
 	mkdir,
 	open,
 	readFile,
@@ -7,7 +8,7 @@ import {
 	stat,
 	unlink,
 } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dataDir, limaHome } from "../config.ts";
 import { readAppended, sizeOf, writeAtomic } from "../fs.ts";
@@ -66,6 +67,17 @@ export function fencePaths(sandbox: string): FencePaths {
 	};
 }
 
+/**
+ * `mkdir`'s own `mode` is only applied on creation, not to a directory that
+ * already exists, so an existing 0o755 directory from before this fix needs
+ * the explicit `chmod` too.
+ */
+async function ensureFenceDir(sandbox: string): Promise<void> {
+	const { dir } = fencePaths(sandbox);
+	await mkdir(dir, { recursive: true, mode: 0o700 });
+	await chmod(dir, 0o700);
+}
+
 export interface HelperRecord extends Owner {
 	gatekeeperPort: number;
 	/** False between the helper starting and the guest first answering. */
@@ -110,7 +122,7 @@ export async function writePolicy(
 	policy: Policy,
 ): Promise<boolean> {
 	const paths = fencePaths(sandbox);
-	await mkdir(paths.dir, { recursive: true });
+	await ensureFenceDir(sandbox);
 	const next = `${JSON.stringify(policy)}\n`;
 	const previous = await readFile(paths.policy, "utf8").catch(() => "");
 	await writeAtomic(paths.policy, next);
@@ -183,8 +195,20 @@ async function netNamespace(pid: number): Promise<string | null> {
 	}
 }
 
+/**
+ * Whether a `/proc/<pid>/cmdline` (NUL-separated argv) belongs to qemu. The
+ * pid file outlives the process it names, and the kernel recycles pids, so a
+ * pid that now belongs to an unrelated process -- another program entirely,
+ * or a qemu for a different instance after a reboot -- must not be trusted as
+ * "our qemu is running".
+ */
+export function looksLikeQemu(cmdline: string): boolean {
+	const argv0 = cmdline.split("\0")[0] ?? "";
+	return basename(argv0).startsWith("qemu-system");
+}
+
 /** Lima's own file, and it outlives the process it names, so nothing here
- * trusts the number beyond asking /proc about it. */
+ * trusts the number beyond asking /proc whether it is still qemu. */
 async function qemuPid(instance: string): Promise<number | null> {
 	let raw: string;
 	try {
@@ -193,7 +217,14 @@ async function qemuPid(instance: string): Promise<number | null> {
 		return null;
 	}
 	const pid = Number(raw.trim());
-	return Number.isInteger(pid) && pid > 0 ? pid : null;
+	if (!Number.isInteger(pid) || pid <= 0) return null;
+	let cmdline: string;
+	try {
+		cmdline = await readFile(`/proc/${pid}/cmdline`, "utf8");
+	} catch {
+		return null;
+	}
+	return looksLikeQemu(cmdline) ? pid : null;
 }
 
 export async function fenceStatus(
@@ -212,14 +243,6 @@ export async function fenceStatus(
 	});
 }
 
-/**
- * socat splits an address on `:` and `,`, so any of those in a path has to be
- * escaped before it becomes part of one. Verified against socat 1.8.0.
- */
-export function socatPath(path: string): string {
-	return path.replace(/[\\:,!'"]/g, "\\$&");
-}
-
 export function cliPath(): string {
 	return join(dirname(fileURLToPath(import.meta.url)), "..", "cli.ts");
 }
@@ -234,7 +257,7 @@ async function spawnHelper(
 	instance: string,
 ): Promise<ChildProcess> {
 	const paths = fencePaths(sandbox);
-	await mkdir(paths.dir, { recursive: true });
+	await ensureFenceDir(sandbox);
 	const log = await open(paths.helperLog, "a");
 	try {
 		const child = spawn(

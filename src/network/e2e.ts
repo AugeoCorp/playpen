@@ -15,6 +15,8 @@
  * The instance is created if it does not exist and left stopped at the end.
  */
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { limaHome } from "../config.ts";
 import { exists } from "../fs.ts";
 import * as lima from "../lima/client.ts";
 import { instanceName } from "../session/identity.ts";
@@ -261,7 +263,8 @@ async function overLimaSocket(): Promise<string | null> {
  * socket, which is the path playpen has to work over.
  */
 async function overControl(): Promise<string | null> {
-	await capture("pkill", ["-f", "ssh.sock"]);
+	const sshSocket = join(limaHome(), instance, "ssh.sock");
+	await capture("pkill", ["-f", sshSocket]);
 	await sleep(2000);
 
 	// Held open long enough to catch the connection in `ss`, which is the

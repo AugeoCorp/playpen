@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
 import {
 	classifyFence,
 	fencePaths,
+	looksLikeQemu,
 	policyStamp,
 	writePolicy,
 } from "./fence.ts";
@@ -134,4 +135,43 @@ test("writing a policy says whether it changed what was already on disk", async 
 		await writePolicy("api-abc123", { allow: [], mode: "enforce" }),
 		true,
 	);
+});
+
+async function dirMode(path: string): Promise<number> {
+	return (await stat(path)).mode & 0o777;
+}
+
+test("writePolicy leaves the fence directory readable only by its owner", async (t) => {
+	await dataDir(t);
+	await writePolicy("api-abc123", { allow: [], mode: "enforce" });
+	assert.equal(await dirMode(fencePaths("api-abc123").dir), 0o700);
+});
+
+test("writePolicy tightens a fence directory a previous version left world-readable", async (t) => {
+	await dataDir(t);
+	const { dir } = fencePaths("api-abc123");
+	await mkdir(dir, { recursive: true, mode: 0o755 });
+	assert.equal(await dirMode(dir), 0o755);
+	await writePolicy("api-abc123", { allow: [], mode: "enforce" });
+	assert.equal(await dirMode(dir), 0o700);
+});
+
+test("a real qemu command line is recognized", () => {
+	const cmdline = [
+		"/usr/bin/qemu-system-x86_64",
+		"-name",
+		"lima-playpen-api-abc123",
+		"-m",
+		"8192",
+		"",
+	].join("\0");
+	assert.equal(looksLikeQemu(cmdline), true);
+});
+
+test("a recycled pid now running an unrelated process is not mistaken for qemu", () => {
+	assert.equal(looksLikeQemu("/usr/bin/bash\0-c\0some-script.sh\0"), false);
+});
+
+test("an empty cmdline, as a zombie or an unreadable process reads, is not qemu", () => {
+	assert.equal(looksLikeQemu(""), false);
 });

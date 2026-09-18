@@ -22,6 +22,16 @@ export const HOST_ALIAS = "host.playpen.internal";
 export const PROBE_HOST = "probe.playpen.internal";
 
 /**
+ * What to say when the fence is up but the guest cannot reach the gatekeeper
+ * through it -- printed by both the helper, while it waits for the guest, and
+ * `playpen start`, which would otherwise repeat the same advice on its own.
+ */
+export const NO_EGRESS_ADVICE: readonly string[] = [
+	"the guest cannot reach the gatekeeper through its fence",
+	"check its side: playpen run -- systemctl status playpen-tun2proxy",
+];
+
+/**
  * A guess, not a measurement: the hosts Claude Code and common package
  * managers seem likely to need. Provisional until a `mode: "log"` run of
  * Claude Code against real projects replaces it with the hosts actually

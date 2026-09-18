@@ -6,7 +6,7 @@ import { baseImage } from "../image/base.ts";
 import { maskScript, render, serialize } from "../image/render.ts";
 import * as lima from "../lima/client.ts";
 import { bringUp, fenceStatus, liveHelper } from "../network/fence.ts";
-import { BUILTIN_ALLOW } from "../network/policy.ts";
+import { BUILTIN_ALLOW, NO_EGRESS_ADVICE } from "../network/policy.ts";
 import { confirm } from "../prompt.ts";
 import * as history from "./history.ts";
 import { instanceName, sandboxName } from "./identity.ts";
@@ -297,10 +297,7 @@ async function warnWithoutEgress(sb: Sandbox): Promise<void> {
 	const helper = await liveHelper(sb.sandbox);
 	if (helper === null || helper.egress) return;
 	console.error(`warning: ${sb.sandbox} has no network`);
-	console.error(`  the guest cannot reach the gatekeeper through its fence`);
-	console.error(
-		`  check its side: playpen run -- systemctl status playpen-tun2proxy`,
-	);
+	for (const line of NO_EGRESS_ADVICE) console.error(`  ${line}`);
 }
 
 export async function ensureRunning(sb: Sandbox): Promise<Running> {

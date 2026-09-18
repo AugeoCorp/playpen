@@ -14,7 +14,6 @@ import {
 	policyStamp,
 	readPolicy,
 	removeSocket,
-	socatPath,
 	writeHelper,
 } from "./fence.ts";
 import {
@@ -22,7 +21,13 @@ import {
 	type LogEntry,
 	startGatekeeper,
 } from "./gatekeeper.ts";
-import { type Policy, PROBE_HOST } from "./policy.ts";
+import { NO_EGRESS_ADVICE, type Policy, PROBE_HOST } from "./policy.ts";
+import {
+	spawnSocat,
+	tcpListenAddress,
+	unixConnectAddress,
+	unixListenAddress,
+} from "./socat.ts";
 
 /**
  * The two processes fence.ts describes, as commands: `__net-helper` outside the
@@ -117,11 +122,7 @@ function jsonLineAppender(path: string): (entry: LogEntry) => void {
 }
 
 function socatListen(path: string, target: string): ChildProcess {
-	return spawn(
-		"socat",
-		[`UNIX-LISTEN:${socatPath(path)},fork,unlink-early,mode=600`, target],
-		{ stdio: "inherit" },
-	);
+	return spawnSocat(unixListenAddress(path), target);
 }
 
 export async function runHelper(
@@ -228,8 +229,8 @@ export async function runHelper(
 	} else {
 		// Still ready, and the VM keeps running: it is fenced and usable, which
 		// is what a sandbox with a broken tunnel needs in order to be repaired.
-		say(`the guest cannot reach the gatekeeper: this sandbox has no network`);
-		say(`  check its side: playpen run -- systemctl status playpen-tun2proxy`);
+		say(`this sandbox has no network`);
+		for (const line of NO_EGRESS_ADVICE) say(`  ${line}`);
 	}
 
 	await serveWhileRunning(sandbox, instance, (next) => {
@@ -316,13 +317,9 @@ export async function runInside(
 
 	// The address the guest is pointed at: qemu's user-mode network maps
 	// 192.168.5.2 to this namespace's loopback.
-	const egress = spawn(
-		"socat",
-		[
-			`TCP-LISTEN:${GUEST_PROXY_PORT},fork,reuseaddr,bind=127.0.0.1`,
-			`UNIX-CONNECT:${socatPath(paths.egress)}`,
-		],
-		{ stdio: "inherit" },
+	const egress = spawnSocat(
+		tcpListenAddress(GUEST_PROXY_PORT),
+		unixConnectAddress(paths.egress),
 	);
 
 	const code = await attach("limactl", ["start", "--tty=false", instance]);

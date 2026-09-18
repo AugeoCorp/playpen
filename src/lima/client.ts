@@ -1,5 +1,6 @@
 import { exists } from "../fs.ts";
-import { fencePaths, socatPath } from "../network/fence.ts";
+import { fencePaths } from "../network/fence.ts";
+import { unixConnectAddress } from "../network/socat.ts";
 import {
 	INSTANCE_PREFIX,
 	isPlaypenInstance,
@@ -159,7 +160,7 @@ function shQuote(value: string): string {
  * and is quoted for each.
  */
 export function sshThroughControl(controlSocket: string): string {
-	const address = shQuote(`UNIX-CONNECT:${socatPath(controlSocket)}`);
+	const address = shQuote(unixConnectAddress(controlSocket));
 	// ssh expands %h, %p and friends in a ProxyCommand and refuses one it does
 	// not recognize, so a literal percent has to be doubled.
 	const proxy = `ProxyCommand=socat - ${address}`.replaceAll("%", "%%");
