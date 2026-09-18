@@ -3,8 +3,10 @@ import { mkdir, open, readFile, readlink, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dataDir, limaHome } from "../config.ts";
-import { writeAtomic } from "../fs.ts";
+import { readAppended, sizeOf, writeAtomic } from "../fs.ts";
+import { assertSandboxName } from "../session/identity.ts";
 import { isLive, type Owner } from "../session/proc.ts";
+import { sleep } from "../time.ts";
 import type { Policy } from "./policy.ts";
 
 /**
@@ -28,9 +30,6 @@ import type { Policy } from "./policy.ts";
  * processes themselves.
  */
 
-/** Same shape leases.ts requires, and for the same reason: it becomes a path. */
-const SANDBOX_NAME = /^[a-z0-9][a-z0-9-]*$/;
-
 export interface FencePaths {
 	dir: string;
 	/** Bound outside, connected to from within the fence. */
@@ -46,9 +45,7 @@ export interface FencePaths {
 }
 
 export function fencePaths(sandbox: string): FencePaths {
-	if (!SANDBOX_NAME.test(sandbox)) {
-		throw new Error(`invalid sandbox name: ${JSON.stringify(sandbox)}`);
-	}
+	assertSandboxName(sandbox);
 	const dir = join(dataDir(), "net", sandbox);
 	return {
 		dir,
@@ -225,45 +222,14 @@ async function spawnHelper(
 	}
 }
 
-async function logSize(path: string): Promise<number> {
-	try {
-		const handle = await open(path, "r");
-		try {
-			return (await handle.stat()).size;
-		} finally {
-			await handle.close();
-		}
-	} catch {
-		return 0;
-	}
-}
-
-/** Reads what has been appended since `from` and returns the new end. */
 async function drain(
 	path: string,
 	from: number,
 	sink: (text: string) => void,
 ): Promise<number> {
-	let handle: Awaited<ReturnType<typeof open>>;
-	try {
-		handle = await open(path, "r");
-	} catch {
-		return from;
-	}
-	try {
-		const { size } = await handle.stat();
-		if (size <= from) return from;
-		const buffer = Buffer.alloc(size - from);
-		const { bytesRead } = await handle.read(buffer, 0, buffer.length, from);
-		sink(buffer.subarray(0, bytesRead).toString("utf8"));
-		return from + bytesRead;
-	} finally {
-		await handle.close();
-	}
-}
-
-function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
+	const { text, end } = await readAppended(path, from);
+	if (text !== "") sink(text);
+	return end;
 }
 
 export interface BringUpOptions {
@@ -292,7 +258,7 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 	}
 
 	const paths = fencePaths(sandbox);
-	let offset = await logSize(paths.helperLog);
+	let offset = await sizeOf(paths.helperLog);
 	const child = await spawnHelper(sandbox, instance);
 
 	let exit: number | null = null;

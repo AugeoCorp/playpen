@@ -1,9 +1,10 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { open, stat, unlink } from "node:fs/promises";
-import { exists, writeAtomic } from "../fs.ts";
+import { unlink } from "node:fs/promises";
+import { exists, readAppended, sizeOf, writeAtomic } from "../fs.ts";
 import * as lima from "../lima/client.ts";
 import { self } from "../session/proc.ts";
 import { attach, capture } from "../sh.ts";
+import { sleep } from "../time.ts";
 import {
 	cliPath,
 	type FencePaths,
@@ -45,10 +46,6 @@ const PROBE_WINDOW_MS = 60_000;
 
 function say(text: string): void {
 	console.error(`[${new Date().toISOString()}] ${text}`);
-}
-
-function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
@@ -113,7 +110,7 @@ export async function runHelper(
 	const reattach = state !== "stopped";
 	if (reattach) say(`${instance} is already fenced; reattaching`);
 
-	const logFrom = await fileSize(paths.gatekeeperLog);
+	const logFrom = await sizeOf(paths.gatekeeperLog);
 	const gatekeeper = await startGatekeeper({
 		policy,
 		log: jsonLineAppender(paths.gatekeeperLog),
@@ -232,33 +229,10 @@ async function guestReachesGatekeeper(
 	}
 }
 
-/** A log that does not exist yet has nothing in it from a previous run. */
-async function fileSize(path: string): Promise<number> {
-	try {
-		return (await stat(path)).size;
-	} catch {
-		return 0;
-	}
-}
-
 /** Only what this helper's own gatekeeper appended: a `probe` line from the
  * sandbox's last run would otherwise pass for this one's. */
 async function probeLogged(path: string, from: number): Promise<boolean> {
-	let text: string;
-	try {
-		const handle = await open(path, "r");
-		try {
-			const { size } = await handle.stat();
-			if (size <= from) return false;
-			const buffer = Buffer.alloc(size - from);
-			const { bytesRead } = await handle.read(buffer, 0, buffer.length, from);
-			text = buffer.subarray(0, bytesRead).toString("utf8");
-		} finally {
-			await handle.close();
-		}
-	} catch {
-		return false;
-	}
+	const { text } = await readAppended(path, from);
 	for (const line of text.split("\n")) {
 		if (line === "") continue;
 		try {

@@ -1,6 +1,7 @@
 import { basename, join, normalize } from "node:path";
 import { pathToFileURL } from "node:url";
 import { exists } from "../fs.ts";
+import { isHostname, isIpv4, isPort } from "../network/names.ts";
 
 export const CONFIG_FILE = "playpen.config.ts";
 
@@ -210,36 +211,12 @@ function isAllowedHost(entry: string): boolean {
 	const colon = entry.indexOf(":");
 	const host = colon === -1 ? entry : entry.slice(0, colon);
 	const port = colon === -1 ? null : entry.slice(colon + 1);
-	if (port !== null && !isPort(port)) return false;
+	if (port !== null && (!/^\d{1,5}$/.test(port) || !isPort(Number(port)))) {
+		return false;
+	}
 
 	if (host === "localhost") return port !== null;
 	return isHostname(host) || isIpv4(host);
-}
-
-function isPort(port: string): boolean {
-	return /^\d{1,5}$/.test(port) && Number(port) >= 1 && Number(port) <= 65535;
-}
-
-function isHostname(host: string): boolean {
-	const labels = host.split(".");
-	return (
-		host.length <= 253 &&
-		labels.length > 1 &&
-		labels.every(
-			(label) =>
-				/^[a-z0-9-]+$/.test(label) &&
-				!label.startsWith("-") &&
-				!label.endsWith("-"),
-		)
-	);
-}
-
-function isIpv4(host: string): boolean {
-	const octets = host.split(".");
-	return (
-		octets.length === 4 &&
-		octets.every((octet) => /^\d{1,3}$/.test(octet) && Number(octet) <= 255)
-	);
 }
 
 export async function hasLegacyIgnore(projectDir: string): Promise<boolean> {

@@ -1,9 +1,10 @@
+import { isHostname, isIpv4, isPort } from "./names.ts";
+
 /**
  * Pure allow/deny policy for outbound guest connections. No I/O: the
  * gatekeeper (gatekeeper.ts) owns the proxy-chain server and calls `decide`
  * once per CONNECT or plain HTTP request.
  */
-
 export const HOST_ALIAS = "host.playpen.internal";
 
 /**
@@ -49,32 +50,6 @@ type Entry =
 	| { kind: "ip"; host: string; port: number | null; raw: string }
 	| { kind: "local"; port: number; raw: string };
 
-function isValidPort(port: number): boolean {
-	return Number.isInteger(port) && port >= 1 && port <= 65535;
-}
-
-function isIpv4(host: string): boolean {
-	const octets = host.split(".");
-	return (
-		octets.length === 4 &&
-		octets.every((octet) => /^\d{1,3}$/.test(octet) && Number(octet) <= 255)
-	);
-}
-
-function isHostname(host: string): boolean {
-	const labels = host.split(".");
-	return (
-		host.length <= 253 &&
-		labels.length > 1 &&
-		labels.every(
-			(label) =>
-				/^[a-z0-9-]+$/.test(label) &&
-				!label.startsWith("-") &&
-				!label.endsWith("-"),
-		)
-	);
-}
-
 function normalizeRequestHost(hostname: string): string | null {
 	const host = hostname.trim().toLowerCase().replace(/\.$/, "");
 	if (host === "" || (!isHostname(host) && !isIpv4(host))) return null;
@@ -93,7 +68,7 @@ function parseEntry(raw: string): Entry | null {
 	if (portPart !== null) {
 		if (!/^\d{1,5}$/.test(portPart)) return null;
 		port = Number(portPart);
-		if (!isValidPort(port)) return null;
+		if (!isPort(port)) return null;
 	}
 
 	if (hostPart === "localhost") {
@@ -125,7 +100,7 @@ function decideTarget(
 		.filter((e): e is Entry => e !== null);
 
 	const host = normalizeRequestHost(hostname);
-	if (host === null || !isValidPort(port)) {
+	if (host === null || !isPort(port)) {
 		return {
 			allowed: false,
 			final: true,

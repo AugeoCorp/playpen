@@ -9,6 +9,7 @@ import {
 import { join } from "node:path";
 import { dataDir } from "../config.ts";
 import { writeAtomic } from "../fs.ts";
+import { assertSandboxName } from "./identity.ts";
 import { isLive, type Owner, self } from "./proc.ts";
 
 export type { Owner };
@@ -23,9 +24,7 @@ export type { Owner };
  * delete one to cut off a sibling.
  */
 function leasesDir(sandbox: string): string {
-	if (!/^[a-z0-9][a-z0-9-]*$/.test(sandbox)) {
-		throw new Error(`invalid sandbox name: ${JSON.stringify(sandbox)}`);
-	}
+	assertSandboxName(sandbox);
 	return join(dataDir(), "leases", sandbox);
 }
 

@@ -19,6 +19,7 @@ import { exists } from "../fs.ts";
 import * as lima from "../lima/client.ts";
 import { instanceName } from "../session/identity.ts";
 import { capture } from "../sh.ts";
+import { sleep } from "../time.ts";
 import {
 	bringUp,
 	fencePaths,
@@ -60,10 +61,6 @@ const CURL = "curl -kL -sS --noproxy '*' -o /dev/null -w '%{http_code}'";
 
 const STRIP_PROXY =
 	"unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY";
-
-function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 let passed = 0;
 let failed = 0;
