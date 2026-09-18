@@ -111,6 +111,24 @@ leaves it alone. If the VM is up but its helper died, `start` reattaches: a new
 gatekeeper and relay, no new namespace, since qemu and the inside relays were
 never the helper's children to lose.
 
+**The guest is then asked to prove it can reach the gatekeeper**, because none
+of the above does: everything the helper knows is from outside the fence, where
+a guest whose `playpen-tun2proxy` died looks exactly like a healthy one. The
+helper runs one `curl` in the guest for `probe.playpen.internal`, driven over
+Lima's own control path so the answer covers both directions, and watches for
+the verdict in `gatekeeper.log`. `probe.playpen.internal` is a reserved name
+(`PROBE_HOST` in `src/network/policy.ts`): `decide` always answers it with a
+`probe` verdict, which the gatekeeper refuses with the same 403 as a deny --
+nothing is dialed and no allow entry is needed, and the log line is the whole
+signal. A guest that has not answered within about a minute (tun2proxy's unit
+retries every 2 s) is recorded as `egress: false` in the helper's record.
+
+The helper keeps running either way and the VM stays up: it is fenced and
+usable, which is what a sandbox with a broken tunnel needs in order to be
+repaired. `start` says so and points at
+`playpen run -- systemctl status playpen-tun2proxy`, and `playpen list` shows
+the sandbox as `no egress` for as long as it stays that way.
+
 `playpen stop` goes through Lima's own instance files, fence or no fence --
 stopping never has to know about the namespace. The helper notices the VM is no
 longer running on its own (it polls every few seconds) and exits, tearing the

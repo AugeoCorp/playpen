@@ -66,6 +66,12 @@ export interface HelperRecord extends Owner {
 	gatekeeperPort: number;
 	/** False between the helper starting and the guest first answering. */
 	ready: boolean;
+	/**
+	 * Whether the guest's own request for `PROBE_HOST` reached the gatekeeper.
+	 * The fence being up says nothing about this: the guest's tun2proxy can be
+	 * dead and everything out here still look healthy.
+	 */
+	egress: boolean;
 }
 
 export async function writeHelper(
@@ -122,6 +128,8 @@ export async function readPolicy(sandbox: string): Promise<Policy> {
 export type FenceState =
 	/** qemu is in another network namespace and a ready helper is feeding it. */
 	| "sealed"
+	/** Fenced with a ready helper, but the guest could not reach it. */
+	| "sealed-no-egress"
 	/** qemu is still fenced, but nothing is answering on the egress socket. */
 	| "sealed-no-gatekeeper"
 	/** qemu is running in our own namespace: started outside the fence. */
@@ -139,7 +147,8 @@ export interface FenceFacts {
 export function classifyFence(facts: FenceFacts): FenceState {
 	if (facts.guestNetNs === null) return "stopped";
 	if (facts.guestNetNs === facts.ourNetNs) return "unsealed";
-	return facts.helper?.ready === true ? "sealed" : "sealed-no-gatekeeper";
+	if (facts.helper?.ready !== true) return "sealed-no-gatekeeper";
+	return facts.helper.egress ? "sealed" : "sealed-no-egress";
 }
 
 async function netNamespace(pid: number): Promise<string | null> {
@@ -276,7 +285,8 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 	const { sandbox, instance } = opts;
 	await writePolicy(sandbox, opts.policy);
 
-	if ((await fenceStatus(sandbox, instance)) === "sealed") {
+	const state = await fenceStatus(sandbox, instance);
+	if (state === "sealed" || state === "sealed-no-egress") {
 		opts.log(`warning: ${sandbox} is already running fenced; leaving it\n`);
 		return;
 	}

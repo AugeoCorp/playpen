@@ -3,7 +3,7 @@ import * as net from "node:net";
 import * as os from "node:os";
 import { type TestContext, test } from "node:test";
 import { startGatekeeper } from "./gatekeeper.ts";
-import { HOST_ALIAS, type Policy } from "./policy.ts";
+import { HOST_ALIAS, type Policy, PROBE_HOST } from "./policy.ts";
 
 /** A local TCP server that writes a banner before the client sends anything,
  * then echoes whatever it receives back with a prefix — so the test can tell
@@ -201,4 +201,19 @@ test("log mode still refuses this machine's loopback", async (t) => {
 		`${HOST_ALIAS}:${localPort}`,
 	);
 	assert.match(alias.status, / 403 /);
+});
+
+test("a CONNECT to the probe name is refused with 403 and logged as a probe, not a deny", async (t) => {
+	const entries: Array<{ verdict: string; host: string }> = [];
+	const gatekeeper = await startGatekeeper({
+		policy: { allow: [], mode: "enforce" },
+		log: (line) => entries.push(line),
+	});
+	t.after(() => gatekeeper.close());
+
+	const { status } = await connectRaw(t, gatekeeper.port, `${PROBE_HOST}:80`);
+	assert.match(status, / 403 /);
+	assert.equal(entries.length, 1);
+	assert.equal(entries[0]?.verdict, "probe");
+	assert.equal(entries[0]?.host, PROBE_HOST);
 });

@@ -17,7 +17,7 @@ export interface LogEntry {
 	time: string;
 	host: string;
 	port: number;
-	verdict: "allow" | "deny" | "report";
+	verdict: "allow" | "deny" | "probe" | "report";
 	reason: string;
 }
 
@@ -58,7 +58,9 @@ function lookupAt(address: string): typeof dns.lookup {
 /** Starts the CONNECT-gating proxy. Every outbound guest connection arrives
  * here as an HTTP CONNECT; `policy` decides whether it is piped through,
  * refused with a 403 before any upstream socket opens, or (in `"log"` mode)
- * piped through and recorded as what would have been refused. */
+ * piped through and recorded as what would have been refused. A request for
+ * `PROBE_HOST` is refused the same way, and its log line is what tells the
+ * helper the guest's route reaches here at all. */
 export async function startGatekeeper(
 	opts: StartGatekeeperOptions,
 ): Promise<Gatekeeper> {
@@ -82,7 +84,7 @@ export async function startGatekeeper(
 				reason: verdict.reason,
 			});
 
-			if (verdict.kind === "deny") {
+			if (verdict.kind === "deny" || verdict.kind === "probe") {
 				throw new RequestError(`playpen gatekeeper: ${verdict.reason}`, 403);
 			}
 			if (verdict.target.host === hostname) return {};

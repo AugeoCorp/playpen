@@ -18,13 +18,27 @@ let exists = false;
 /** The policy the sandbox was brought up behind, as the fence was handed it. */
 let fencedWith: { allow: string[]; mode: string } | null = null;
 /** What the fake fence reports for a running VM; a test overrides it. */
-let fenceState: "sealed" | "sealed-no-gatekeeper" | "unsealed" = "sealed";
+let fenceState:
+	| "sealed"
+	| "sealed-no-egress"
+	| "sealed-no-gatekeeper"
+	| "unsealed" = "sealed";
+/** Whether the fake helper says the guest reached the gatekeeper. */
+let helperEgress = true;
 
 mock.module("../network/fence.ts", {
 	// @ts-expect-error @types/node still types this as `namedExports`, which the
 	// runtime has deprecated. Delete this line once the types catch up.
 	exports: {
 		fenceStatus: async () => (exists ? fenceState : "stopped"),
+		liveHelper: async () => ({
+			pid: 1,
+			start: "1",
+			boot: "b",
+			gatekeeperPort: 1080,
+			ready: true,
+			egress: helperEgress,
+		}),
 		async bringUp(opts: { policy: { allow: string[]; mode: string } }) {
 			fencedWith = opts.policy;
 			calls.push("start behind the gatekeeper");
@@ -87,6 +101,7 @@ async function sandboxFor(
 	exists = false;
 	fencedWith = null;
 	fenceState = "sealed";
+	helperEgress = true;
 	t.after(() => {
 		process.env.XDG_DATA_HOME = before.xdg;
 		process.env.LIMA_HOME = before.lima;
@@ -155,6 +170,37 @@ test("a sandbox running with no gatekeeper gets one back", async (t) => {
 	fenceState = "sealed-no-gatekeeper";
 	await run();
 	assert.deepEqual(calls, ["start behind the gatekeeper", "apply masks"]);
+});
+
+test("a sandbox whose guest cannot reach the gatekeeper is started, with a warning", async (t) => {
+	const { run } = await sandboxFor(t, BOTH);
+	helperEgress = false;
+	const warnings = t.mock.method(console, "error", () => {});
+	await run();
+	const said = warnings.mock.calls
+		.map((c) => String(c.arguments[0]))
+		.join("\n");
+	assert.match(said, /has no network/);
+	assert.match(said, /systemctl status playpen-tun2proxy/);
+	assert.ok(
+		calls.includes("start behind the gatekeeper"),
+		`expected the sandbox to be started anyway, got ${calls.join(", ")}`,
+	);
+});
+
+test("a sandbox already running without egress warns again instead of restarting it", async (t) => {
+	const { run } = await sandboxFor(t, BOTH);
+	await run();
+	calls.length = 0;
+	helperEgress = false;
+	fenceState = "sealed-no-egress";
+	const warnings = t.mock.method(console, "error", () => {});
+	await run();
+	const said = warnings.mock.calls
+		.map((c) => String(c.arguments[0]))
+		.join("\n");
+	assert.match(said, /has no network/);
+	assert.deepEqual(calls, ["apply masks"]);
 });
 
 test("a sandbox running outside its fence is refused, not attached to", async (t) => {

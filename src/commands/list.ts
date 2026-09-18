@@ -15,6 +15,8 @@ export function netLabel(state: FenceState | null): string {
 	switch (state) {
 		case "sealed":
 			return "sealed";
+		case "sealed-no-egress":
+			return "no egress";
 		case "sealed-no-gatekeeper":
 			return "no gate";
 		case "unsealed":

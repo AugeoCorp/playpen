@@ -12,6 +12,7 @@ const helper = {
 	boot: "b",
 	gatekeeperPort: 1234,
 	ready: true,
+	egress: true,
 };
 
 test("a sandbox's sockets and logs live together under the data directory", () => {
@@ -59,12 +60,23 @@ test("a fenced VM whose helper died has nothing answering its egress", () => {
 	);
 });
 
+test("a fenced VM whose guest never reached the gatekeeper is sealed with no egress", () => {
+	assert.equal(
+		classifyFence({
+			guestNetNs: THEIRS,
+			ourNetNs: OURS,
+			helper: { ...helper, egress: false },
+		}),
+		"sealed-no-egress",
+	);
+});
+
 test("a helper that has not finished starting does not count as a gatekeeper", () => {
 	assert.equal(
 		classifyFence({
 			guestNetNs: THEIRS,
 			ourNetNs: OURS,
-			helper: { ...helper, ready: false },
+			helper: { ...helper, ready: false, egress: false },
 		}),
 		"sealed-no-gatekeeper",
 	);

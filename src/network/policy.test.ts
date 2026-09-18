@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { decide, HOST_ALIAS, type Policy } from "./policy.ts";
+import { decide, HOST_ALIAS, type Policy, PROBE_HOST } from "./policy.ts";
 
 function enforcing(allow: readonly string[]): Policy {
 	return { allow, mode: "enforce" };
@@ -128,4 +128,20 @@ test("log mode never opens this machine: localhost, 127.0.0.1 and an unlisted al
 test("in log mode, a host that is actually allowed is still a plain allow, not a report", () => {
 	const v = decide(logging(["github.com"]), "github.com", 443);
 	assert.equal(v.kind, "allow");
+});
+
+test("probe.playpen.internal is answered as a probe, never dialed, and needs no allow entry", () => {
+	const v = decide(enforcing([]), PROBE_HOST, 80);
+	assert.deepEqual(v, {
+		kind: "probe",
+		reason: `${PROBE_HOST} is the fence's own liveness check; nothing is dialed`,
+	});
+});
+
+test("probe.playpen.internal stays a probe even when log mode would allow anything", () => {
+	assert.equal(decide(logging([]), PROBE_HOST, 80).kind, "probe");
+});
+
+test("probe.playpen.internal stays a probe even when the project allows it by name", () => {
+	assert.equal(decide(enforcing([PROBE_HOST]), PROBE_HOST, 443).kind, "probe");
 });

@@ -7,6 +7,14 @@
 export const HOST_ALIAS = "host.playpen.internal";
 
 /**
+ * The name the fence's own liveness check asks for. A request for it proves
+ * the guest's route to the gatekeeper is carrying traffic and nothing else:
+ * it is answered from here, never dialed, so it needs no allow entry and
+ * reaches no host.
+ */
+export const PROBE_HOST = "probe.playpen.internal";
+
+/**
  * A guess, not a measurement: the hosts Claude Code and common package
  * managers seem likely to need. Provisional until a `mode: "log"` run of
  * Claude Code against real projects replaces it with the hosts actually
@@ -33,6 +41,7 @@ export interface Policy {
 export type Verdict =
 	| { kind: "allow"; target: { host: string; port: number }; reason: string }
 	| { kind: "deny"; reason: string }
+	| { kind: "probe"; reason: string }
 	| { kind: "report"; target: { host: string; port: number }; reason: string };
 
 type Entry =
@@ -109,6 +118,7 @@ function decideTarget(
 	reason: string;
 	/** Refused in every mode: log mode opens the internet, never this machine. */
 	final?: true;
+	probe?: true;
 } {
 	const entries = policy.allow
 		.map(parseEntry)
@@ -121,6 +131,15 @@ function decideTarget(
 			final: true,
 			target: { host: hostname, port },
 			reason: `cannot parse host "${hostname}" or port ${port}`,
+		};
+	}
+
+	if (host === PROBE_HOST) {
+		return {
+			allowed: false,
+			probe: true,
+			target: { host, port },
+			reason: `${PROBE_HOST} is the fence's own liveness check; nothing is dialed`,
 		};
 	}
 
@@ -196,11 +215,12 @@ export function decide(
 	hostname: string,
 	port: number,
 ): Verdict {
-	const { allowed, target, reason, final } = decideTarget(
+	const { allowed, target, reason, final, probe } = decideTarget(
 		policy,
 		hostname,
 		port,
 	);
+	if (probe) return { kind: "probe", reason };
 	if (allowed) return { kind: "allow", target, reason };
 	if (policy.mode === "log" && !final)
 		return { kind: "report", target, reason };

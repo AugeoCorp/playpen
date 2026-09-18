@@ -5,7 +5,7 @@ import { ensureBase, findBase } from "../image/bake.ts";
 import { baseImage } from "../image/base.ts";
 import { maskScript, render, serialize } from "../image/render.ts";
 import * as lima from "../lima/client.ts";
-import { bringUp, fenceStatus } from "../network/fence.ts";
+import { bringUp, fenceStatus, liveHelper } from "../network/fence.ts";
 import { BUILTIN_ALLOW } from "../network/policy.ts";
 import { confirm } from "../prompt.ts";
 import * as history from "./history.ts";
@@ -285,6 +285,22 @@ async function startFenced(sb: Sandbox, template: Template): Promise<void> {
 		},
 		log: (text) => process.stderr.write(text),
 	});
+	await warnWithoutEgress(sb);
+}
+
+/**
+ * The fence came up and the guest still cannot reach the gatekeeper, so the
+ * sandbox has no network at all. Said here rather than left in helper.log,
+ * which nobody reads when the command it belongs to succeeded.
+ */
+async function warnWithoutEgress(sb: Sandbox): Promise<void> {
+	const helper = await liveHelper(sb.sandbox);
+	if (helper === null || helper.egress) return;
+	console.error(`warning: ${sb.sandbox} has no network`);
+	console.error(`  the guest cannot reach the gatekeeper through its fence`);
+	console.error(
+		`  check its side: playpen run -- systemctl status playpen-tun2proxy`,
+	);
 }
 
 export async function ensureRunning(sb: Sandbox): Promise<Running> {
@@ -313,6 +329,8 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 			// survives a killed helper, and nothing else brings egress back.
 			if (fence === "stopped" || fence === "sealed-no-gatekeeper") {
 				await startFenced(sb, template);
+			} else if (fence === "sealed-no-egress") {
+				await warnWithoutEgress(sb);
 			}
 			await applyMasks(sb, template.masks);
 			await store.touch(sb.sandbox);

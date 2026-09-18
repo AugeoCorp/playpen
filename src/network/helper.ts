@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { unlink } from "node:fs/promises";
+import { open, stat, unlink } from "node:fs/promises";
 import { exists, writeAtomic } from "../fs.ts";
 import * as lima from "../lima/client.ts";
 import { self } from "../session/proc.ts";
@@ -20,6 +20,7 @@ import {
 	type LogEntry,
 	startGatekeeper,
 } from "./gatekeeper.ts";
+import { PROBE_HOST } from "./policy.ts";
 
 /**
  * The two processes fence.ts describes, as commands: `__net-helper` outside the
@@ -34,6 +35,13 @@ import {
 const POLL_MS = 3_000;
 
 const GUEST_PROXY_PORT = 1080;
+
+/**
+ * How long the guest gets to answer the egress probe. tun2proxy's unit retries
+ * every 2 s, so a guest whose tunnel is merely slow to come up is well inside
+ * this; one that is still silent at the end of it is broken, not slow.
+ */
+const PROBE_WINDOW_MS = 60_000;
 
 function say(text: string): void {
 	console.error(`[${new Date().toISOString()}] ${text}`);
@@ -105,6 +113,7 @@ export async function runHelper(
 	const reattach = state !== "stopped";
 	if (reattach) say(`${instance} is already fenced; reattaching`);
 
+	const logFrom = await fileSize(paths.gatekeeperLog);
 	const gatekeeper = await startGatekeeper({
 		policy,
 		log: jsonLineAppender(paths.gatekeeperLog),
@@ -141,6 +150,7 @@ export async function runHelper(
 		...owner,
 		gatekeeperPort: gatekeeper.port,
 		ready: false,
+		egress: false,
 	});
 
 	let stopping = false;
@@ -167,17 +177,97 @@ export async function runHelper(
 		return 1;
 	}
 
+	const egress = await guestReachesGatekeeper(instance, paths, logFrom);
 	await writeHelper(sandbox, {
 		...owner,
 		gatekeeperPort: gatekeeper.port,
 		ready: true,
+		egress,
 	});
 	say(`${instance} is up and fenced`);
+	if (egress) {
+		say(`the guest reached the gatekeeper`);
+	} else {
+		// Still ready, and the VM keeps running: it is fenced and usable, which
+		// is what a sandbox with a broken tunnel needs in order to be repaired.
+		say(`the guest cannot reach the gatekeeper: this sandbox has no network`);
+		say(`  check its side: playpen run -- systemctl status playpen-tun2proxy`);
+	}
 
 	await waitWhileRunning(instance);
 	say(`${instance} is no longer running; shutting the fence down`);
 	await teardown(true);
 	return 0;
+}
+
+/**
+ * Does the guest's own traffic reach the gatekeeper? Everything else the helper
+ * knows is from out here, where a guest whose tun2proxy died looks exactly like
+ * a healthy one.
+ *
+ * The request is driven from outside the fence over Lima's control path, so a
+ * sandbox that passes has both directions working. `PROBE_HOST` is answered by
+ * the policy and never dialed, so this costs no connection and needs no allow
+ * entry; its refusal in the log is the whole signal. `--noproxy` keeps any
+ * proxy variable in the guest out of it: only the route can carry this.
+ */
+async function guestReachesGatekeeper(
+	instance: string,
+	paths: FencePaths,
+	logFrom: number,
+): Promise<boolean> {
+	const deadline = Date.now() + PROBE_WINDOW_MS;
+	for (;;) {
+		await lima
+			.runScript(
+				instance,
+				`curl -s -o /dev/null --max-time 15 --noproxy '*' http://${PROBE_HOST}/ || true`,
+			)
+			.catch((err: unknown) =>
+				say(`warning: could not probe the guest: ${err}`),
+			);
+		if (await probeLogged(paths.gatekeeperLog, logFrom)) return true;
+		if (Date.now() > deadline) return false;
+		await sleep(2_000);
+	}
+}
+
+/** A log that does not exist yet has nothing in it from a previous run. */
+async function fileSize(path: string): Promise<number> {
+	try {
+		return (await stat(path)).size;
+	} catch {
+		return 0;
+	}
+}
+
+/** Only what this helper's own gatekeeper appended: a `probe` line from the
+ * sandbox's last run would otherwise pass for this one's. */
+async function probeLogged(path: string, from: number): Promise<boolean> {
+	let text: string;
+	try {
+		const handle = await open(path, "r");
+		try {
+			const { size } = await handle.stat();
+			if (size <= from) return false;
+			const buffer = Buffer.alloc(size - from);
+			const { bytesRead } = await handle.read(buffer, 0, buffer.length, from);
+			text = buffer.subarray(0, bytesRead).toString("utf8");
+		} finally {
+			await handle.close();
+		}
+	} catch {
+		return false;
+	}
+	for (const line of text.split("\n")) {
+		if (line === "") continue;
+		try {
+			if ((JSON.parse(line) as LogEntry).verdict === "probe") return true;
+		} catch {
+			// A half-written last line; the next pass reads it whole.
+		}
+	}
+	return false;
 }
 
 /**
