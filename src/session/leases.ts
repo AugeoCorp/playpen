@@ -1,11 +1,4 @@
-import {
-	mkdir,
-	readdir,
-	readFile,
-	rm,
-	unlink,
-	writeFile,
-} from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { dataDir } from "../config.ts";
 import { writeAtomic } from "../fs.ts";
