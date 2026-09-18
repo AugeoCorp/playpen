@@ -28,23 +28,39 @@ Three layers: the guest, the fence (an unprivileged network namespace made with
 `bwrap --unshare-net`), and the host. Two paths cross it: the agent's own
 traffic going out, and `limactl shell` coming in.
 
-**Traffic out.** The guest runs `tun2proxy-bin`, a program that creates a tun
-device -- a virtual network interface the kernel routes packets to instead of a
-real one -- and hands every packet it catches to an HTTP proxy. It is started as
-a systemd unit (`tun2proxy()` in `src/image/layers.ts`) with:
+**Traffic out.** The guest runs `tun2proxy-bin`, a program that reads packets
+from a tun device -- a virtual network interface the kernel routes packets to
+instead of a real one -- and hands each one to an HTTP proxy. It is started as a
+systemd unit (`tun2proxy()` in `src/image/layers.ts`) that lays the device and
+the routes down itself before running:
 
 ```
-tun2proxy-bin --proxy http://192.168.5.2:1080 --setup --dns virtual --bypass 192.168.5.0/24
+tun2proxy-bin --proxy http://192.168.5.2:1080 --tun tun0 --dns virtual
 ```
 
 `192.168.5.2` is the address Lima's user-mode networking gives the guest for
-reaching "the host". `--setup` installs the tun device and takes over the
-default route. `--dns virtual` makes tun2proxy answer the guest's DNS lookups
-itself with synthetic addresses, so a request still carries the hostname when it
-reaches the proxy -- nothing in the guest needs a working resolver, and no name
-ever needs to leave it separately. `--bypass 192.168.5.0/24` keeps replies to
-qemu's own gateway off the tun; without it the guest's side of the ssh
-connection Lima drives it through would go into the tunnel too and die.
+reaching "the host". `--dns virtual` makes tun2proxy answer the guest's DNS
+lookups itself with synthetic addresses from `198.18.0.0/15`, so a request still
+carries the hostname when it reaches the proxy, and no name ever needs to leave
+the guest separately.
+
+The unit's `ExecStartPre=` lines do what tun2proxy's own `--setup` would: create
+`tun0`, address it, and route `0.0.0.0/1` and `128.0.0.0/1` over it, which take
+the default route without replacing it. `--setup` itself is not used because it
+fails on the 26.04 base's kernel
+(`Failed to set up TProxy: Received a netlink error message Invalid argument (os error 22)`)
+before it ever creates the tun, crash-looping the unit; the same binary and
+flags work on kernel 6.8. Nothing has to be kept off the tun by hand: eth0's
+connected route for `192.168.5.0/24` is more specific than `0.0.0.0/1`, so the
+ssh connection Lima drives the guest through stays on eth0.
+
+DNS needs one more step, because the guest resolves through systemd-resolved and
+its uplink is qemu's own resolver on eth0, which is inside the fence with no
+route out. The unit runs `resolvectl dns tun0 198.18.0.1` and
+`resolvectl domain tun0 '~.'`, which makes tun0 the resolver link for every
+domain, so the query goes into the tunnel and tun2proxy answers it.
+`ExecStopPost=` reverts both and deletes the device, so `Restart=always` starts
+from a clean interface.
 
 Because qemu itself runs inside the fence, `192.168.5.2` is not the real host's
 loopback -- it is the fence's own. Inside the fence, a `socat` process listens
@@ -195,10 +211,17 @@ reattaches and restores it; and `limactl stop` tears the fence down cleanly. All
 14 passed, run as an unprivileged user in a container, Lima 2.2.0 under software
 emulation.
 
-What has not been run: `playpen start` itself against a baked base image -- the
-base's own `tun2proxy()` systemd unit has never been exercised, only the binary
-copied in by hand for the e2e run; a host reboot; and any of this on the
-maintainer's own machine.
+`playpen start` against a baked base has now been run too, on Ubuntu 26.04
+(kernel 7.0.0-28) under the same software emulation: the base's own
+`tun2proxy()` unit comes up `active` with nothing done by hand,
+`ip route get 1.1.1.1` answers `dev tun0`, `registry.npmjs.org` returns 200
+through the chain, a host the project allows and one it does not are logged
+`allow` and `deny`, and the helper's probe is logged. Disabling the unit and
+starting again produced the `no egress` state, the warning, and `egress: false`;
+re-enabling it restored the 200.
+
+What has not been run: a host reboot, and any of this on the maintainer's own
+machine.
 
 ## Rejected on the way
 

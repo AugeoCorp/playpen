@@ -125,9 +125,27 @@ export function mise() {
  * 192.168.5.2:1080, the address Lima's user-mode networking gives the guest
  * for the host's loopback. A route rather than a proxy setting, so programs
  * that never read one are covered too. `--dns virtual` makes tun2proxy answer
- * DNS itself, so the guest needs no resolver. `--bypass 192.168.5.0/24` is
- * load-bearing: without it the guest's replies to qemu's gateway go into the
- * tunnel, and the ssh session Lima drives the VM through dies with them.
+ * DNS itself from 198.18.0.0/15, so a request still carries its hostname when
+ * it reaches the gatekeeper.
+ *
+ * The device and the routes are laid down by the unit rather than by
+ * tun2proxy's own `--setup`, which on the Ubuntu 26.04 base (kernel 7.0.0-28)
+ * dies before it creates the tun with `tproxy_config::common ERROR Failed to
+ * set up TProxy: Received a netlink error message Invalid argument (os error
+ * 22)`, and crash-loops the unit. The same binary and flags succeed on kernel
+ * 6.8. The steps below are the ones the tun2proxy README documents for a
+ * manual setup, and were measured to carry registry.npmjs.org to a 200 on both
+ * kernels.
+ *
+ * `--bypass 192.168.5.0/24` is gone with `--setup`: it only ever fed
+ * tun2proxy's own routing setup, and eth0's connected route for that subnet is
+ * already more specific than `0.0.0.0/1`, so the ssh session Lima drives the
+ * VM through never enters the tunnel.
+ *
+ * The guest resolves through systemd-resolved, whose uplink is qemu's DNS on
+ * eth0 -- unreachable from inside the fence. `resolvectl` points it at the
+ * tunnel instead; `~.` makes tun0 the link for every domain, not just the ones
+ * eth0 does not claim.
  */
 const TUN2PROXY_VERSION = "0.8.3";
 
@@ -173,11 +191,26 @@ export function tun2proxy() {
 			"cat > /etc/systemd/system/playpen-tun2proxy.service <<'UNIT'",
 			"[Unit]",
 			"Description=playpen guest-side transparent proxy (tun2proxy)",
-			"After=network-online.target",
-			"Wants=network-online.target",
+			"After=network-online.target systemd-resolved.service",
+			"Wants=network-online.target systemd-resolved.service",
 			"",
 			"[Service]",
-			"ExecStart=/usr/local/bin/tun2proxy-bin --proxy http://192.168.5.2:1080 --setup --dns virtual --bypass 192.168.5.0/24",
+			// The ExecStopPost delete does not always land before the next start:
+			// on the 26.04 guest, every `systemctl kill -s KILL` cost one restart
+			// to `ip tuntap add` answering EBUSY. With this line each of three
+			// kills came back on the first attempt.
+			"ExecStartPre=-/usr/sbin/ip link del tun0",
+			"ExecStartPre=/usr/sbin/ip tuntap add dev tun0 mode tun",
+			"ExecStartPre=/usr/sbin/ip addr add 10.0.0.1/24 dev tun0",
+			"ExecStartPre=/usr/sbin/ip link set tun0 up",
+			"ExecStartPre=/usr/sbin/ip route add 0.0.0.0/1 dev tun0",
+			"ExecStartPre=/usr/sbin/ip route add 128.0.0.0/1 dev tun0",
+			"ExecStartPre=/usr/bin/resolvectl dns tun0 198.18.0.1",
+			'ExecStartPre=/usr/bin/resolvectl domain tun0 "~."',
+			"ExecStart=/usr/local/bin/tun2proxy-bin --proxy http://192.168.5.2:1080 --tun tun0 --dns virtual",
+			"ExecStopPost=-/usr/bin/resolvectl revert tun0",
+			// Takes the routes with it, so Restart=always starts from nothing.
+			"ExecStopPost=-/usr/sbin/ip link del tun0",
 			"Restart=always",
 			"RestartSec=2",
 			"",
