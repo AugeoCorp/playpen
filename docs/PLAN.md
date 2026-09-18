@@ -170,6 +170,20 @@ bugs.
   cap or a GC story first: bases share no extents with each other, so one image
   per project is one full copy per project.
 
+### 5. A measured built-in host list
+
+`BUILTIN_ALLOW` in `src/network/policy.ts` is a guess, and says so in its own
+comment. Replace it: run Claude Code against real projects on the maintainer's
+machine with `network.mode: "log"`, read the hosts it actually reached out of
+`gatekeeper.log`, then swap that list in for `BUILTIN_ALLOW` and drop the
+"guess" wording from its comment and from `docs/NETWORK.md`.
+
+### 6. `list` and `doctor` show fence state
+
+In progress on this branch, by another agent: `playpen list` gains a `NET`
+column and `playpen doctor` checks for `bwrap` and `socat`. Lands with this
+branch.
+
 ## Tests
 
 ```
