@@ -63,6 +63,10 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
   the binary in and starts it by hand).
 - `destroy` still boots a stopped sandbox unfenced to archive Claude history. It
   is about to be deleted, but for those seconds its egress is unfiltered.
+- `playpen stop` followed at once by `playpen start` can report "running" while
+  the VM is still shutting down: Lima's status and `qemu.pid` lag the stop for a
+  few seconds. Seen once in the container; the helper's record disappearing is
+  the reliable signal that the stop has finished.
 - The base's `claude code to be installed` readiness probe waits up to 600s for
   `claude` even when a provision layer already failed loudly in
   `cloud-init-output.log`, so a broken bake reports a timeout rather than its

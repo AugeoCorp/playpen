@@ -226,9 +226,19 @@ async function createIfMissing(): Promise<string | null> {
 	return code === 0 ? null : `limactl create exited ${code}: ${stderr.trim()}`;
 }
 
+/**
+ * This VM has none of the base image's layers, so tun2proxy is not running yet
+ * and the helper's probe finds no egress: the honest state here is
+ * sealed-no-egress. The reattach in section 4 probes again, after section 3
+ * has started tun2proxy by hand, and is where "sealed" is expected.
+ */
 async function startFenced(): Promise<string | null> {
 	await up();
-	return wanted("fence state", "sealed", await fenceStatus(sandbox, instance));
+	return wanted(
+		"fence state",
+		"sealed-no-egress",
+		await fenceStatus(sandbox, instance),
+	);
 }
 
 /**
