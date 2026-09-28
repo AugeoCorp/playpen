@@ -13,6 +13,9 @@ import {
  */
 export const HOST_ALIAS = "host.playpen.internal";
 
+/** The fence's own names all end here; none of them is a host on the internet. */
+export const FENCE_DOMAIN = ".playpen.internal";
+
 /**
  * The name the fence's own liveness check asks for. A request for it proves
  * the guest's route to the gatekeeper is carrying traffic and nothing else:
@@ -172,10 +175,14 @@ export function parseEntry(raw: string): Entry | null {
 	return null;
 }
 
-/** The name a secret is injected for: a plain hostname, never an address or a port. */
+/**
+ * The name a secret is injected for: a plain hostname, never an address or a
+ * port, and never one of the fence's own names, which stand for this machine.
+ */
 export function parseSecretHost(raw: string): string | null {
 	const entry = parseEntry(raw);
-	return entry?.kind === "host" && entry.port === null ? entry.host : null;
+	if (entry?.kind !== "host" || entry.port !== null) return null;
+	return entry.host.endsWith(FENCE_DOMAIN) ? null : entry.host;
 }
 
 export function isEnvName(name: string): boolean {

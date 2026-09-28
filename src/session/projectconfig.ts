@@ -3,7 +3,7 @@ import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import { exists } from "../fs.ts";
 import { describeIssue } from "../issue.ts";
-import { isIpv4, isPort } from "../network/names.ts";
+import { isPort } from "../network/names.ts";
 import {
 	isEnvName,
 	type PortForward,
@@ -54,11 +54,11 @@ export type NetworkMode = z.infer<typeof networkMode>;
  * `secrets` names credentials from this machine's environment that the
  * sandbox may use on given hosts: `{ env: "GH_TOKEN", hosts: ["github.com"] }`.
  * Names only, never a value: this file sits in the project directory, which
- * the sandbox mounts. The value is read from the environment of the `playpen
- * start` that runs, and nothing is injected yet: in this version an entry is
+ * the sandbox mounts. Nothing is injected yet: in this version an entry is
  * validated and reported and does nothing else. Each host is a plain hostname,
- * not an address and without a port, and is allowed as if it were in `allow`.
- * A mistake in `secrets` fails the load rather than being dropped.
+ * not an address and without a port; injection will match it exactly, and it
+ * is allowed as if it were in `allow`, which covers its subdomains. A mistake
+ * in `secrets` fails the load rather than being dropped.
  *
  * `mode: "log"` records verdicts and refuses nothing, for finding out what a
  * project reaches. It is never the default.
@@ -241,63 +241,46 @@ const SECRET_ENV = "must be an environment variable name like GH_TOKEN";
  * port has nothing to match. `parseSecretHost` in network/policy.ts decides,
  * because policy.json is read back through it.
  */
+const SECRET_HOST = "must be a hostname, without a port and not an address";
+
 const secretHost = z
-	.string({ error: "must be a hostname without a port" })
-	.transform((raw, ctx) => {
-		const host = parseSecretHost(raw);
-		if (host !== null) return host;
-		ctx.addIssue({
-			code: "custom",
-			message: isIpv4(raw.trim().replace(/:\d+$/, ""))
-				? "must be a hostname, not an address"
-				: "must be a hostname without a port",
-		});
-		return z.NEVER;
-	});
+	.string({ error: SECRET_HOST })
+	.transform((raw) => parseSecretHost(raw))
+	.pipe(z.string({ error: SECRET_HOST }));
 
 /**
- * Loose, then checked for extra keys by hand: a `value` written here would be
- * a secret in a file the guest can read, and zod would otherwise strip it
- * silently.
+ * Strict: a `value` written here would be a secret in a file the guest can
+ * read, and an object schema would otherwise strip it silently.
  */
-const secretEntry = z
-	.looseObject(
-		{
-			env: z
-				.string({ error: SECRET_ENV })
-				.refine(isEnvName, { error: SECRET_ENV }),
-			hosts: z
-				.array(secretHost, { error: "must be an array of hostnames" })
-				.min(1, { error: "must name at least one host" }),
-		},
-		{ error: "must be { env, hosts }" },
-	)
-	.refine(
-		(entry) => Object.keys(entry).every((k) => k === "env" || k === "hosts"),
-		{
-			error:
-				"must be { env, hosts } and nothing else; a value never goes in this file",
-		},
-	)
-	.transform(({ env, hosts }) => ({ env, hosts }));
+const secretEntry = z.strictObject(
+	{
+		env: z
+			.string({ error: SECRET_ENV })
+			.refine(isEnvName, { error: SECRET_ENV }),
+		hosts: z
+			.array(secretHost, { error: "must be an array of hostnames" })
+			.min(1, { error: "must name at least one host" }),
+	},
+	{
+		error: (issue) =>
+			issue.code === "unrecognized_keys"
+				? "must be { env, hosts } and nothing else; a value never goes in this file"
+				: "must be { env, hosts }",
+	},
+);
 
-/** Two entries for one variable could send it to different hosts by accident. */
-const secrets = z
-	.array(secretEntry, { error: "must be an array of { env, hosts }" })
-	.superRefine((entries, ctx) => {
-		const names = entries.map((entry) => entry.env);
-		const twice = names.find((name, i) => names.indexOf(name) !== i);
-		if (twice !== undefined)
-			ctx.addIssue({ code: "custom", message: `names ${twice} twice` });
-	});
+const secrets = z.array(secretEntry, {
+	error: "must be an array of { env, hosts }",
+});
 
 /**
  * Shape problems — `allow` that is not an array, a `mode` that is neither
  * spelling, any `ports` or `secrets` entry at all that is wrong — fail the load
  * rather than being dropped: a `mode` meant to say "log" that was quietly
  * dropped would enforce instead, a dropped port would leave a client in the
- * guest talking to whatever else holds that port, and a dropped secret would
- * send the placeholder to the real host.
+ * guest talking to whatever else holds that port, a dropped secret host would
+ * let the guest's placeholder reach that host unswapped, and a dropped entry
+ * or a stray `value` key would hide behind a warning.
  */
 const networkSchema = z
 	.object(

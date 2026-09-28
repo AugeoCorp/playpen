@@ -108,7 +108,7 @@ async function loadConfig(sb: Sandbox): Promise<{
 		);
 	}
 	for (const { env, hosts } of network.secrets) {
-		console.error(`injecting ${env} on ${hosts.join(", ")}`);
+		console.error(`naming ${env} for ${hosts.join(", ")} (not injected yet)`);
 	}
 	return { masked, setup, network };
 }

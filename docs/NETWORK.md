@@ -145,8 +145,8 @@ process the guest runs, not a port, so nothing here applies to it.
 ## Lifecycle
 
 `playpen start` writes the merged policy (the built-in list plus the project's
-`network.allow`, a `localhost:<host>` for each of its `network.ports`, and the
-ports themselves) to disk, then spawns the helper process detached so it
+`network.allow`, a `localhost:<host>` for each of its `network.ports`, every
+host named by `network.secrets`, and the ports and secrets themselves) to disk, then spawns the helper process detached so it
 outlives the command that started it. The helper starts the gatekeeper and the
 two relays, brings the VM up inside a fresh `bwrap` namespace, and waits for the
 guest to answer before returning -- streaming its own log to the terminal in the
@@ -289,7 +289,9 @@ already merged -- and a mode, and applies these rules to every `CONNECT`:
   is rejected when the config is read. A `network.ports` entry brings its own
   `localhost:<host>` entry (see "Host ports at the guest's own `localhost`"
   above), and its connections arrive as `host.playpen.internal:<host>` like any
-  other, so this rule is the only one they meet.
+  other, so this rule is the only one they meet. A `network.secrets` host
+  brings its own bare entry the same way, and the fence's own names are
+  refused there, so no secret can be named for this machine.
 - **The guest's own idea of loopback never reaches the gatekeeper** -- that
   traffic stays inside the guest. A `CONNECT` that literally names `localhost`
   or `127.0.0.1` is therefore read as an attempt to reach the _host's_ loopback

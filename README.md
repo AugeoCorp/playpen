@@ -79,7 +79,7 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
 | `masked`  | `string[]`                                                                                                                                             | Project-relative dirs given guest-local storage, not 9p                                                       |
 | `setup`   | `string[]`                                                                                                                                             | Shell commands run in the guest, after masks, in order                                                        |
-| `network` | `{ allow?: string[]; mode?: "enforce" \| "log"; ports?: (number \| { host: number; guest: number })[]; secrets?: { env: string; hosts: string[] }[] }` | Hosts this project may reach, on top of the ones playpen ships, and host ports it sees at its own `localhost` |
+| `network` | `{ allow?: string[]; mode?: "enforce" \| "log"; ports?: (number \| { host: number; guest: number })[]; secrets?: { env: string; hosts: string[] }[] }` | Hosts this project may reach, on top of the ones playpen ships, host ports it sees at its own `localhost`, and credentials it names |
 
 - `masked` gives host and guest their own copy of a path: the 9p share is slow,
   and the two often need different contents there — native modules and toolchain
@@ -116,11 +116,12 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
 - `network.secrets` names credentials from your environment that the sandbox may
   use on given hosts: `{ env: "GH_TOKEN", hosts: ["github.com"] }`. Names only,
   never a value — the file sits in the project directory, which the sandbox
-  mounts. The value is read from your environment when you run `playpen start`.
-  `env` is an upper-case variable name; each host is a plain hostname, with no
-  port and not an address, and is allowed as if it were in `allow`. A mistake
-  here stops the config loading rather than being skipped. Nothing is injected
-  yet: in this version an entry is checked and reported and does nothing else.
+  mounts. `env` is an upper-case variable name; each host is a plain hostname,
+  with no port and not an address. Injection will match the host exactly; the
+  allow entry it implies covers subdomains, like any entry in `allow`. A
+  mistake here stops the config loading rather than being skipped. Nothing is
+  injected yet: in this version an entry is checked and reported and does
+  nothing else.
 - `mode: "log"` records what the sandbox reaches and blocks nothing on the
   internet side; your own machine's localhost stays closed in every mode. Use it
   to find the hosts a project needs, then list them; the default is `enforce`.

@@ -53,6 +53,14 @@ test("a bare hostname entry allows any subdomain", () => {
 	assert.equal(v.kind, "allow");
 });
 
+test("a secret's host is not reachable unless allow names it: decide never reads secrets", () => {
+	const policy: Policy = {
+		...enforcing([]),
+		secrets: [{ env: "GH_TOKEN", hosts: ["github.com"] }],
+	};
+	assert.equal(decide(policy, "github.com", 443).kind, "deny");
+});
+
 test("a bare hostname entry allows any port", () => {
 	const v = decide(enforcing(["github.com"]), "github.com", 8443);
 	assert.equal(v.kind, "allow");

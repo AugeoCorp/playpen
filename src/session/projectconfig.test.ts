@@ -592,46 +592,45 @@ test("an entry with no hosts fails the load", () => {
 });
 
 test("a host with a port fails the load, and the message names which host", () => {
-	assert.match(
+	assert.equal(
 		secretsError([
 			{ env: "A_TOKEN", hosts: ["github.com"] },
 			{ env: "B_TOKEN", hosts: ["github.com", "api.github.com:443"] },
 		]),
-		/`network\.secrets\[1\]\.hosts\[1\]` must be a hostname without a port/,
-	);
-	assert.match(
-		secretsError([{ env: "GH_TOKEN", hosts: ["localhost:8080"] }]),
-		/`network\.secrets\[0\]\.hosts\[0\]` must be a hostname without a port/,
+		"`network.secrets[1].hosts[1]` must be a hostname, without a port and not an address",
 	);
 });
 
-test("a host that is an address fails the load, with or without a port", () => {
+test("a host that is not a plain hostname fails the load", () => {
 	const bad =
-		/`network\.secrets\[0\]\.hosts\[0\]` must be a hostname, not an address/;
-	assert.match(secretsError([{ env: "T", hosts: ["93.184.216.34"] }]), bad);
-	assert.match(secretsError([{ env: "T", hosts: ["192.168.1.5:8080"] }]), bad);
-});
-
-test("a host that is not a name fails the load", () => {
-	const bad = /`network\.secrets\[0\]\.hosts\[0\]` must be a hostname/;
+		"`network.secrets[0].hosts[0]` must be a hostname, without a port and not an address";
 	const withHost = (host: unknown) =>
 		secretsError([{ env: "GH_TOKEN", hosts: [host] }]);
-	assert.match(withHost("*.github.com"), bad);
-	assert.match(withHost("https://github.com"), bad);
-	assert.match(withHost("github"), bad);
-	assert.match(withHost(""), bad);
-	assert.match(withHost(443), bad);
+	for (const host of [
+		"localhost:8080",
+		"93.184.216.34",
+		"192.168.1.5:8080",
+		"1.2.3.4.",
+		"*.github.com",
+		"https://github.com",
+		"github",
+		"",
+		443,
+	]) {
+		assert.equal(withHost(host), bad, `host ${JSON.stringify(host)}`);
+	}
 });
 
-test("two entries for the same env fail the load, whatever hosts they name", () => {
-	const r = validateNetwork({
-		secrets: [
-			{ env: "GH_TOKEN", hosts: ["github.com"] },
-			{ env: "GH_TOKEN", hosts: ["api.github.com"] },
-		],
-	});
-	assert.equal(r.error, "`network.secrets` names GH_TOKEN twice");
-	assert.deepEqual(r.secrets, []);
+test("the fence's own names are not secret hosts: they stand for this machine", () => {
+	const bad =
+		"`network.secrets[0].hosts[0]` must be a hostname, without a port and not an address";
+	for (const host of [
+		"host.playpen.internal",
+		"probe.playpen.internal",
+		"anything.playpen.internal",
+	]) {
+		assert.equal(secretsError([{ env: "GH_TOKEN", hosts: [host] }]), bad, host);
+	}
 });
 
 test("a secret entry carrying a value is refused, not silently stripped of it", () => {

@@ -328,7 +328,7 @@ test("a secret's hosts are allowed without being listed, and the secret reaches 
 	});
 });
 
-test("each secret is reported by name and hosts, never by value", async (t) => {
+test("each secret is reported by name and hosts, and its value stays out of the output, so a later injector cannot print it", async (t) => {
 	process.env.PLAYPEN_TEST_TOKEN = "ghp_not-to-be-printed";
 	t.after(() => {
 		delete process.env.PLAYPEN_TEST_TOKEN;
@@ -342,9 +342,9 @@ test("each secret is reported by name and hosts, never by value", async (t) => {
 	const lines = said.mock.calls.map((c) => String(c.arguments[0]));
 	assert.ok(
 		lines.includes(
-			"injecting PLAYPEN_TEST_TOKEN on api.github.com, github.com",
+			"naming PLAYPEN_TEST_TOKEN for api.github.com, github.com (not injected yet)",
 		),
-		`expected an injecting line, got:\n${lines.join("\n")}`,
+		`expected a naming line, got:\n${lines.join("\n")}`,
 	);
 	assert.equal(
 		lines.some((line) => line.includes("ghp_not-to-be-printed")),
