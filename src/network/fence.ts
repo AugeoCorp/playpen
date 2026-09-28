@@ -16,6 +16,7 @@ import { readAppended, sizeOf, writeAtomic } from "../fs.ts";
 import { describeIssue } from "../issue.ts";
 import { assertSandboxName } from "../session/identity.ts";
 import { isLive, ownerSchema } from "../session/proc.ts";
+import { networkMode } from "../session/projectconfig.ts";
 import { capture } from "../sh.ts";
 import { sleep } from "../time.ts";
 import { isPort } from "./names.ts";
@@ -182,7 +183,7 @@ const policyFile = z.object(
 		allow: z.array(z.string({ error: "must be a string" }), {
 			error: "must be an array of strings",
 		}),
-		mode: z.enum(["enforce", "log"], { error: 'must be "enforce" or "log"' }),
+		mode: networkMode,
 		ports: z.array(portForward, {
 			error: "must be an array of { host, guest }",
 		}),

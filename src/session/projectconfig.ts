@@ -14,7 +14,7 @@ export const CONFIG_FILES = [CONFIG_FILE, "playpen.config.js"] as const;
 /** The file this replaced. Detected only so we can say it is no longer read. */
 export const LEGACY_IGNORE_FILE = ".playpenignore";
 
-const networkMode = z.enum(["enforce", "log"], {
+export const networkMode = z.enum(["enforce", "log"], {
 	error: 'must be "enforce" or "log"',
 });
 
