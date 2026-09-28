@@ -15,6 +15,8 @@
  * The instance is created if it does not exist and left stopped at the end.
  */
 import { readFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { limaHome } from "../config.ts";
 import { exists } from "../fs.ts";
@@ -32,7 +34,7 @@ import {
 	removeSocket,
 } from "./fence.ts";
 import type { LogEntry } from "./gatekeeper.ts";
-import { BUILTIN_ALLOW } from "./policy.ts";
+import { BUILTIN_ALLOW, HOST_ALIAS, type PortForward } from "./policy.ts";
 
 const sandbox = process.env.PLAYPEN_E2E_SANDBOX ?? "fence-e2e";
 const instance = instanceName(sandbox);
@@ -131,11 +133,23 @@ async function waitFor(
 	return `${what} did not happen within ${seconds}s`;
 }
 
-async function up(allow: readonly string[] = [allowedHost]): Promise<void> {
+/** Merges the way `startFenced` in session/lifecycle.ts does. */
+async function up(
+	allow: readonly string[] = [allowedHost],
+	ports: readonly PortForward[] = [],
+): Promise<void> {
 	await bringUp({
 		sandbox,
 		instance,
-		policy: { allow: [...BUILTIN_ALLOW, ...allow], mode: "enforce" },
+		policy: {
+			allow: [
+				...BUILTIN_ALLOW,
+				...allow,
+				...ports.map(({ host }) => `localhost:${host}`),
+			],
+			mode: "enforce",
+			ports,
+		},
 		log: (text) => process.stderr.write(text),
 	});
 }
@@ -169,6 +183,10 @@ async function main(): Promise<void> {
 		await step(
 			"a rewritten policy is applied before bringUp returns",
 			policyApplied,
+		);
+		await step(
+			"a host port listed in `ports` answers at the guest's own localhost",
+			forwardedPort,
 		);
 
 		console.log("\n4. killing the helper");
@@ -252,6 +270,55 @@ async function policyApplied(): Promise<string | null> {
 	const stamp = await policyStamp(sandbox);
 	const helper = await liveHelper(sandbox);
 	return wanted("applied policy stamp", stamp, helper?.policy ?? "none");
+}
+
+/**
+ * This VM has none of the base image's layers, so socat is installed here
+ * from Ubuntu's own archive, through the fence: its two names are allowed for
+ * the install and dropped again with the policy that lists the port. The host
+ * side is this process's own listener on the host's loopback, where nothing
+ * but a `localhost:<host>` entry can reach it.
+ */
+async function forwardedPort(): Promise<string | null> {
+	await up([allowedHost, "archive.ubuntu.com", "security.ubuntu.com"]);
+	const socat = await guest(
+		[
+			"if ! command -v socat >/dev/null; then",
+			"  apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq socat",
+			"fi >/dev/null 2>&1",
+			"command -v socat",
+		].join("\n"),
+		[],
+		true,
+	);
+	if (socat === "") return "socat did not install in the guest";
+
+	const server = createServer((_req, res) => res.end("from the host\n"));
+	await new Promise<void>((resolve) =>
+		server.listen(0, "127.0.0.1", () => resolve()),
+	);
+	try {
+		const host = (server.address() as AddressInfo).port;
+		const guestPort = 4321;
+		await up([allowedHost], [{ host, guest: guestPort }]);
+		const unbound = (await liveHelper(sandbox))?.unboundPorts ?? [];
+		if (unbound.length > 0)
+			return `the helper reports guest port ${guestPort} unbound`;
+
+		const body = await guest(
+			`curl -sS --noproxy '*' --max-time 30 http://localhost:${guestPort}/`,
+		);
+		if (body !== "from the host") {
+			return `the guest's localhost:${guestPort} answered "${body}"`;
+		}
+		const logged = (await gatekeeperLog()).some(
+			(e) => e.host === HOST_ALIAS && e.port === host && e.verdict === "allow",
+		);
+		return logged ? null : `no allow line for ${HOST_ALIAS}:${host}`;
+	} finally {
+		server.closeAllConnections();
+		server.close();
+	}
 }
 
 async function createIfMissing(): Promise<string | null> {

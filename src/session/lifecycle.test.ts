@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { mock, type TestContext, test } from "node:test";
 import { baseImage } from "../image/base.ts";
 import { imageHash } from "../image/render.ts";
+import type { Policy, PortForward } from "../network/policy.ts";
 import { baseInstanceName } from "./identity.ts";
 import type { Sandbox } from "./lifecycle.ts";
 
@@ -19,7 +20,7 @@ let exists = false;
 /** What the fake reports for an instance that exists; a test stops it. */
 let status: "Running" | "Stopped" = "Running";
 /** The policy the sandbox was brought up behind, as the fence was handed it. */
-let fencedWith: { allow: string[]; mode: string } | null = null;
+let fencedWith: Policy | null = null;
 /** What the fake fence reports for a running VM; a test overrides it. */
 let fenceState:
 	| "sealed"
@@ -28,6 +29,8 @@ let fenceState:
 	| "unsealed" = "sealed";
 /** Whether the fake helper says the guest reached the gatekeeper. */
 let helperEgress = true;
+/** The ports the fake helper says nothing could listen on in the guest. */
+let helperUnbound: PortForward[] = [];
 /** Whether the fake fence has been brought up already in this test. */
 let fenced = false;
 
@@ -43,12 +46,13 @@ mock.module("../network/fence.ts", {
 			gatekeeperPort: 1080,
 			ready: true,
 			egress: helperEgress,
+			unboundPorts: helperUnbound,
 			policy: "1:2",
 		}),
 		// Like the real one: the policy is written whatever state the fence is
 		// in, and a sandbox that is already up behind a gatekeeper is left where
 		// it is rather than started a second time.
-		async bringUp(opts: { policy: { allow: string[]; mode: string } }) {
+		async bringUp(opts: { policy: Policy }) {
 			fencedWith = opts.policy;
 			const up = fenceState === "sealed" || fenceState === "sealed-no-egress";
 			if (fenced && up) {
@@ -116,6 +120,7 @@ async function sandboxFor(
 	fencedWith = null;
 	fenceState = "sealed";
 	helperEgress = true;
+	helperUnbound = [];
 	fenced = false;
 	status = "Running";
 	t.after(() => {
@@ -191,6 +196,7 @@ test("a sandbox already running is handed the project's policy again, so a tight
 	assert.deepEqual(fencedWith, {
 		allow: [...BUILTIN_ALLOW, "example.com"],
 		mode: "enforce",
+		ports: [],
 	});
 });
 
@@ -203,7 +209,7 @@ test("destroying a stopped sandbox boots it inside the fence with nothing allowe
 	fencedWith = null;
 	calls.length = 0;
 	await destroy(sb);
-	assert.deepEqual(fencedWith, { allow: [], mode: "enforce" });
+	assert.deepEqual(fencedWith, { allow: [], mode: "enforce", ports: [] });
 	assert.equal(calls[0], "start behind the gatekeeper");
 });
 
@@ -264,7 +270,51 @@ test("the hosts a project names are allowed on top of the ones playpen ships", a
 	assert.deepEqual(fencedWith, {
 		allow: [...BUILTIN_ALLOW, "example.com"],
 		mode: "log",
+		ports: [],
 	});
+});
+
+test("a port entry brings its own localhost entry into the policy, and reaches the helper as a port", async (t) => {
+	const { run } = await sandboxFor(
+		t,
+		'export default { network: { allow: ["example.com"], ports: [1234, { host: 5000, guest: 4321 }] } };',
+	);
+	await run();
+	const { BUILTIN_ALLOW } = await import("../network/policy.ts");
+	assert.deepEqual(fencedWith, {
+		allow: [
+			...BUILTIN_ALLOW,
+			"example.com",
+			"localhost:1234",
+			"localhost:5000",
+		],
+		mode: "enforce",
+		ports: [
+			{ host: 1234, guest: 1234 },
+			{ host: 5000, guest: 4321 },
+		],
+	});
+});
+
+test("a guest port nothing could listen on is named in a warning, and the sandbox still starts", async (t) => {
+	const { run } = await sandboxFor(
+		t,
+		"export default { network: { ports: [{ host: 5000, guest: 4321 }] } };",
+	);
+	helperUnbound = [{ host: 5000, guest: 4321 }];
+	const warnings = t.mock.method(console, "error", () => {});
+	await run();
+	const said = warnings.mock.calls
+		.map((c) => String(c.arguments[0]))
+		.join("\n");
+	assert.match(
+		said,
+		/warning: host port 5000 is not at the guest's localhost:4321/,
+	);
+	assert.ok(
+		calls.includes("start behind the gatekeeper"),
+		`expected the sandbox to be started anyway, got ${calls.join(", ")}`,
+	);
 });
 
 test("the last session to detach stops the sandbox", async (t) => {
