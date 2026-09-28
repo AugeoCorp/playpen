@@ -14,6 +14,7 @@ import { dataDir, limaHome } from "../config.ts";
 import { readAppended, sizeOf, writeAtomic } from "../fs.ts";
 import { assertSandboxName } from "../session/identity.ts";
 import { isLive, type Owner } from "../session/proc.ts";
+import { capture } from "../sh.ts";
 import { sleep } from "../time.ts";
 import type { Policy } from "./policy.ts";
 
@@ -88,6 +89,12 @@ export interface HelperRecord extends Owner {
 	 * dead and everything out here still look healthy.
 	 */
 	egress: boolean;
+	/**
+	 * `policyStamp` of the policy.json the gatekeeper is deciding with, so
+	 * `bringUp` can tell a rewritten policy has been applied rather than
+	 * assume it. Empty until the first policy is loaded.
+	 */
+	policy: string;
 }
 
 export async function writeHelper(
@@ -292,23 +299,33 @@ export interface BringUpOptions {
 }
 
 /**
+ * How long a running helper gets to pick up a rewritten policy.json. It polls
+ * every few seconds (`POLL_MS` in helper.ts), so this is several polls.
+ */
+const APPLY_WINDOW_MS = 15_000;
+
+/**
  * Start the sandbox VM inside its fence and return once the guest answers.
  *
  * Returns without spawning anything when a ready helper is already running for
  * this sandbox, since a second one would fight it for the egress socket. The
  * policy is written either way: it is the running helper's source of truth,
- * which it re-reads, so this is how a sandbox that is already up is retightened.
+ * which it re-reads, so this is how a sandbox that is already up is
+ * retightened -- and the call returns only once the helper reports the new
+ * policy applied, or throws, so "updated" is never said of a policy that is
+ * not yet deciding anything. Connections already open stay open either way;
+ * the policy decides new ones.
  */
 export async function bringUp(opts: BringUpOptions): Promise<void> {
 	const { sandbox, instance } = opts;
 	const changed = await writePolicy(sandbox, opts.policy);
+	const stamp = await policyStamp(sandbox);
 
 	const state = await fenceStatus(sandbox, instance);
 	if (state === "sealed" || state === "sealed-no-egress") {
 		if (changed) {
-			opts.log(
-				`network policy updated; the running sandbox picks it up within a few seconds\n`,
-			);
+			await applied(sandbox, stamp);
+			opts.log(`network policy updated for new connections\n`);
 		}
 		return;
 	}
@@ -340,7 +357,37 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 	}
 }
 
-/** Best effort: a socket that is already gone is the outcome we wanted. */
+async function applied(sandbox: string, stamp: string): Promise<void> {
+	const deadline = Date.now() + APPLY_WINDOW_MS;
+	while ((await liveHelper(sandbox))?.policy !== stamp) {
+		if (Date.now() > deadline) {
+			throw new Error(
+				`the running sandbox has not picked up the new network policy; see ${fencePaths(sandbox).helperLog}`,
+			);
+		}
+		await sleep(500);
+	}
+}
+
+/**
+ * Kill what a fence leaves behind once its VM is gone: the inside socats,
+ * which outlive a killed helper on purpose so the next one can reattach, and
+ * the inside half itself. Found by argv, since a killed helper left no other
+ * record of them: each names one of this sandbox's socket paths or the
+ * sandbox itself, so another sandbox's fence is never touched. Best effort,
+ * like `removeSocket`: a process already gone is the outcome wanted.
+ */
+export async function killFenceLeftovers(sandbox: string): Promise<void> {
+	const paths = fencePaths(sandbox);
+	for (const pattern of [
+		paths.egress,
+		paths.control,
+		`__net-inside ${sandbox} `,
+	])
+		await capture("pkill", ["-9", "-f", pattern]);
+}
+
+/** Best effort: a socket file that is already gone is the outcome wanted. */
 export async function removeSocket(path: string): Promise<void> {
 	await unlink(path).catch(() => {});
 }

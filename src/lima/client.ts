@@ -104,12 +104,6 @@ export async function clone(source: string, target: string): Promise<void> {
 	);
 }
 
-export async function start(name: string): Promise<void> {
-	const code = await attach(LIMACTL, ["start", "--tty=false", name]);
-	if (code !== 0)
-		throw new Error(`limactl start failed for ${name} (exit ${code})`);
-}
-
 /**
  * Checked here rather than trusting callers to have gone through
  * `instanceName()`: these operations destroy VMs, so the check belongs at the

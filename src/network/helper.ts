@@ -10,6 +10,8 @@ import {
 	type FencePaths,
 	fencePaths,
 	fenceStatus,
+	type HelperRecord,
+	killFenceLeftovers,
 	liveHelper,
 	policyStamp,
 	readPolicy,
@@ -21,7 +23,12 @@ import {
 	type LogEntry,
 	startGatekeeper,
 } from "./gatekeeper.ts";
-import { NO_EGRESS_ADVICE, type Policy, PROBE_HOST } from "./policy.ts";
+import {
+	DENY_HOST,
+	NO_EGRESS_ADVICE,
+	type Policy,
+	PROBE_HOST,
+} from "./policy.ts";
 import {
 	spawnSocat,
 	tcpListenAddress,
@@ -94,21 +101,37 @@ async function reloadPolicy(sandbox: string): Promise<Policy> {
 /**
  * Waits for the VM to go away, keeping the gatekeeper's policy in step with
  * the file `playpen start` writes -- which is how a sandbox that is already up
- * picks up a tightened allow list.
+ * picks up a tightened allow list. `stamp` is the file the current policy
+ * came from; `swap` is told the new stamp with the policy so it can report
+ * what is now applied.
  */
 async function serveWhileRunning(
 	sandbox: string,
 	instance: string,
-	swap: (policy: Policy) => void,
+	stamp: string,
+	swap: (policy: Policy, stamp: string) => Promise<void>,
 ): Promise<void> {
-	let stamp = await policyStamp(sandbox);
 	while (await vmRunning(instance)) {
 		await sleep(POLL_MS);
 		const now = await policyStamp(sandbox);
 		if (now === stamp) continue;
 		stamp = now;
-		swap(await reloadPolicy(sandbox));
+		await swap(await reloadPolicy(sandbox), stamp);
 	}
+}
+
+/**
+ * Directories holding the host resolver's sockets, hidden inside the fence.
+ * A socket file crosses a network namespace -- that is what egress.sock
+ * relies on -- so a lookup from in here that reached systemd-resolved over
+ * its socket would leave the fence. Only the ones present on this host are
+ * named, since bwrap would fail on a missing mount point.
+ */
+async function hiddenResolverDirs(): Promise<string[]> {
+	const args: string[] = [];
+	for (const dir of ["/run/systemd/resolve", "/var/run/nscd"])
+		if (await exists(dir)) args.push("--tmpfs", dir);
+	return args;
 }
 
 /** Appends are serialized so the log keeps the order the verdicts happened in. */
@@ -130,6 +153,9 @@ export async function runHelper(
 	instance: string,
 ): Promise<number> {
 	const paths = fencePaths(sandbox);
+	// Stamp first: a policy.json rewritten between the two reads then differs
+	// from the stamp and is reloaded, rather than read once and taken as old.
+	const stamp = await policyStamp(sandbox);
 	let policy = await readPolicy(sandbox);
 
 	const running = await liveHelper(sandbox);
@@ -172,6 +198,7 @@ export async function runHelper(
 				"--dev-bind",
 				"/",
 				"/",
+				...(await hiddenResolverDirs()),
 				"--die-with-parent",
 				"--",
 				process.execPath,
@@ -184,13 +211,18 @@ export async function runHelper(
 		);
 	}
 
-	const owner = await self();
-	await writeHelper(sandbox, {
-		...owner,
+	let record: HelperRecord = {
+		...(await self()),
 		gatekeeperPort: gatekeeper.port,
 		ready: false,
 		egress: false,
-	});
+		policy: stamp,
+	};
+	const report = async (patch: Partial<HelperRecord>): Promise<void> => {
+		record = { ...record, ...patch };
+		await writeHelper(sandbox, record);
+	};
+	await report({});
 
 	let stopping = false;
 	const teardown = async (vmGone: boolean): Promise<void> => {
@@ -200,8 +232,12 @@ export async function runHelper(
 		relay.kill("SIGKILL");
 		await removeSocket(paths.egress);
 		// Left in place otherwise: the inside half still owns it, and a reattach
-		// needs it to keep `limactl shell` working.
-		if (vmGone) await removeSocket(paths.control);
+		// needs it to keep `limactl shell` working. Once the VM is gone nothing
+		// does, so what a reattach found running is killed along with it.
+		if (vmGone) {
+			await killFenceLeftovers(sandbox);
+			await removeSocket(paths.control);
+		}
 		await unlink(paths.helper).catch(() => {});
 	};
 	for (const signal of ["SIGTERM", "SIGINT"] as const) {
@@ -217,12 +253,7 @@ export async function runHelper(
 	}
 
 	const egress = await guestReachesGatekeeper(instance, paths, logFrom);
-	await writeHelper(sandbox, {
-		...owner,
-		gatekeeperPort: gatekeeper.port,
-		ready: true,
-		egress,
-	});
+	await report({ ready: true, egress });
 	say(`${instance} is up and fenced`);
 	if (egress) {
 		say(`the guest reached the gatekeeper`);
@@ -233,8 +264,9 @@ export async function runHelper(
 		for (const line of NO_EGRESS_ADVICE) say(`  ${line}`);
 	}
 
-	await serveWhileRunning(sandbox, instance, (next) => {
+	await serveWhileRunning(sandbox, instance, stamp, async (next, applied) => {
 		policy = next;
+		await report({ policy: applied });
 	});
 	say(`${instance} is no longer running; shutting the fence down`);
 	await teardown(true);
@@ -242,15 +274,17 @@ export async function runHelper(
 }
 
 /**
- * Does the guest's own traffic reach the gatekeeper? Everything else the helper
- * knows is from out here, where a guest whose tun2proxy died looks exactly like
- * a healthy one.
+ * Does the guest's own traffic reach the gatekeeper, and does a refusal reach
+ * the guest? Everything else the helper knows is from out here, where a guest
+ * whose tun2proxy died looks exactly like a healthy one, and a gatekeeper that
+ * permits everything looks exactly like one applying the policy.
  *
- * The request is driven from outside the fence over Lima's control path, so a
- * sandbox that passes has both directions working. `PROBE_HOST` is answered by
- * the policy and never dialed, so this costs no connection and needs no allow
- * entry; its refusal in the log is the whole signal. `--noproxy` keeps any
- * proxy variable in the guest out of it: only the route can carry this.
+ * The requests are driven from outside the fence over Lima's control path, so
+ * a sandbox that passes has both directions working. `PROBE_HOST` and
+ * `DENY_HOST` are answered by the policy and never dialed, so this costs no
+ * connection and needs no allow entry; their two lines in the log, one
+ * `probe` and one `deny`, are the whole signal. `--noproxy` keeps any proxy
+ * variable in the guest out of it: only the route can carry this.
  */
 async function guestReachesGatekeeper(
 	instance: string,
@@ -258,34 +292,37 @@ async function guestReachesGatekeeper(
 	logFrom: number,
 ): Promise<boolean> {
 	const deadline = Date.now() + PROBE_WINDOW_MS;
+	const ask = (host: string) =>
+		`curl -s -o /dev/null --max-time 15 --noproxy '*' http://${host}/ || true`;
 	for (;;) {
 		await lima
-			.runScript(
-				instance,
-				`curl -s -o /dev/null --max-time 15 --noproxy '*' http://${PROBE_HOST}/ || true`,
-			)
+			.runScript(instance, `${ask(PROBE_HOST)}\n${ask(DENY_HOST)}`)
 			.catch((err: unknown) =>
 				say(`warning: could not probe the guest: ${err}`),
 			);
-		if (await probeLogged(paths.gatekeeperLog, logFrom)) return true;
+		if (await checksLogged(paths.gatekeeperLog, logFrom)) return true;
 		if (Date.now() > deadline) return false;
 		await sleep(2_000);
 	}
 }
 
-/** Only what this helper's own gatekeeper appended: a `probe` line from the
+/** Only what this helper's own gatekeeper appended: the lines from the
  * sandbox's last run would otherwise pass for this one's. */
-async function probeLogged(path: string, from: number): Promise<boolean> {
+async function checksLogged(path: string, from: number): Promise<boolean> {
 	const { text } = await readAppended(path, from);
+	let probed = false;
+	let denied = false;
 	for (const line of text.split("\n")) {
 		if (line === "") continue;
 		try {
-			if ((JSON.parse(line) as LogEntry).verdict === "probe") return true;
+			const entry = JSON.parse(line) as LogEntry;
+			if (entry.verdict === "probe") probed = true;
+			if (entry.verdict === "deny" && entry.host === DENY_HOST) denied = true;
 		} catch {
 			// A half-written last line; the next pass reads it whole.
 		}
 	}
-	return false;
+	return probed && denied;
 }
 
 /**

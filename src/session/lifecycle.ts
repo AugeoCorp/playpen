@@ -6,7 +6,11 @@ import { baseImage } from "../image/base.ts";
 import { maskScript, render, serialize } from "../image/render.ts";
 import * as lima from "../lima/client.ts";
 import { bringUp, fenceStatus, liveHelper } from "../network/fence.ts";
-import { BUILTIN_ALLOW, NO_EGRESS_ADVICE } from "../network/policy.ts";
+import {
+	BUILTIN_ALLOW,
+	NO_EGRESS_ADVICE,
+	type Policy,
+} from "../network/policy.ts";
 import { confirm } from "../prompt.ts";
 import * as history from "./history.ts";
 import { instanceName, sandboxName } from "./identity.ts";
@@ -270,22 +274,27 @@ export interface Running {
 }
 
 /**
- * Starts the VM inside its network fence rather than with `lima.start`, so
- * every connection out of the guest arrives at the gatekeeper. The base image
- * is baked unfenced (image/bake.ts): it has no project policy to apply, and
- * nothing runs in it but the build.
+ * Starts the VM inside its network fence, so every connection out of the guest
+ * arrives at the gatekeeper. Every start of a sandbox goes through `bringUp`;
+ * the one VM started any other way is the base image while it is baked
+ * (image/bake.ts), which has no project policy to apply and nothing running
+ * in it but the build.
  */
 async function startFenced(sb: Sandbox, template: Template): Promise<void> {
-	await bringUp({
-		sandbox: sb.sandbox,
-		instance: sb.instance,
-		policy: {
-			allow: [...BUILTIN_ALLOW, ...template.network.allow],
-			mode: template.network.mode,
-		},
-		log: (text) => process.stderr.write(text),
+	await fenced(sb, {
+		allow: [...BUILTIN_ALLOW, ...template.network.allow],
+		mode: template.network.mode,
 	});
 	await warnWithoutEgress(sb);
+}
+
+function fenced(sb: Sandbox, policy: Policy): Promise<void> {
+	return bringUp({
+		sandbox: sb.sandbox,
+		instance: sb.instance,
+		policy,
+		log: (text) => process.stderr.write(text),
+	});
 }
 
 /**
@@ -472,8 +481,11 @@ export async function stop(sb: Sandbox): Promise<void> {
 
 /**
  * Archiving needs the guest up, so a stopped sandbox is started for it: ~10s on
- * a delete, worth it because transcripts and memory exist nowhere else. Best
- * effort throughout -- a sandbox too broken to boot must still be deletable.
+ * a delete, worth it because transcripts and memory exist nowhere else. It is
+ * started fenced with nothing allowed: the archive travels over the control
+ * socket, and a guest that is about to be deleted is the last one to hand the
+ * network to. Best effort throughout -- a sandbox too broken to boot must
+ * still be deletable.
  */
 async function saveHistory(sb: Sandbox, running: boolean): Promise<void> {
 	try {
@@ -482,7 +494,7 @@ async function saveHistory(sb: Sandbox, running: boolean): Promise<void> {
 		if (!running && !(await store.load(sb.sandbox))) return;
 		if (!running) {
 			console.error(`starting it briefly to save Claude history`);
-			await lima.start(sb.instance);
+			await fenced(sb, { allow: [], mode: "enforce" });
 		}
 		await history.archive(sb.instance, sb.sandbox);
 	} catch (err) {

@@ -21,6 +21,7 @@ const helper = {
 	gatekeeperPort: 1234,
 	ready: true,
 	egress: true,
+	policy: "1:2",
 };
 
 test("a sandbox's sockets and logs live together under the data directory", () => {

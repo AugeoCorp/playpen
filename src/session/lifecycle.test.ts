@@ -6,6 +6,7 @@ import { mock, type TestContext, test } from "node:test";
 import { baseImage } from "../image/base.ts";
 import { imageHash } from "../image/render.ts";
 import { baseInstanceName } from "./identity.ts";
+import type { Sandbox } from "./lifecycle.ts";
 
 /** Every call the sandbox makes into the guest, in order. */
 const calls: string[] = [];
@@ -15,6 +16,8 @@ let maskExit = 0;
 let limaHome = "";
 /** Whether the fake has been cloned into existence yet, so `stop` has something to stop. */
 let exists = false;
+/** What the fake reports for an instance that exists; a test stops it. */
+let status: "Running" | "Stopped" = "Running";
 /** The policy the sandbox was brought up behind, as the fence was handed it. */
 let fencedWith: { allow: string[]; mode: string } | null = null;
 /** What the fake fence reports for a running VM; a test overrides it. */
@@ -40,6 +43,7 @@ mock.module("../network/fence.ts", {
 			gatekeeperPort: 1080,
 			ready: true,
 			egress: helperEgress,
+			policy: "1:2",
 		}),
 		// Like the real one: the policy is written whatever state the fence is
 		// in, and a sandbox that is already up behind a gatekeeper is left where
@@ -65,12 +69,11 @@ mock.module("../lima/client.ts", {
 		list: async () => [
 			{ name: baseInstanceName(imageHash(baseImage), "2026-09-16") },
 		],
-		get: async (name: string) => (exists ? { name, status: "Running" } : null),
+		get: async (name: string) => (exists ? { name, status } : null),
 		stop: async () => {
 			calls.push("stop");
 		},
 		remove: async () => {},
-		start: async () => {},
 		async clone(_source: string, target: string) {
 			exists = true;
 			await mkdir(join(limaHome, target), { recursive: true });
@@ -94,7 +97,7 @@ mock.module("../lima/client.ts", {
 async function sandboxFor(
 	t: TestContext,
 	config: string,
-): Promise<{ sb: { sandbox: string }; run: () => Promise<unknown> }> {
+): Promise<{ sb: Sandbox; run: () => Promise<unknown> }> {
 	const root = await mkdtemp(join(tmpdir(), "playpen-lifecycle-"));
 	t.after(() => rm(root, { recursive: true, force: true }));
 	const project = join(root, "project");
@@ -114,6 +117,7 @@ async function sandboxFor(
 	fenceState = "sealed";
 	helperEgress = true;
 	fenced = false;
+	status = "Running";
 	t.after(() => {
 		process.env.XDG_DATA_HOME = before.xdg;
 		process.env.LIMA_HOME = before.lima;
@@ -175,7 +179,7 @@ test("a sandbox already running behind its gatekeeper is not started again", asy
 	assert.deepEqual(calls, ["leave the fence alone", "apply masks"]);
 });
 
-test("a sandbox already running is handed the project's policy again, so a tightened list reaches it", async (t) => {
+test("a sandbox already running is handed the project's policy again, so a tightened list decides its next connections", async (t) => {
 	const { run } = await sandboxFor(
 		t,
 		'export default { network: { allow: ["example.com"] } };',
@@ -188,6 +192,19 @@ test("a sandbox already running is handed the project's policy again, so a tight
 		allow: [...BUILTIN_ALLOW, "example.com"],
 		mode: "enforce",
 	});
+});
+
+test("destroying a stopped sandbox boots it inside the fence with nothing allowed, to save its history", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await run();
+	const { destroy } = await import("./lifecycle.ts");
+	status = "Stopped";
+	fenced = false;
+	fencedWith = null;
+	calls.length = 0;
+	await destroy(sb);
+	assert.deepEqual(fencedWith, { allow: [], mode: "enforce" });
+	assert.equal(calls[0], "start behind the gatekeeper");
 });
 
 test("a sandbox running with no gatekeeper gets one back", async (t) => {

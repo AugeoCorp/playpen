@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import type { LookupAddress } from "node:dns";
 import * as net from "node:net";
+import { networkInterfaces } from "node:os";
 import { type TestContext, test } from "node:test";
 import { startGatekeeper } from "./gatekeeper.ts";
 import { HOST_ALIAS, type Policy, PROBE_HOST } from "./policy.ts";
@@ -252,31 +253,60 @@ test("an allowed name that resolves onto this machine is refused, and the refusa
 	assert.match(entries[1]?.reason ?? "", /127\.0\.0\.1/);
 });
 
-test("a name entry with a port may resolve inside and reach it, banner first", async (t) => {
+test("a name entry with a port still may not resolve to this machine's loopback; that is localhost:PORT's job", async (t) => {
 	const localPort = await bannerServer(t);
 	const resolver = resolverFor("127.0.0.1");
+	const entries: Array<{ verdict: string; reason: string }> = [];
 	const gatekeeper = await startGatekeeper({
 		policy: () => ({
 			allow: [`internal.example:${localPort}`],
 			mode: "enforce",
 		}),
-		log: () => {},
+		log: (line) => entries.push(line),
 		resolve: resolver.resolve,
 	});
 	t.after(() => gatekeeper.close());
 
-	const { status, socket, afterHeaders } = await connectRaw(
+	const status = await connectStatus(
 		t,
 		gatekeeper.port,
 		`internal.example:${localPort}`,
 	);
-	assert.match(status, / 200 /);
-
-	const banner = await readAtLeast(socket, afterHeaders, "banner\r\n".length);
-	assert.equal(banner.toString(), "banner\r\n");
+	assert.equal(status, "closed");
+	assert.deepEqual(
+		entries.map((e) => e.verdict),
+		["allow", "deny"],
+	);
+	assert.match(entries[1]?.reason ?? "", /an address of this machine/);
 });
 
-test("the same name without a port in the entry still may not resolve inside", async (t) => {
+test("a name resolving to an address this machine has on an interface is refused, whatever the entry's reach", async (t) => {
+	const own = Object.values(networkInterfaces())
+		.flat()
+		.find((a) => a?.family === "IPv4" && !a.internal);
+	if (own === undefined) {
+		t.skip("this machine has no non-loopback IPv4 address");
+		return;
+	}
+	const resolver = resolverFor(own.address);
+	const entries: Array<{ verdict: string; reason: string }> = [];
+	const gatekeeper = await startGatekeeper({
+		policy: () => ({ allow: ["me.example:8080"], mode: "enforce" }),
+		log: (line) => entries.push(line),
+		resolve: resolver.resolve,
+	});
+	t.after(() => gatekeeper.close());
+
+	const status = await connectStatus(t, gatekeeper.port, "me.example:8080");
+	assert.equal(status, "closed");
+	assert.deepEqual(
+		entries.map((e) => e.verdict),
+		["allow", "deny"],
+	);
+	assert.match(entries[1]?.reason ?? "", /an address of this machine/);
+});
+
+test("the same name without a port in the entry may not resolve inside either, and the log says whose address it hit", async (t) => {
 	const localPort = await bannerServer(t);
 	const resolver = resolverFor("127.0.0.1");
 	const entries: Array<{ verdict: string; reason: string }> = [];
@@ -297,7 +327,7 @@ test("the same name without a port in the entry still may not resolve inside", a
 		entries.map((e) => e.verdict),
 		["allow", "deny"],
 	);
-	assert.match(entries[1]?.reason ?? "", /not a public address/);
+	assert.match(entries[1]?.reason ?? "", /an address of this machine/);
 });
 
 test("a ported name entry may still not resolve to link-local, cloud metadata included", async (t) => {
@@ -320,7 +350,7 @@ test("a ported name entry may still not resolve to link-local, cloud metadata in
 		entries.map((e) => e.verdict),
 		["allow", "deny"],
 	);
-	assert.match(entries[1]?.reason ?? "", /not a reachable address/);
+	assert.match(entries[1]?.reason ?? "", /not a public or LAN address/);
 });
 
 test("a ported name entry is dispatched to resolution rather than refused outright, which is what lets a LAN address through", async (t) => {
