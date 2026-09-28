@@ -121,20 +121,6 @@ export interface ConfigResult extends LoadedConfig {
 	legacyIgnore: boolean;
 }
 
-function sift<T>(
-	entries: readonly unknown[],
-	entry: z.ZodType<T>,
-): { kept: T[]; dropped: string[] } {
-	const kept: T[] = [];
-	const dropped: string[] = [];
-	for (const raw of entries) {
-		const result = entry.safeParse(raw);
-		if (result.success) kept.push(result.data);
-		else dropped.push(String(raw));
-	}
-	return { kept, dropped };
-}
-
 /**
  * A list whose bad entries are dropped and kept verbatim for a warning; only a
  * value that is not a list at all fails the load.
@@ -143,7 +129,16 @@ function lenientList<T>(entry: z.ZodType<T>) {
 	return z
 		.array(z.unknown(), { error: "must be an array of strings" })
 		.default([])
-		.transform((entries) => sift(entries, entry));
+		.transform((entries) => {
+			const kept: T[] = [];
+			const dropped: string[] = [];
+			for (const raw of entries) {
+				const result = entry.safeParse(raw);
+				if (result.success) kept.push(result.data);
+				else dropped.push(String(raw));
+			}
+			return { kept, dropped };
+		});
 }
 
 /**
@@ -267,20 +262,14 @@ const config = z
 		}),
 	);
 
-export function validateMasks(entries: readonly unknown[]): {
-	masked: string[];
-	rejected: string[];
-} {
-	const { kept, dropped } = sift(entries, maskEntry);
-	return { masked: kept, rejected: dropped };
+export function validateMasks(entries: readonly unknown[]) {
+	const { masked, rejected } = config.parse({ masked: entries });
+	return { masked, rejected };
 }
 
-export function validateSetup(entries: readonly unknown[]): {
-	setup: string[];
-	rejected: string[];
-} {
-	const { kept, dropped } = sift(entries, setupEntry);
-	return { setup: kept, rejected: dropped };
+export function validateSetup(entries: readonly unknown[]) {
+	const { setup, rejectedSetup } = config.parse({ setup: entries });
+	return { setup, rejected: rejectedSetup };
 }
 
 export function validateNetwork(
