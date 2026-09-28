@@ -10,9 +10,12 @@ import {
 	type FencePaths,
 	fencePaths,
 	fenceStatus,
+	type HeldSecret,
 	type HelperRecord,
+	heldNames,
 	killFenceLeftovers,
 	liveHelper,
+	parseHeldSecrets,
 	policyStamp,
 	readPolicy,
 	removeSocket,
@@ -146,6 +149,31 @@ function jsonLineAppender(path: string): (entry: LogEntry) => void {
 	};
 }
 
+/**
+ * Everything on stdin, to its end: the spawning `playpen start` closes the
+ * stream once it has written the document, so this never waits on a writer
+ * that is not coming.
+ */
+export async function readHeldSecrets(
+	input: AsyncIterable<string | Uint8Array>,
+): Promise<HeldSecret[]> {
+	const decoder = new TextDecoder();
+	let text = "";
+	for await (const chunk of input) {
+		text +=
+			typeof chunk === "string"
+				? chunk
+				: decoder.decode(chunk, { stream: true });
+	}
+	return parseHeldSecrets(text + decoder.decode());
+}
+
+/** Names and a count, never a value: this line lands in helper.log. */
+export function describeHeld(secrets: readonly HeldSecret[]): string {
+	const names = secrets.map(({ env }) => env).join(", ");
+	return `holding ${secrets.length} secret${secrets.length === 1 ? "" : "s"}: ${names}`;
+}
+
 function socatListen(path: string, target: string): ChildProcess {
 	return spawnSocat(unixListenAddress(path), target);
 }
@@ -155,6 +183,17 @@ export async function runHelper(
 	instance: string,
 ): Promise<number> {
 	const paths = fencePaths(sandbox);
+	// Before anything can fail, so the writer at the other end of the pipe is
+	// never left with nobody reading.
+	let held: HeldSecret[];
+	try {
+		held = await readHeldSecrets(process.stdin);
+	} catch (err) {
+		say(`cannot read the secrets from stdin: ${err}`);
+		return 1;
+	}
+	if (held.length > 0) say(describeHeld(held));
+
 	// Stamp first: a policy.json rewritten between the two reads then differs
 	// from the stamp and is reloaded, rather than read once and taken as old.
 	const stamp = await policyStamp(sandbox);
@@ -219,6 +258,7 @@ export async function runHelper(
 		ready: false,
 		egress: false,
 		policy: stamp,
+		secrets: heldNames(held),
 	};
 	const report = async (patch: Partial<HelperRecord>): Promise<void> => {
 		record = { ...record, ...patch };

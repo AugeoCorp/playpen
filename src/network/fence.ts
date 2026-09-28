@@ -116,6 +116,15 @@ const helperRecord = ownerSchema.extend({
 	 * `ports`, and until the guest has first been asked.
 	 */
 	unboundPorts: z.array(portForward).optional(),
+	/**
+	 * The secrets this helper was handed at spawn, by name and placeholder:
+	 * enough for `bringUp` to see what a running helper lacks and for `start` to
+	 * put the same placeholders in the guest. Never the value, which stays in the
+	 * helper's memory. Absent from a helper older than `secrets`.
+	 */
+	secrets: z
+		.array(z.object({ env: z.string(), placeholder: z.string() }))
+		.default([]),
 });
 
 export type HelperRecord = z.infer<typeof helperRecord>;
@@ -192,6 +201,91 @@ const secretGrant = z.object(
 	},
 	{ error: "must be { env, hosts }" },
 );
+
+const heldSecret = secretGrant.extend({
+	placeholder: z
+		.string({ error: "must be a placeholder" })
+		.regex(/^playpen-secret-[a-z0-9-]+-[0-9a-f]{16}$/, {
+			error: "must be a placeholder",
+		}),
+	value: z
+		.string({ error: "must be a string" })
+		.min(1, { error: "must not be empty" }),
+});
+
+/** A secret as the helper holds it: the only type here that carries a value. */
+export type HeldSecret = z.infer<typeof heldSecret>;
+
+const helperInput = z.object(
+	{
+		secrets: z.array(heldSecret, {
+			error: "must be an array of { env, placeholder, value, hosts }",
+		}),
+	},
+	{ error: "must hold a JSON object" },
+);
+
+/** What `spawnHelper` writes to the helper's stdin, values and all. */
+export function serializeHeldSecrets(secrets: readonly HeldSecret[]): string {
+	return JSON.stringify({ secrets });
+}
+
+/**
+ * Every message names a key and never quotes the input, and a JSON syntax
+ * error is replaced by a fixed sentence because Node's own quotes the text it
+ * choked on.
+ */
+export function parseHeldSecrets(text: string): HeldSecret[] {
+	const subject = "the helper's stdin";
+	let json: unknown;
+	try {
+		json = JSON.parse(text);
+	} catch {
+		throw new Error(`${subject} is not JSON`);
+	}
+	const result = helperInput.safeParse(json);
+	if (!result.success) throw new Error(describeIssue(result.error, subject));
+	return result.data.secrets;
+}
+
+/** The part of a held secret that helper.json may carry. */
+export function heldNames(
+	secrets: readonly HeldSecret[],
+): HelperRecord["secrets"] {
+	return secrets.map(({ env, placeholder }) => ({ env, placeholder }));
+}
+
+/**
+ * What `start` has to tell the user when it finds a helper already running:
+ * the helper took its values from the start that spawned it, so a secret added
+ * to the config since is named but not held until the next spawn.
+ */
+export function restartNotices(
+	helper: Pick<HelperRecord, "secrets">,
+	wanted: readonly HeldSecret[],
+): string[] {
+	const held = new Set(helper.secrets.map(({ env }) => env));
+	return wanted
+		.filter(({ env }) => !held.has(env))
+		.map(
+			({ env }) =>
+				`secret ${env} added to the config takes effect after: playpen stop && playpen start\n`,
+		);
+}
+
+/**
+ * The environment the helper is spawned with: this process's own, without the
+ * variables the secrets came from, so a value has no route into the helper or
+ * its children except the pipe.
+ */
+export function helperEnv(
+	env: NodeJS.ProcessEnv,
+	secrets: readonly HeldSecret[],
+): NodeJS.ProcessEnv {
+	const scrubbed = { ...env };
+	for (const { env: name } of secrets) delete scrubbed[name];
+	return scrubbed;
+}
 
 const policyFile = z.object(
 	{
@@ -313,11 +407,13 @@ export function cliPath(): string {
 /**
  * Detached with its output in helper.log, because it has to outlive the
  * `playpen start` that asked for it: the sandbox stays up after the command
- * that created it returns.
+ * that created it returns. The secrets go in over stdin and the stream is
+ * ended, so the helper knows when it has them all.
  */
 async function spawnHelper(
 	sandbox: string,
 	instance: string,
+	secrets: readonly HeldSecret[],
 ): Promise<ChildProcess> {
 	const paths = fencePaths(sandbox);
 	await ensureFenceDir(sandbox);
@@ -326,8 +422,16 @@ async function spawnHelper(
 		const child = spawn(
 			process.execPath,
 			[cliPath(), "__net-helper", sandbox, instance],
-			{ detached: true, stdio: ["ignore", log.fd, log.fd] },
+			{
+				detached: true,
+				stdio: ["pipe", log.fd, log.fd],
+				env: helperEnv(process.env, secrets),
+			},
 		);
+		// A helper that dies before reading closes the pipe under this write; its
+		// exit is what `bringUp` reports, so the write's own error is not.
+		child.stdin?.on("error", () => {});
+		child.stdin?.end(serializeHeldSecrets(secrets));
 		child.unref();
 		return child;
 	} finally {
@@ -349,6 +453,11 @@ export interface BringUpOptions {
 	sandbox: string;
 	instance: string;
 	policy: Policy;
+	/**
+	 * Handed to a helper this call spawns. A helper already running keeps the
+	 * ones it started with, and `bringUp` says which of these it lacks.
+	 */
+	secrets?: readonly HeldSecret[];
 	/** Where helper.log goes while the caller waits; usually stderr. */
 	log: (text: string) => void;
 	timeoutMs?: number;
@@ -374,6 +483,7 @@ const APPLY_WINDOW_MS = 15_000;
  */
 export async function bringUp(opts: BringUpOptions): Promise<void> {
 	const { sandbox, instance } = opts;
+	const secrets = opts.secrets ?? [];
 	const changed = await writePolicy(sandbox, opts.policy);
 	const stamp = await policyStamp(sandbox);
 
@@ -383,12 +493,16 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 			await applied(sandbox, stamp);
 			opts.log(`network policy updated for new connections\n`);
 		}
+		const running = await liveHelper(sandbox);
+		if (running !== null) {
+			for (const notice of restartNotices(running, secrets)) opts.log(notice);
+		}
 		return;
 	}
 
 	const paths = fencePaths(sandbox);
 	let offset = await sizeOf(paths.helperLog);
-	const child = await spawnHelper(sandbox, instance);
+	const child = await spawnHelper(sandbox, instance, secrets);
 
 	let exit: number | null = null;
 	child.on("exit", (code) => {
