@@ -2,6 +2,8 @@ import { basename, join, normalize } from "node:path";
 import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import { exists } from "../fs.ts";
+import { describeIssue } from "../issue.ts";
+import { isPort } from "../network/names.ts";
 import { type PortForward, parseEntry } from "../network/policy.ts";
 
 export const CONFIG_FILE = "playpen.config.ts";
@@ -12,7 +14,11 @@ export const CONFIG_FILES = [CONFIG_FILE, "playpen.config.js"] as const;
 /** The file this replaced. Detected only so we can say it is no longer read. */
 export const LEGACY_IGNORE_FILE = ".playpenignore";
 
-export type NetworkMode = "enforce" | "log";
+const networkMode = z.enum(["enforce", "log"], {
+	error: 'must be "enforce" or "log"',
+});
+
+export type NetworkMode = z.infer<typeof networkMode>;
 
 /**
  * `allow` is matched by name: an entry is a hostname, optionally with a port,
@@ -91,11 +97,7 @@ export function defineConfig(config: PlaypenConfig): PlaypenConfig {
 	return config;
 }
 
-export interface LoadedNetwork {
-	allow: string[];
-	mode: NetworkMode;
-	ports: PortForward[];
-}
+export type LoadedNetwork = Omit<z.output<typeof network>, "rejected">;
 
 export interface LoadedConfig {
 	masked: string[];
@@ -115,45 +117,48 @@ export interface ConfigResult extends LoadedConfig {
 	legacyIgnore: boolean;
 }
 
+function sift<T>(
+	entries: readonly unknown[],
+	entry: z.ZodType<T>,
+): { kept: T[]; dropped: string[] } {
+	const kept: T[] = [];
+	const dropped: string[] = [];
+	for (const raw of entries) {
+		const result = entry.safeParse(raw);
+		if (result.success) kept.push(result.data);
+		else dropped.push(String(raw));
+	}
+	return { kept, dropped };
+}
+
+/**
+ * A list whose bad entries are dropped and kept verbatim for a warning; only a
+ * value that is not a list at all fails the load.
+ */
+function lenientList<T>(entry: z.ZodType<T>) {
+	return z
+		.array(z.unknown(), { error: "must be an array of strings" })
+		.default([])
+		.transform((entries) => sift(entries, entry));
+}
+
 /**
  * A mask becomes a mount target inside the project, so anything that escapes
  * the project directory would let the config bind-mount over arbitrary guest
  * paths.
  */
-export function validateMasks(entries: readonly unknown[]): {
-	masked: string[];
-	rejected: string[];
-} {
-	const masked: string[] = [];
-	const rejected: string[] = [];
-
-	for (const raw of entries) {
-		if (typeof raw !== "string") {
-			rejected.push(String(raw));
-			continue;
-		}
-
-		const entry = raw.trim();
-		const clean = normalize(entry).replace(/^\/+|\/+$/g, "");
-
-		if (
-			clean === "" ||
-			clean === "." ||
-			clean.startsWith("..") ||
-			entry.startsWith("/")
-		) {
-			rejected.push(raw);
-			continue;
-		}
-		if (clean.includes("*")) {
-			rejected.push(raw);
-			continue;
-		}
-		masked.push(clean);
-	}
-
-	return { masked, rejected };
-}
+const maskEntry = z
+	.string()
+	.trim()
+	.refine((entry) => !entry.startsWith("/"))
+	.transform((entry) => normalize(entry).replace(/^\/+|\/+$/g, ""))
+	.refine(
+		(clean) =>
+			clean !== "" &&
+			clean !== "." &&
+			!clean.startsWith("..") &&
+			!clean.includes("*"),
+	);
 
 /**
  * Only shape is checked. The command itself is not parsed or restricted: it
@@ -161,23 +166,7 @@ export function validateMasks(entries: readonly unknown[]): {
  * a project that wanted to run something could put it in a package script
  * anyway. What matters is that nothing here reaches the host.
  */
-export function validateSetup(entries: readonly unknown[]): {
-	setup: string[];
-	rejected: string[];
-} {
-	const setup: string[] = [];
-	const rejected: string[] = [];
-
-	for (const raw of entries) {
-		if (typeof raw !== "string" || raw.trim() === "") {
-			rejected.push(String(raw));
-			continue;
-		}
-		setup.push(raw.trim());
-	}
-
-	return { setup, rejected };
-}
+const setupEntry = z.string().trim().min(1);
 
 /**
  * An entry names what the guest asks for, not what it ends up connecting to,
@@ -186,92 +175,130 @@ export function validateSetup(entries: readonly unknown[]): {
  * the same reason and are simply not supported yet. `parseEntry` in
  * network/policy.ts decides all of that, because it is also what matches a
  * request: an entry that passes here cannot mean something else there.
- *
- * Shape problems — `allow` that is not an array, a `mode` that is neither
- * spelling, any `ports` entry at all that is wrong — come back as `error`
- * rather than as dropped entries: a `mode` meant to say "log" that was quietly
- * dropped would enforce instead, and a dropped port would leave a client in
- * the guest talking to whatever else holds that port.
  */
-export function validateNetwork(raw: unknown): {
-	allow: string[];
-	mode: NetworkMode;
-	ports: PortForward[];
-	rejected: string[];
-	error?: string;
-} {
-	const none = { allow: [], mode: "enforce" as const, ports: [], rejected: [] };
-	if (raw === undefined) return none;
-	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-		return { ...none, error: "`network` must be an object" };
-	}
+const allowEntry = z.string().transform((raw, ctx) => {
+	const entry = parseEntry(raw);
+	if (entry !== null) return entry.text;
+	ctx.addIssue({ code: "custom", message: "is not a name to allow" });
+	return z.NEVER;
+});
 
-	const { allow, mode } = raw as NetworkConfig;
-	if (allow !== undefined && !Array.isArray(allow)) {
-		return { ...none, error: "`network.allow` must be an array of strings" };
-	}
-	if (mode !== undefined && mode !== "enforce" && mode !== "log") {
-		return { ...none, error: '`network.mode` must be "enforce" or "log"' };
-	}
-	const ports = validatePorts((raw as { ports?: unknown }).ports);
-	if (typeof ports === "string") return { ...none, error: ports };
-
-	const entries: readonly unknown[] = allow ?? [];
-	const accepted: string[] = [];
-	const rejected: string[] = [];
-
-	for (const entry of entries) {
-		if (typeof entry !== "string") {
-			rejected.push(String(entry));
-			continue;
-		}
-		const parsed = parseEntry(entry);
-		if (parsed === null) {
-			rejected.push(entry);
-			continue;
-		}
-		if (!accepted.includes(parsed.text)) accepted.push(parsed.text);
-	}
-
-	return { allow: accepted, mode: mode ?? "enforce", ports, rejected };
-}
-
-const port = z.number().int().min(1).max(65535);
+const PORT_ENTRY =
+	"must be a port number or { host, guest }, each from 1 to 65535";
 
 /** A number is the same port on both sides; `{ host, guest }` moves it. */
-const portForward = z.union([
-	port.transform((p) => ({ host: p, guest: p })),
-	z.object({ host: port, guest: port }),
-]);
+const portEntry = z.union(
+	[
+		z
+			.number()
+			.refine(isPort)
+			.transform((port) => ({ host: port, guest: port })),
+		z
+			.object({ host: z.number(), guest: z.number() })
+			.refine(({ host, guest }) => isPort(host) && isPort(guest), {
+				error: PORT_ENTRY,
+			}),
+	],
+	{ error: PORT_ENTRY },
+);
 
 /**
  * The guest port is what a listener binds, so two entries on one guest port
  * cannot both be honoured; the host port may repeat.
  */
-const ports = z.array(portForward).superRefine((entries, ctx) => {
-	const seen = new Set<number>();
-	for (const [i, { guest }] of entries.entries()) {
-		if (seen.has(guest)) {
+const portForwards = z
+	.array(portEntry, {
+		error: "must be an array of a port number or { host, guest }",
+	})
+	.superRefine((forwards, ctx) => {
+		const guests = forwards.map((f) => f.guest);
+		const twice = guests.find((guest, i) => guests.indexOf(guest) !== i);
+		if (twice !== undefined)
 			ctx.addIssue({
 				code: "custom",
-				path: [i],
-				message: `\`network.ports\` names guest port ${guest} twice`,
+				message: `names guest port ${twice} twice`,
 			});
-		}
-		seen.add(guest);
-	}
-});
+	});
 
-function validatePorts(raw: unknown): PortForward[] | string {
-	if (raw === undefined) return [];
-	const result = ports.safeParse(raw);
-	if (result.success) return result.data;
-	const shape = "a port number or { host, guest }";
-	const issue = result.error.issues[0];
-	if (issue === undefined || issue.path.length === 0)
-		return `\`network.ports\` must be an array of ${shape}`;
-	if (issue.code === "custom") return issue.message;
-	return `\`network.ports[${String(issue.path[0])}]\` must be ${shape}, each from 1 to 65535`;
+/**
+ * Shape problems — `allow` that is not an array, a `mode` that is neither
+ * spelling, any `ports` entry at all that is wrong — fail the load rather than
+ * being dropped: a `mode` meant to say "log" that was quietly dropped would
+ * enforce instead, and a dropped port would leave a client in the guest
+ * talking to whatever else holds that port.
+ */
+const network = z
+	.object(
+		{
+			allow: lenientList(allowEntry),
+			mode: networkMode.default("enforce"),
+			ports: portForwards.default([]),
+		},
+		{ error: "must be an object" },
+	)
+	.prefault({})
+	.transform(({ allow, mode, ports }) => ({
+		allow: [...new Set(allow.kept)],
+		mode,
+		ports,
+		rejected: allow.dropped,
+	}));
+
+const config = z
+	.object(
+		{
+			masked: lenientList(maskEntry),
+			setup: lenientList(setupEntry),
+			network,
+		},
+		{
+			error: (issue) =>
+				issue.input === undefined
+					? "has no default export"
+					: "must default-export an object",
+		},
+	)
+	.transform(
+		({ masked, setup, network: { rejected, ...loaded } }): LoadedConfig => ({
+			masked: masked.kept,
+			setup: setup.kept,
+			network: loaded,
+			rejected: masked.dropped,
+			rejectedSetup: setup.dropped,
+			rejectedNetwork: rejected,
+		}),
+	);
+
+export function validateMasks(entries: readonly unknown[]): {
+	masked: string[];
+	rejected: string[];
+} {
+	const { kept, dropped } = sift(entries, maskEntry);
+	return { masked: kept, rejected: dropped };
+}
+
+export function validateSetup(entries: readonly unknown[]): {
+	setup: string[];
+	rejected: string[];
+} {
+	const { kept, dropped } = sift(entries, setupEntry);
+	return { setup: kept, rejected: dropped };
+}
+
+export function validateNetwork(
+	raw: unknown,
+): LoadedNetwork & { rejected: string[]; error?: string } {
+	const result = config.safeParse({ network: raw });
+	if (!result.success) {
+		return {
+			allow: [],
+			mode: "enforce",
+			ports: [],
+			rejected: [],
+			error: describeIssue(result.error),
+		};
+	}
+	return { ...result.data.network, rejected: result.data.rejectedNetwork };
 }
 
 export async function hasLegacyIgnore(projectDir: string): Promise<boolean> {
@@ -322,43 +349,9 @@ export async function importConfig(file: string): Promise<LoadedConfig> {
 		return { ...empty, error: explain(err) };
 	}
 
-	const config = (loaded as { default?: unknown }).default;
-	if (config === undefined) {
-		return { ...empty, error: `${name} has no default export` };
-	}
-	if (typeof config !== "object" || config === null) {
-		return { ...empty, error: `${name} must default-export an object` };
-	}
-
-	const { masked, network, setup } = config as PlaypenConfig;
-	if (masked !== undefined && !Array.isArray(masked)) {
-		return {
-			...empty,
-			error: `${name}: \`masked\` must be an array of strings`,
-		};
-	}
-	if (setup !== undefined && !Array.isArray(setup)) {
-		return {
-			...empty,
-			error: `${name}: \`setup\` must be an array of strings`,
-		};
-	}
-
-	const net = validateNetwork(network);
-	if (net.error !== undefined) {
-		return { ...empty, error: `${name}: ${net.error}` };
-	}
-
-	const masks = validateMasks(masked ?? []);
-	const steps = validateSetup(setup ?? []);
-	return {
-		masked: masks.masked,
-		setup: steps.setup,
-		network: { allow: net.allow, mode: net.mode, ports: net.ports },
-		rejected: masks.rejected,
-		rejectedSetup: steps.rejected,
-		rejectedNetwork: net.rejected,
-	};
+	const result = config.safeParse((loaded as { default?: unknown }).default);
+	if (result.success) return result.data;
+	return { ...empty, error: describeIssue(result.error, name) };
 }
 
 /** Ungated: executes the project's config in place. See `importConfig`. */

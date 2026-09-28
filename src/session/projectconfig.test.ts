@@ -123,6 +123,15 @@ test("reports a non-object default export instead of throwing", async (t) => {
 	assert.match(r.error ?? "", /must default-export an object/);
 });
 
+test("reports a default export that is a list rather than reading it as empty", async (t) => {
+	const dir = await project(t, {
+		"playpen.config.js": 'export default ["node_modules"];',
+	});
+	const r = await loadProjectConfig(dir);
+	assert.equal(r.error, "playpen.config.js must default-export an object");
+	assert.deepEqual(r.masked, []);
+});
+
 test("reports a non-array masked instead of throwing", async (t) => {
 	const dir = await project(t, {
 		"playpen.config.js": 'export default { masked: "node_modules" };',
