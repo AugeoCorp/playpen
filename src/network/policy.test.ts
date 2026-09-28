@@ -9,11 +9,11 @@ import {
 } from "./policy.ts";
 
 function enforcing(allow: readonly string[]): Policy {
-	return { allow, mode: "enforce", ports: [] };
+	return { allow, mode: "enforce", ports: [], secrets: [] };
 }
 
 function logging(allow: readonly string[]): Policy {
-	return { allow, mode: "log", ports: [] };
+	return { allow, mode: "log", ports: [], secrets: [] };
 }
 
 test("a bare hostname entry allows the host itself", () => {

@@ -510,5 +510,156 @@ test("a bad port fails the whole load, the way an unknown mode does", async (t) 
 	});
 	const r = await loadProjectConfig(dir);
 	assert.match(r.error ?? "", /playpen\.config\.js: `network\.ports\[0\]`/);
-	assert.deepEqual(r.network, { allow: [], mode: "enforce", ports: [] });
+	assert.deepEqual(r.network, {
+		allow: [],
+		mode: "enforce",
+		ports: [],
+		secrets: [],
+	});
+});
+
+test("a secret is an environment variable name and the hosts it may be used on", () => {
+	const r = validateNetwork({
+		secrets: [
+			{ env: "GH_TOKEN", hosts: ["api.github.com", "github.com"] },
+			{ env: "_NPM_TOKEN2", hosts: ["registry.example.com"] },
+		],
+	});
+	assert.equal(r.error, undefined);
+	assert.deepEqual(r.secrets, [
+		{ env: "GH_TOKEN", hosts: ["api.github.com", "github.com"] },
+		{ env: "_NPM_TOKEN2", hosts: ["registry.example.com"] },
+	]);
+});
+
+test("no secrets key names no secrets", () => {
+	assert.deepEqual(validateNetwork({ allow: ["example.com"] }).secrets, []);
+});
+
+test("a secret's host is stored the way an allow entry is: lower case, no trailing dot", () => {
+	const r = validateNetwork({
+		secrets: [{ env: "GH_TOKEN", hosts: ["API.GitHub.com."] }],
+	});
+	assert.deepEqual(r.secrets, [{ env: "GH_TOKEN", hosts: ["api.github.com"] }]);
+});
+
+/** What validation says about a `secrets` value, or "no error". */
+function secretsError(secrets: unknown): string {
+	return validateNetwork({ secrets }).error ?? "no error";
+}
+
+test("an env that is not an upper-case variable name fails the load", () => {
+	const bad =
+		/`network\.secrets\[0\]\.env` must be an environment variable name like GH_TOKEN/;
+	const withEnv = (env: unknown) =>
+		secretsError([{ env, hosts: ["github.com"] }]);
+	assert.match(withEnv("gh_token"), bad);
+	assert.match(withEnv("1TOKEN"), bad);
+	assert.match(withEnv("GH-TOKEN"), bad);
+	assert.match(withEnv("GH TOKEN"), bad);
+	assert.match(withEnv("$GH"), bad);
+	assert.match(withEnv(""), bad);
+	assert.match(secretsError([{ hosts: ["github.com"] }]), bad);
+	assert.match(secretsError([{ env: 7, hosts: ["github.com"] }]), bad);
+});
+
+test("an entry with no hosts fails the load", () => {
+	assert.match(
+		secretsError([{ env: "GH_TOKEN", hosts: [] }]),
+		/`network\.secrets\[0\]\.hosts` must name at least one host/,
+	);
+	assert.match(
+		secretsError([{ env: "GH_TOKEN" }]),
+		/`network\.secrets\[0\]\.hosts` must be an array of hostnames/,
+	);
+});
+
+test("a host with a port fails the load, and the message names which host", () => {
+	assert.match(
+		secretsError([
+			{ env: "A_TOKEN", hosts: ["github.com"] },
+			{ env: "B_TOKEN", hosts: ["github.com", "api.github.com:443"] },
+		]),
+		/`network\.secrets\[1\]\.hosts\[1\]` must be a hostname without a port/,
+	);
+	assert.match(
+		secretsError([{ env: "GH_TOKEN", hosts: ["localhost:8080"] }]),
+		/`network\.secrets\[0\]\.hosts\[0\]` must be a hostname without a port/,
+	);
+});
+
+test("a host that is an address fails the load, with or without a port", () => {
+	const bad =
+		/`network\.secrets\[0\]\.hosts\[0\]` must be a hostname, not an address/;
+	assert.match(secretsError([{ env: "T", hosts: ["93.184.216.34"] }]), bad);
+	assert.match(secretsError([{ env: "T", hosts: ["192.168.1.5:8080"] }]), bad);
+});
+
+test("a host that is not a name fails the load", () => {
+	const bad = /`network\.secrets\[0\]\.hosts\[0\]` must be a hostname/;
+	const withHost = (host: unknown) =>
+		secretsError([{ env: "GH_TOKEN", hosts: [host] }]);
+	assert.match(withHost("*.github.com"), bad);
+	assert.match(withHost("https://github.com"), bad);
+	assert.match(withHost("github"), bad);
+	assert.match(withHost(""), bad);
+	assert.match(withHost(443), bad);
+});
+
+test("two entries for the same env fail the load, whatever hosts they name", () => {
+	const r = validateNetwork({
+		secrets: [
+			{ env: "GH_TOKEN", hosts: ["github.com"] },
+			{ env: "GH_TOKEN", hosts: ["api.github.com"] },
+		],
+	});
+	assert.equal(r.error, "`network.secrets` names GH_TOKEN twice");
+	assert.deepEqual(r.secrets, []);
+});
+
+test("a secrets value that is not an array of entries fails the load", () => {
+	assert.match(secretsError("GH_TOKEN"), /`network\.secrets` must be an array/);
+	assert.match(
+		secretsError(["GH_TOKEN"]),
+		/`network\.secrets\[0\]` must be \{ env, hosts \}/,
+	);
+	assert.match(secretsError([null]), /`network\.secrets\[0\]` must be/);
+});
+
+test("a bad secret is never dropped: it fails the load, and the rest of the network is not applied", () => {
+	const r = validateNetwork({
+		allow: ["example.com"],
+		secrets: [
+			{ env: "GH_TOKEN", hosts: ["github.com"] },
+			{ env: "bad", hosts: ["github.com"] },
+		],
+	});
+	assert.match(r.error ?? "", /`network\.secrets\[1\]\.env`/);
+	assert.deepEqual(r.secrets, []);
+	assert.deepEqual(r.allow, []);
+});
+
+test("reads secrets from a default export", async (t) => {
+	const dir = await project(t, {
+		"playpen.config.js":
+			'export default { network: { secrets: [{ env: "GH_TOKEN", hosts: ["github.com"] }] } };',
+	});
+	const r = await loadProjectConfig(dir);
+	assert.equal(r.error, undefined);
+	assert.deepEqual(r.network.secrets, [
+		{ env: "GH_TOKEN", hosts: ["github.com"] },
+	]);
+});
+
+test("a bad secret in the file fails the whole load with the file's name", async (t) => {
+	const dir = await project(t, {
+		"playpen.config.js":
+			'export default { network: { secrets: [{ env: "GH_TOKEN", hosts: [] }] } };',
+	});
+	const r = await loadProjectConfig(dir);
+	assert.equal(
+		r.error,
+		"playpen.config.js: `network.secrets[0].hosts` must name at least one host",
+	);
+	assert.deepEqual(r.network.secrets, []);
 });
