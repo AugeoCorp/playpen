@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { decide, HOST_ALIAS, type Policy, PROBE_HOST } from "./policy.ts";
+import {
+	DENY_HOST,
+	decide,
+	HOST_ALIAS,
+	type Policy,
+	PROBE_HOST,
+} from "./policy.ts";
 
 function enforcing(allow: readonly string[]): Policy {
 	return { allow, mode: "enforce" };
@@ -26,14 +32,14 @@ test("a bare hostname entry's reach is public only: it may not resolve inside", 
 	assert.equal(v.reach, "public");
 });
 
-test("a host:port entry's reach is any: it may resolve to loopback or a LAN address", () => {
+test("a host:port entry's reach is lan: it may resolve to a LAN address, never to this machine", () => {
 	const v = decide(
 		enforcing(["internal.foo.com:8080"]),
 		"internal.foo.com",
 		8080,
 	);
 	assert.equal(v.kind, "allow");
-	assert.equal(v.reach, "any");
+	assert.equal(v.reach, "lan");
 });
 
 test("an unlisted name in log mode is reported with reach public, same as a bare entry", () => {
@@ -143,6 +149,27 @@ test("an address on this machine stays denied even when the allow list names it"
 	}
 });
 
+test("an address this machine has on an interface is denied, listed or not, in every mode", () => {
+	const own = new Set(["192.168.1.10", "203.0.113.5"]);
+	for (const address of own) {
+		for (const policy of [enforcing([`${address}:5432`]), logging([])]) {
+			const v = decide(policy, address, 5432, own);
+			assert.equal(v.kind, "deny", `expected ${address} to be denied`);
+			assert.match(v.reason, /an address of this machine/);
+		}
+	}
+});
+
+test("the same LAN address is allowed when it is not this machine's", () => {
+	const v = decide(
+		enforcing(["192.168.1.10:5432"]),
+		"192.168.1.10",
+		5432,
+		new Set(["192.168.1.20"]),
+	);
+	assert.equal(v.kind, "allow");
+});
+
 test("host.playpen.internal is allowed and mapped to 127.0.0.1 when its port has a localhost entry", () => {
 	const v = decide(enforcing(["localhost:9001"]), HOST_ALIAS, 9001);
 	assert.deepEqual(v, {
@@ -215,6 +242,19 @@ test("probe.playpen.internal is answered as a probe, never dialed, and needs no 
 		kind: "probe",
 		reason: `${PROBE_HOST} is the fence's own liveness check; nothing is dialed`,
 	});
+});
+
+test("deny.playpen.internal is denied with no allow entry able to change that, and never dialed", () => {
+	for (const policy of [
+		enforcing([DENY_HOST, "playpen.internal"]),
+		logging([]),
+	]) {
+		const v = decide(policy, DENY_HOST, 80);
+		assert.deepEqual(v, {
+			kind: "deny",
+			reason: `${DENY_HOST} is the fence's own refusal check; nothing is dialed`,
+		});
+	}
 });
 
 test("probe.playpen.internal stays a probe even when log mode would allow anything", () => {

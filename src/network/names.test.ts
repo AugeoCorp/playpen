@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isLanIpv4, isPublicIpv4, isReachableIpv4 } from "./names.ts";
+import { isLanIpv4, isPublicIpv4, isPublicOrLanIpv4 } from "./names.ts";
 
 test("a public address is both public and reachable", () => {
 	assert.equal(isPublicIpv4("93.184.216.34"), true);
-	assert.equal(isReachableIpv4("93.184.216.34"), true);
+	assert.equal(isPublicOrLanIpv4("93.184.216.34"), true);
 });
 
 test("a LAN address is reachable, since a ported entry may dial one, but never public", () => {
@@ -25,19 +25,19 @@ test("a LAN address is reachable, since a ported entry may dial one, but never p
 			`${address} should not be public`,
 		);
 		assert.equal(
-			isReachableIpv4(address),
+			isPublicOrLanIpv4(address),
 			true,
-			`${address} should be reachable`,
+			`${address} should be in a ported entry's reach`,
 		);
 	}
 });
 
-test("this machine's own loopback is reachable, since a ported entry may dial it, but never public", () => {
+test("this machine's own loopback is out of reach for a ported entry too: only localhost:PORT opens it", () => {
 	assert.equal(isPublicIpv4("127.0.0.1"), false);
-	assert.equal(isReachableIpv4("127.0.0.1"), true);
+	assert.equal(isPublicOrLanIpv4("127.0.0.1"), false);
 });
 
-test("link-local, the 0.0.0.0 spelling of loopback, multicast and the reserved range are never reachable, ported entry or not", () => {
+test("link-local, the 0.0.0.0 spelling of loopback, multicast and the reserved range are out of reach, ported entry or not", () => {
 	for (const address of [
 		"169.254.169.254",
 		"0.0.0.0",
@@ -51,14 +51,14 @@ test("link-local, the 0.0.0.0 spelling of loopback, multicast and the reserved r
 			`${address} should not be public`,
 		);
 		assert.equal(
-			isReachableIpv4(address),
+			isPublicOrLanIpv4(address),
 			false,
-			`${address} should not be reachable`,
+			`${address} should be out of every entry's reach`,
 		);
 	}
 });
 
 test("a string that is not an IPv4 address is neither public nor reachable", () => {
 	assert.equal(isPublicIpv4("not-an-ip"), false);
-	assert.equal(isReachableIpv4("not-an-ip"), false);
+	assert.equal(isPublicOrLanIpv4("not-an-ip"), false);
 });

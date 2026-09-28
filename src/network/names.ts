@@ -56,20 +56,20 @@ export function isPublicIpv4(host: string): boolean {
 }
 
 /**
- * A ported allow entry's reach: public, this machine's own loopback
- * (127/8), or a LAN/CGNAT address -- the same addresses an entry naming one
- * of them directly, with a port, may already dial.
+ * A ported allow entry's reach: public or a LAN/CGNAT address -- the same
+ * addresses an entry naming one of them directly, with a port, may already
+ * dial. Never this machine: `localhost:PORT` is the one entry that reaches
+ * it, so no name's DNS can be another.
  */
-export function isReachableIpv4(host: string): boolean {
-	if (!isIpv4(host)) return false;
-	return !isNeverDialedIpv4(host);
+export function isPublicOrLanIpv4(host: string): boolean {
+	return isPublicIpv4(host) || isLanIpv4(host);
 }
 
 /**
  * The private ranges an operator may point an allow entry at -- RFC1918 plus
  * CGNAT. Not reachable from the internet, but not this machine either: a
  * database on the LAN lives here. Also part of what a ported name entry may
- * resolve to; see `isReachableIpv4`.
+ * resolve to; see `isPublicOrLanIpv4`.
  */
 export function isLanIpv4(host: string): boolean {
 	if (!isIpv4(host)) return false;
