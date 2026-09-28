@@ -32,7 +32,7 @@ ln -s "$PWD/src/cli.ts" ~/.local/bin/playpen
 
 ```
 playpen start                    create or start the sandbox for this directory
-playpen shell                    shell in the guest
+playpen shell [--keep]           shell in the guest, then stop the VM
 playpen run [--keep] -- <cmd>    run a command, then stop the VM
 playpen claude [--keep] [args]   run Claude Code, then stop the VM
 playpen setup                    re-run the project's setup steps
