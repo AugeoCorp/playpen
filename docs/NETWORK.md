@@ -62,6 +62,19 @@ domain, so the query goes into the tunnel and tun2proxy answers it.
 `ExecStopPost=` reverts both and deletes the device, so `Restart=always` starts
 from a clean interface.
 
+Lima's own host resolver is off in the baked template
+(`hostResolver: { enabled: false }` in `src/image/render.ts`). Left on, it
+answers the guest's queries to `192.168.5.3` using the host's own resolver, and
+on a host whose `nsswitch.conf` lists `resolve` (Fedora and Bazzite ship this)
+that resolver is a unix socket to systemd-resolved. A unix socket crosses this
+fence the same way `egress.sock` does, so a guest with root had a DNS tunnel
+out. With the resolver off, `192.168.5.3` is qemu's own forwarder, which sends
+plain UDP to the host's nameservers; inside the fence that has no route. The
+helper also runs its `bwrap` with `--tmpfs /run/systemd/resolve` and
+`--tmpfs /var/run/nscd` (each only when the directory exists on the host), so
+those sockets are hidden inside the fence before the guest ever starts, so
+nothing inside the fence's namespace can reach them by path either.
+
 Because qemu itself runs inside the fence, `192.168.5.2` is not the real host's
 loopback -- it is the fence's own. Inside the fence, a `socat` process listens
 on `127.0.0.1:1080` and connects each incoming stream to `egress.sock`, a unix
@@ -122,17 +135,36 @@ file rather than a half-written one -- it is written by rename -- so the helper
 swaps in an empty enforcing policy and says so: the sandbox loses its network
 until the next `playpen start` rather than keeping a list nobody can read.
 
-**The guest is then asked to prove it can reach the gatekeeper**, because none
-of the above does: everything the helper knows is from outside the fence, where
-a guest whose `playpen-tun2proxy` died looks exactly like a healthy one. The
-helper runs one `curl` in the guest for `probe.playpen.internal`, driven over
-Lima's own control path so the answer covers both directions, and watches for
-the verdict in `gatekeeper.log`. `probe.playpen.internal` is a reserved name
-(`PROBE_HOST` in `src/network/policy.ts`): `decide` always answers it with a
-`probe` verdict, which the gatekeeper refuses with the same 403 as a deny --
-nothing is dialed and no allow entry is needed, and the log line is the whole
-signal. A guest that has not answered within about a minute (tun2proxy's unit
-retries every 2 s) is recorded as `egress: false` in the helper's record.
+**helper.json carries a `policy` field**, alongside `ready` and `egress`: the
+stamp (`mtime:size` of policy.json) of the policy the gatekeeper is deciding
+with right now. When `playpen start` runs against a sandbox that is already up
+and the policy file changed, it waits up to 15 s for the helper to report that
+stamp, then prints "network policy updated for new connections"; if the wait
+runs out it fails instead, with "the running sandbox has not picked up the new
+network policy". A new policy decides new connections only: a tunnel already
+open stays open, since the gatekeeper decides once, at `CONNECT` time.
+
+**The guest is then asked to prove it can reach the gatekeeper, and that the
+gatekeeper actually refuses something**, because neither is proven by the above:
+everything the helper knows so far is from outside the fence, where a guest
+whose `playpen-tun2proxy` died looks exactly like a healthy one, and a
+gatekeeper that let everything through would look exactly as healthy as one that
+enforces the policy. The helper runs `curl` in the guest for two reserved names,
+driven over Lima's own control path so the answer covers both directions, and
+watches for both verdicts in `gatekeeper.log`:
+
+- `probe.playpen.internal` (`PROBE_HOST` in `src/network/policy.ts`): `decide`
+  always answers it with a `probe` verdict, refused with the same 403 as a deny
+  -- nothing is dialed and no allow entry is needed.
+- `deny.playpen.internal` (`DENY_HOST`): a name no policy can allow, in either
+  mode -- always refused, never dialed. Its `deny` line is what proves the
+  gatekeeper is capable of refusing anything at all, not only that traffic
+  happens to get through.
+
+Only once both a `probe` line and a `deny` line land in `gatekeeper.log` does
+the helper report `egress: true` and the sandbox read as `sealed`. A guest that
+has not produced both within about a minute (tun2proxy's unit retries every 2 s)
+is recorded as `egress: false` in the helper's record.
 
 The helper keeps running either way and the VM stays up: it is fenced and
 usable, which is what a sandbox with a broken tunnel needs in order to be
@@ -144,7 +176,11 @@ the sandbox as `no egress` for as long as it stays that way.
 stopping never has to know about the namespace. The helper notices the VM is no
 longer running on its own (it polls every few seconds) and exits, tearing the
 fence down behind it: gatekeeper closed, both sockets removed, its own record
-file deleted.
+file deleted, and `killFenceLeftovers` (`src/network/fence.ts`) `pkill -9 -f`s
+anything still matching the sandbox's `egress.sock` path, its `control.sock`
+path, or `__net-inside <sandbox> ` -- so nothing from this fence outlives the
+VM, including inside socats a killed helper left running for a reattach that
+never came.
 
 **If the helper is killed** -- a crash, a `kill -9`, the host running out of
 memory -- nothing holds the fence's namespace open but qemu and the Lima
@@ -152,7 +188,10 @@ hostagent themselves, and they are not the helper's children in any way that a
 signal to the helper reaches. So the VM stays up, still fenced, with no
 gatekeeper answering: no egress until the next `playpen start`, which finds it
 in that state and reattaches. This is the same case as `stop` disconnecting one
-relay without the other: fail closed, not open.
+relay without the other: fail closed, not open. The inside socats survive the
+kill on purpose, so a reattach has something to reattach to; they do not outlive
+the VM itself -- whichever helper eventually notices the VM has stopped kills
+them along with the rest of the fence (see `playpen stop`, above).
 
 **A host reboot** kills every VM. The fence's leftover files (sockets, the
 helper's record) go stale with it; the next `start` finds no qemu process for
@@ -183,26 +222,30 @@ already merged -- and a mode, and applies these rules to every `CONNECT`:
   reported, in log mode), the same as any other unlisted host.
 - **An IPv4 entry needs a port**, so one entry cannot open every service at an
   address, and it may name a LAN address -- the database on your network is one
-  an operator can legitimately approve -- but never a loopback one, nor 0/8,
-  link-local or multicast. A ported name entry can reach the same kind of
-  address too, if its DNS happens to answer there; see the next rule.
-- **An address that is not a public one is refused in every mode**, listed or
-  not, when the guest's request names it directly: 0/8 (which Linux reads as
-  loopback), 127/8, 169.254/16 with the cloud metadata service in it, the
-  RFC1918 and CGNAT ranges, multicast, and 240/4. This machine and the networks
-  it sits on are not what log mode opens.
+  an operator can legitimately approve -- but never an address of this machine,
+  nor 0/8, link-local or multicast. A ported name entry can reach the same kind
+  of address too, if its DNS happens to answer there; see the next two rules.
+- **Every address this machine has is refused, in every mode.** Every IPv4
+  address on one of the host's interfaces -- loopback, LAN or public -- is
+  refused whether the request names it or a name resolves to it, listed or not,
+  in log mode too. The log gives the reason as "an address of this machine".
+  `localhost:PORT` is the one entry that reaches this machine, through
+  `host.playpen.internal` (below). An unlisted address that is neither public
+  nor LAN is refused as well: 0/8 (which Linux reads as loopback), 127/8,
+  169.254/16 with the cloud metadata service in it, multicast, and 240/4.
 - **A name's port decides how far it may resolve.** Named with a port, an entry
-  matches only that port, and the name may resolve to a public address, this
-  machine's loopback, or a LAN address: the same reach an address entry with a
-  port already has. Named without one, it must resolve to a public address. The
-  port is what makes the difference: an entry like `internal.foo.com:8080` is as
-  deliberate as `localhost:8080`, while a bare name's DNS is the domain owner's
-  to change, so it is never let inside. Either way, link-local (where a cloud
-  metadata service hands out credentials) and the `0.0.0.0` spelling of loopback
-  are never dialed. The gatekeeper resolves the name it decided on, dials only
-  what its reach permits, and when nothing is left closes the tunnel and logs a
-  second line naming the refused address. IPv4 only: a name with nothing but
-  AAAA records is refused.
+  matches only that port, and the name may resolve to a public address or a
+  LAN/CGNAT one -- the same reach an address entry with a port already has, and
+  never this machine's own, whatever address that name's DNS happens to answer
+  with. Named without one, it must resolve to a public address. The port is what
+  makes the difference: an entry like `internal.foo.com:8080` is as deliberate
+  as `localhost:8080`, while a bare name's DNS is the domain owner's to change,
+  so it is never let inside. Either way, link-local (where a cloud metadata
+  service hands out credentials) and the `0.0.0.0` spelling of loopback are
+  never dialed. The gatekeeper resolves the name it decided on, dials only an
+  address its reach permits that is not one of this machine's own, and when
+  nothing is left closes the tunnel and logs a second line naming the refused
+  address. IPv4 only: a name with nothing but AAAA records is refused.
 - **`localhost:PORT` means the host machine, not the guest.** The config is read
   on the host, so `localhost` there is the computer running playpen, and the
   entry opens that one port on it. Inside the guest, `localhost` is the guest
@@ -221,8 +264,10 @@ already merged -- and a mode, and applies these rules to every `CONNECT`:
   the only decisions log mode does not soften.
 - **`mode: "log"`** pipes an otherwise-unlisted connection through anyway and
   records what would have been refused, so a project's real host list can be
-  found by running it and reading the log. It never opens the host's own
-  loopback; only the internet side is permissive.
+  found by running it and reading the log. It never opens an address of this
+  machine -- named directly or reached by resolving a name -- and never opens
+  the guest's own loopback; only the internet side, and a LAN address for a
+  ported entry, is permissive.
 
 `BUILTIN_ALLOW` today is `api.anthropic.com`, `statsig.anthropic.com`,
 `registry.npmjs.org`, `nodejs.org`, `github.com`,
@@ -239,33 +284,45 @@ common package managers need, not a measurement. It stays a guess until a
   it is allowed to reach.
 - **The project mount is the sharing channel, by design.** It was never part of
   what the fence closes.
-- **DNS lookups happen at the gatekeeper**, not in the guest and not as a
-  separate step a name could sneak through -- `--dns virtual` means the guest
-  never resolves anything itself. So a hostname is not a side channel around the
-  policy. It is still visible: every verdict, allowed or refused, is logged with
-  the host it named.
-- **`destroy` briefly runs a stopped sandbox unfenced** to archive its Claude
-  history before deleting it (`saveHistory` in `src/session/lifecycle.ts`). For
-  those few seconds its egress is unfiltered. See `docs/PLAN.md`.
+- **DNS lookups happen at the gatekeeper**, not in the guest, for every program
+  that uses the guest's own resolver: `--dns virtual` makes tun2proxy answer
+  those itself, so a hostname is not a side channel around the policy. A root
+  process can still send a query straight to `192.168.5.3`, past tun0. It gets
+  no answer: with Lima's host resolver off that address is qemu's forwarder to
+  the host's nameservers, and inside the fence there is no route to them. Every
+  verdict the gatekeeper makes, allowed or refused, is logged with the host it
+  named.
 - **Nothing inspects content.** The gatekeeper decides on the `CONNECT` target
   and then pipes the connection through untouched; it never terminates TLS, so
   it cannot see or alter what travels inside an allowed connection.
+- **An allowed name can front for a different one.** Many names sit behind the
+  same shared CDN, so a client can open a tunnel to a name the policy allows and
+  then, inside it, ask for a different site -- in the TLS handshake's SNI or the
+  HTTP `Host` header -- and the gatekeeper never reads inside the tunnel to
+  notice the mismatch: it already decided on the name in the `CONNECT`, before
+  any of that is visible. That follows from not terminating TLS, which is the
+  right call for a proxy that must not itself be able to read what it relays,
+  but it means "allow `github.com`" is wider than it looks: names like
+  `objects.githubusercontent.com` sit behind shared front ends too.
 
 ## What was measured, and where
 
 `src/network/e2e.ts` is the proof, run by hand against a real Lima VM -- not
 part of `npm test`. It boots a plain Ubuntu 24.04 cloud image with none of the
 base image's own layers (tun2proxy is copied in and started by hand, since this
-VM never ran the `tun2proxy()` layer), and checks 14 steps: the sandbox comes up
+VM never ran the `tun2proxy()` layer), and checks 17 steps: the sandbox comes up
 behind the gatekeeper; `limactl shell` works over Lima's own socket, and still
 works once that socket's master is killed, confirmed by `ss -x -p` naming
 `control.sock`; tun2proxy routes the guest to the gatekeeper; an allowed host
 answers and a denied one is refused, both logged; a raw socket with no proxy
-setting configured still goes through the tun and out; the VM survives the
-helper being `SIGKILL`ed, stays fenced with no egress, and a new helper
-reattaches and restores it; and `limactl stop` tears the fence down cleanly. All
-14 passed, run as an unprivileged user in a container, Lima 2.2.0 under software
-emulation.
+setting configured still goes through the tun and out; a query sent straight to
+Lima's resolver address from the guest gets no answer record; the VM survives
+the helper being `SIGKILL`ed, stays fenced with no egress, and a new helper
+reattaches and restores it; a rewritten policy is applied before `bringUp`
+returns; `limactl stop` tears the fence down cleanly; and no socat or
+`__net-inside` process is left running for the sandbox, checked before the
+script's own cleanup. All 17 passed, run as an unprivileged user in a container,
+Lima 2.2.0 under software emulation.
 
 `playpen start` against a baked base has now been run too, on Ubuntu 26.04
 (kernel 7.0.0-28) under the same software emulation: the base's own

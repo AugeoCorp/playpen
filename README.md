@@ -88,11 +88,12 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
 - `network.allow` is a list of names, not addresses: an entry is a hostname,
   optionally with a port, and covers that name and everything under it, so
   `*.example.com` is rejected — `example.com` already says it. Named with a
-  port, it may resolve inside — to loopback or a LAN address — on that port
-  alone; named without one, it must resolve to a public address. Link-local
-  addresses and the 0.0.0.0 spelling of loopback are never reached either way.
-  An IPv4 literal is the other address you can name: it needs a port, it may be
-  on your LAN, and it is never a loopback one.
+  port, it may resolve to a LAN address as well as a public one, on that port
+  alone; named without one, it must resolve to a public address. Neither ever
+  reaches this machine — only `localhost:PORT` does that. Link-local addresses
+  and the 0.0.0.0 spelling of loopback are never reached either way. An IPv4
+  literal is the other address you can name: it needs a port, and it may be on
+  your LAN, but never an address of this machine.
 - `localhost:PORT` means your machine, not the guest's: the computer running
   playpen, on that one port. Inside the guest, `localhost` still means the guest
   itself and never leaves the VM, so the guest reaches your machine by the name
