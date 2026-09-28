@@ -617,6 +617,17 @@ test("two entries for the same env fail the load, whatever hosts they name", () 
 	assert.deepEqual(r.secrets, []);
 });
 
+test("a secret entry carrying a value is refused, not silently stripped of it", () => {
+	const r = validateNetwork({
+		secrets: [{ env: "GH_TOKEN", hosts: ["api.github.com"], value: "ghp_x" }],
+	});
+	assert.equal(
+		r.error,
+		"`network.secrets[0]` must be { env, hosts } and nothing else; a value never goes in this file",
+	);
+	assert.deepEqual(r.secrets, []);
+});
+
 test("a secrets value that is not an array of entries fails the load", () => {
 	assert.match(secretsError("GH_TOKEN"), /`network\.secrets` must be an array/);
 	assert.match(
