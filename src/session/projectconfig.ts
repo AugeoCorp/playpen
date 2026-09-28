@@ -97,7 +97,11 @@ export function defineConfig(config: PlaypenConfig): PlaypenConfig {
 	return config;
 }
 
-export type LoadedNetwork = Omit<z.output<typeof network>, "rejected">;
+export interface LoadedNetwork {
+	allow: string[];
+	mode: NetworkMode;
+	ports: PortForward[];
+}
 
 export interface LoadedConfig {
 	masked: string[];
@@ -236,13 +240,7 @@ const network = z
 		},
 		{ error: "must be an object" },
 	)
-	.prefault({})
-	.transform(({ allow, mode, ports }) => ({
-		allow: [...new Set(allow.kept)],
-		mode,
-		ports,
-		rejected: allow.dropped,
-	}));
+	.prefault({});
 
 const config = z
 	.object(
@@ -259,13 +257,13 @@ const config = z
 		},
 	)
 	.transform(
-		({ masked, setup, network: { rejected, ...loaded } }): LoadedConfig => ({
+		({ masked, setup, network: { allow, mode, ports } }): LoadedConfig => ({
 			masked: masked.kept,
 			setup: setup.kept,
-			network: loaded,
+			network: { allow: [...new Set(allow.kept)], mode, ports },
 			rejected: masked.dropped,
 			rejectedSetup: setup.dropped,
-			rejectedNetwork: rejected,
+			rejectedNetwork: allow.dropped,
 		}),
 	);
 
