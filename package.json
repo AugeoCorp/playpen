@@ -24,7 +24,8 @@
 	},
 	"dependencies": {
 		"citty": "^0.1.6",
-		"proxy-chain": "3.0.1"
+		"proxy-chain": "3.0.1",
+		"zod": "4.6.5"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.5.14",

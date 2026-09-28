@@ -1,7 +1,7 @@
 import { basename, join, normalize } from "node:path";
 import { pathToFileURL } from "node:url";
+import { z } from "zod";
 import { exists } from "../fs.ts";
-import { isPort } from "../network/names.ts";
 import { type PortForward, parseEntry } from "../network/policy.ts";
 
 export const CONFIG_FILE = "playpen.config.ts";
@@ -236,32 +236,42 @@ export function validateNetwork(raw: unknown): {
 	return { allow: accepted, mode: mode ?? "enforce", ports, rejected };
 }
 
+const port = z.number().int().min(1).max(65535);
+
 /** A number is the same port on both sides; `{ host, guest }` moves it. */
-function portForward(entry: unknown): PortForward | null {
-	const pair =
-		typeof entry === "number" ? { host: entry, guest: entry } : entry;
-	if (typeof pair !== "object" || pair === null) return null;
-	const { host, guest } = pair as Record<string, unknown>;
-	if (typeof host !== "number" || typeof guest !== "number") return null;
-	return isPort(host) && isPort(guest) ? { host, guest } : null;
-}
+const portForward = z.union([
+	port.transform((p) => ({ host: p, guest: p })),
+	z.object({ host: port, guest: port }),
+]);
+
+/**
+ * The guest port is what a listener binds, so two entries on one guest port
+ * cannot both be honoured; the host port may repeat.
+ */
+const ports = z.array(portForward).superRefine((entries, ctx) => {
+	const seen = new Set<number>();
+	for (const [i, { guest }] of entries.entries()) {
+		if (seen.has(guest)) {
+			ctx.addIssue({
+				code: "custom",
+				path: [i],
+				message: `\`network.ports\` names guest port ${guest} twice`,
+			});
+		}
+		seen.add(guest);
+	}
+});
 
 function validatePorts(raw: unknown): PortForward[] | string {
 	if (raw === undefined) return [];
+	const result = ports.safeParse(raw);
+	if (result.success) return result.data;
 	const shape = "a port number or { host, guest }";
-	if (!Array.isArray(raw))
+	const issue = result.error.issues[0];
+	if (issue === undefined || issue.path.length === 0)
 		return `\`network.ports\` must be an array of ${shape}`;
-
-	const ports: PortForward[] = [];
-	for (const [i, entry] of raw.entries()) {
-		const port = portForward(entry);
-		if (port === null)
-			return `\`network.ports[${i}]\` must be ${shape}, each from 1 to 65535`;
-		if (ports.some((p) => p.guest === port.guest))
-			return `\`network.ports\` names guest port ${port.guest} twice`;
-		ports.push(port);
-	}
-	return ports;
+	if (issue.code === "custom") return issue.message;
+	return `\`network.ports[${String(issue.path[0])}]\` must be ${shape}, each from 1 to 65535`;
 }
 
 export async function hasLegacyIgnore(projectDir: string): Promise<boolean> {
