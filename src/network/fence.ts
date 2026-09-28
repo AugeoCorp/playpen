@@ -16,7 +16,8 @@ import { assertSandboxName } from "../session/identity.ts";
 import { isLive, type Owner } from "../session/proc.ts";
 import { capture } from "../sh.ts";
 import { sleep } from "../time.ts";
-import type { Policy } from "./policy.ts";
+import { isPort } from "./names.ts";
+import type { Policy, PortForward } from "./policy.ts";
 
 /**
  * The fence: a network namespace with no route out, holding one sandbox VM.
@@ -95,6 +96,12 @@ export interface HelperRecord extends Owner {
 	 * assume it. Empty until the first policy is loaded.
 	 */
 	policy: string;
+	/**
+	 * Entries of the policy's `ports` with nothing listening at the guest's end,
+	 * so `playpen start` can name them. Absent from a helper older than
+	 * `ports`, and until the guest has first been asked.
+	 */
+	unboundPorts?: PortForward[];
 }
 
 export async function writeHelper(
@@ -158,14 +165,24 @@ export async function policyStamp(sandbox: string): Promise<string> {
 export async function readPolicy(sandbox: string): Promise<Policy> {
 	const path = fencePaths(sandbox).policy;
 	const parsed = JSON.parse(await readFile(path, "utf8")) as Partial<Policy>;
-	const { allow, mode } = parsed;
+	const { allow, mode, ports } = parsed;
 	if (!Array.isArray(allow) || allow.some((e) => typeof e !== "string")) {
 		throw new Error(`${path}: \`allow\` must be an array of strings`);
 	}
 	if (mode !== "enforce" && mode !== "log") {
 		throw new Error(`${path}: \`mode\` must be "enforce" or "log"`);
 	}
-	return { allow, mode };
+	// The guest numbers are printed into a root script in the guest, so a
+	// hand-edited file must not get anything else in.
+	const port = (p: Partial<PortForward> | null) =>
+		typeof p === "object" &&
+		p !== null &&
+		isPort(p.host ?? 0) &&
+		isPort(p.guest ?? 0);
+	if (!Array.isArray(ports) || !ports.every(port)) {
+		throw new Error(`${path}: \`ports\` must be an array of { host, guest }`);
+	}
+	return { allow, mode, ports };
 }
 
 export type FenceState =

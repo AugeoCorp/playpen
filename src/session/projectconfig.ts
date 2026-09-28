@@ -1,7 +1,8 @@
 import { basename, join, normalize } from "node:path";
 import { pathToFileURL } from "node:url";
 import { exists } from "../fs.ts";
-import { parseEntry } from "../network/policy.ts";
+import { isPort } from "../network/names.ts";
+import { type PortForward, parseEntry } from "../network/policy.ts";
 
 export const CONFIG_FILE = "playpen.config.ts";
 
@@ -31,12 +32,20 @@ export type NetworkMode = "enforce" | "log";
  * machine by the name `host.playpen.internal`, which maps to that port only
  * when the entry exists. The port is required.
  *
+ * `ports` puts a port on this machine at the guest's own `localhost` too, for
+ * a client in the guest that cannot be pointed at `host.playpen.internal`: a
+ * number is the same port on both sides, `{ host, guest }` moves it. Each one
+ * is a grant of that host port, so it brings its `localhost:<host>` entry
+ * with it rather than needing one in `allow`. The guest port has to be free
+ * in the guest.
+ *
  * `mode: "log"` records verdicts and refuses nothing, for finding out what a
  * project reaches. It is never the default.
  */
 export interface NetworkConfig {
 	allow?: string[];
 	mode?: NetworkMode;
+	ports?: Array<number | PortForward>;
 }
 
 export interface PlaypenConfig {
@@ -82,10 +91,16 @@ export function defineConfig(config: PlaypenConfig): PlaypenConfig {
 	return config;
 }
 
+export interface LoadedNetwork {
+	allow: string[];
+	mode: NetworkMode;
+	ports: PortForward[];
+}
+
 export interface LoadedConfig {
 	masked: string[];
 	setup: string[];
-	network: { allow: string[]; mode: NetworkMode };
+	network: LoadedNetwork;
 	/** `masked` entries dropped by validation, verbatim, for warning about. */
 	rejected: string[];
 	/** `setup` entries dropped by validation, verbatim. */
@@ -173,16 +188,19 @@ export function validateSetup(entries: readonly unknown[]): {
  * request: an entry that passes here cannot mean something else there.
  *
  * Shape problems — `allow` that is not an array, a `mode` that is neither
- * spelling — come back as `error` rather than as dropped entries: a `mode`
- * meant to say "log" that was quietly dropped would enforce instead.
+ * spelling, any `ports` entry at all that is wrong — come back as `error`
+ * rather than as dropped entries: a `mode` meant to say "log" that was quietly
+ * dropped would enforce instead, and a dropped port would leave a client in
+ * the guest talking to whatever else holds that port.
  */
 export function validateNetwork(raw: unknown): {
 	allow: string[];
 	mode: NetworkMode;
+	ports: PortForward[];
 	rejected: string[];
 	error?: string;
 } {
-	const none = { allow: [], mode: "enforce" as const, rejected: [] };
+	const none = { allow: [], mode: "enforce" as const, ports: [], rejected: [] };
 	if (raw === undefined) return none;
 	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
 		return { ...none, error: "`network` must be an object" };
@@ -195,6 +213,8 @@ export function validateNetwork(raw: unknown): {
 	if (mode !== undefined && mode !== "enforce" && mode !== "log") {
 		return { ...none, error: '`network.mode` must be "enforce" or "log"' };
 	}
+	const ports = validatePorts((raw as { ports?: unknown }).ports);
+	if (typeof ports === "string") return { ...none, error: ports };
 
 	const entries: readonly unknown[] = allow ?? [];
 	const accepted: string[] = [];
@@ -213,7 +233,38 @@ export function validateNetwork(raw: unknown): {
 		if (!accepted.includes(parsed.text)) accepted.push(parsed.text);
 	}
 
-	return { allow: accepted, mode: mode ?? "enforce", rejected };
+	return { allow: accepted, mode: mode ?? "enforce", ports, rejected };
+}
+
+/** The entries, or what is wrong with them. */
+function validatePorts(raw: unknown): PortForward[] | string {
+	if (raw === undefined) return [];
+	const shape = "a port number or { host, guest }";
+	if (!Array.isArray(raw))
+		return `\`network.ports\` must be an array of ${shape}`;
+
+	const ports: PortForward[] = [];
+	for (const [i, entry] of raw.entries()) {
+		const { host, guest } =
+			typeof entry === "number"
+				? { host: entry, guest: entry }
+				: typeof entry === "object" && entry !== null
+					? (entry as Partial<Record<keyof PortForward, unknown>>)
+					: {};
+		if (
+			typeof host !== "number" ||
+			typeof guest !== "number" ||
+			!isPort(host) ||
+			!isPort(guest)
+		) {
+			return `\`network.ports[${i}]\` must be ${shape}, each from 1 to 65535`;
+		}
+		if (ports.some((p) => p.guest === guest)) {
+			return `\`network.ports\` names guest port ${guest} twice`;
+		}
+		ports.push({ host, guest });
+	}
+	return ports;
 }
 
 export async function hasLegacyIgnore(projectDir: string): Promise<boolean> {
@@ -251,7 +302,7 @@ export async function importConfig(file: string): Promise<LoadedConfig> {
 	const empty: LoadedConfig = {
 		masked: [],
 		setup: [],
-		network: { allow: [], mode: "enforce" },
+		network: { allow: [], mode: "enforce", ports: [] },
 		rejected: [],
 		rejectedSetup: [],
 		rejectedNetwork: [],
@@ -296,7 +347,7 @@ export async function importConfig(file: string): Promise<LoadedConfig> {
 	return {
 		masked: masks.masked,
 		setup: steps.setup,
-		network: { allow: net.allow, mode: net.mode },
+		network: { allow: net.allow, mode: net.mode, ports: net.ports },
 		rejected: masks.rejected,
 		rejectedSetup: steps.rejected,
 		rejectedNetwork: net.rejected,
@@ -313,7 +364,7 @@ export async function loadProjectConfig(
 		return {
 			masked: [],
 			setup: [],
-			network: { allow: [], mode: "enforce" },
+			network: { allow: [], mode: "enforce", ports: [] },
 			rejected: [],
 			rejectedSetup: [],
 			rejectedNetwork: [],

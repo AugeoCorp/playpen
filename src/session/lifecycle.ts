@@ -20,7 +20,7 @@ import { checkMount } from "./mountguard.ts";
 import {
 	CONFIG_FILE,
 	LEGACY_IGNORE_FILE,
-	type NetworkMode,
+	type LoadedNetwork,
 } from "./projectconfig.ts";
 import * as store from "./store.ts";
 import { loadTrustedConfig } from "./trust.ts";
@@ -52,7 +52,7 @@ function renderFor(sb: Sandbox) {
 async function loadConfig(sb: Sandbox): Promise<{
 	masked: string[];
 	setup: string[];
-	network: { allow: string[]; mode: NetworkMode };
+	network: LoadedNetwork;
 }> {
 	const {
 		masked,
@@ -102,6 +102,11 @@ async function loadConfig(sb: Sandbox): Promise<{
 			`allowing network access to ${hosts === 1 ? "1 host" : `${hosts} hosts`} named by this project`,
 		);
 	}
+	for (const { host, guest } of network.ports) {
+		console.error(
+			`forwarding host port ${host} to the guest's localhost:${guest}`,
+		);
+	}
 	return { masked, setup, network };
 }
 
@@ -142,7 +147,7 @@ interface Template {
 	hash: string;
 	masks: string[];
 	setup: string[];
-	network: { allow: string[]; mode: NetworkMode };
+	network: LoadedNetwork;
 }
 
 /** Loads the project config, so it is read once per command and reused. */
@@ -281,11 +286,19 @@ export interface Running {
  * in it but the build.
  */
 async function startFenced(sb: Sandbox, template: Template): Promise<void> {
+	const { allow, mode, ports } = template.network;
 	await fenced(sb, {
-		allow: [...BUILTIN_ALLOW, ...template.network.allow],
-		mode: template.network.mode,
+		// A port is a grant of that host port, so writing it once is enough.
+		allow: [
+			...BUILTIN_ALLOW,
+			...allow,
+			...ports.map(({ host }) => `localhost:${host}`),
+		],
+		mode,
+		ports,
 	});
 	await warnWithoutEgress(sb);
+	await warnUnboundPorts(sb);
 }
 
 function fenced(sb: Sandbox, policy: Policy): Promise<void> {
@@ -307,6 +320,25 @@ async function warnWithoutEgress(sb: Sandbox): Promise<void> {
 	if (helper === null || helper.egress) return;
 	console.error(`warning: ${sb.sandbox} has no network`);
 	for (const line of NO_EGRESS_ADVICE) console.error(`  ${line}`);
+}
+
+/**
+ * Not a failed start: everything else about the sandbox works, and a client
+ * pointed at that port in the guest reaches whatever holds it, not the host.
+ */
+async function warnUnboundPorts(sb: Sandbox): Promise<void> {
+	const helper = await liveHelper(sb.sandbox);
+	for (const { host, guest } of helper?.unboundPorts ?? []) {
+		console.error(
+			`warning: host port ${host} is not at the guest's localhost:${guest}; nothing could listen there`,
+		);
+		console.error(
+			`  the guest already uses port ${guest}, or has no socat (rebuild the sandbox)`,
+		);
+		console.error(
+			`  pick another guest port in \`network.ports\` if it is taken`,
+		);
+	}
 }
 
 export async function ensureRunning(sb: Sandbox): Promise<Running> {
@@ -494,7 +526,7 @@ async function saveHistory(sb: Sandbox, running: boolean): Promise<void> {
 		if (!running && !(await store.load(sb.sandbox))) return;
 		if (!running) {
 			console.error(`starting it briefly to save Claude history`);
-			await fenced(sb, { allow: [], mode: "enforce" });
+			await fenced(sb, { allow: [], mode: "enforce", ports: [] });
 		}
 		await history.archive(sb.instance, sb.sandbox);
 	} catch (err) {

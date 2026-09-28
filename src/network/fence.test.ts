@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
@@ -8,6 +8,7 @@ import {
 	fencePaths,
 	looksLikeQemu,
 	policyStamp,
+	readPolicy,
 	writePolicy,
 } from "./fence.ts";
 
@@ -112,30 +113,63 @@ async function dataDir(t: TestContext): Promise<void> {
 test("a policy that has not been written yet stamps differently from one that has", async (t) => {
 	await dataDir(t);
 	assert.equal(await policyStamp("api-abc123"), "");
-	await writePolicy("api-abc123", { allow: [], mode: "enforce" });
+	await writePolicy("api-abc123", { allow: [], mode: "enforce", ports: [] });
 	assert.notEqual(await policyStamp("api-abc123"), "");
 });
 
 test("rewriting a policy with different hosts changes its stamp", async (t) => {
 	await dataDir(t);
-	await writePolicy("api-abc123", { allow: [], mode: "enforce" });
+	await writePolicy("api-abc123", { allow: [], mode: "enforce", ports: [] });
 	const before = await policyStamp("api-abc123");
 	await writePolicy("api-abc123", {
 		allow: ["example.com:443"],
 		mode: "enforce",
+		ports: [],
 	});
 	assert.notEqual(await policyStamp("api-abc123"), before);
 });
 
 test("writing a policy says whether it changed what was already on disk", async (t) => {
 	await dataDir(t);
-	const policy = { allow: ["example.com:443"], mode: "enforce" } as const;
+	const policy = {
+		allow: ["example.com:443"],
+		mode: "enforce",
+		ports: [],
+	} as const;
 	assert.equal(await writePolicy("api-abc123", policy), true);
 	assert.equal(await writePolicy("api-abc123", policy), false);
 	assert.equal(
-		await writePolicy("api-abc123", { allow: [], mode: "enforce" }),
+		await writePolicy("api-abc123", { allow: [], mode: "enforce", ports: [] }),
 		true,
 	);
+});
+
+test("the ports a policy forwards come back from policy.json as they were written", async (t) => {
+	await dataDir(t);
+	const policy = {
+		allow: ["localhost:5000"],
+		mode: "enforce",
+		ports: [{ host: 5000, guest: 4321 }],
+	} as const;
+	await writePolicy("api-abc123", policy);
+	assert.deepEqual(await readPolicy("api-abc123"), policy);
+});
+
+test("a policy.json whose ports are not all port numbers is refused, since the guest runs them as root", async (t) => {
+	await dataDir(t);
+	await writePolicy("api-abc123", { allow: [], mode: "enforce", ports: [] });
+	for (const ports of [
+		[{ host: 5000, guest: "4321; reboot" }],
+		[{ host: 5000 }],
+		"5000",
+		undefined,
+	]) {
+		await writeFile(
+			fencePaths("api-abc123").policy,
+			JSON.stringify({ allow: [], mode: "enforce", ports }),
+		);
+		await assert.rejects(readPolicy("api-abc123"), /`ports` must be/);
+	}
 });
 
 async function dirMode(path: string): Promise<number> {
@@ -144,7 +178,7 @@ async function dirMode(path: string): Promise<number> {
 
 test("writePolicy leaves the fence directory readable only by its owner", async (t) => {
 	await dataDir(t);
-	await writePolicy("api-abc123", { allow: [], mode: "enforce" });
+	await writePolicy("api-abc123", { allow: [], mode: "enforce", ports: [] });
 	assert.equal(await dirMode(fencePaths("api-abc123").dir), 0o700);
 });
 
@@ -153,7 +187,7 @@ test("writePolicy tightens a fence directory a previous version left world-reada
 	const { dir } = fencePaths("api-abc123");
 	await mkdir(dir, { recursive: true, mode: 0o755 });
 	assert.equal(await dirMode(dir), 0o755);
-	await writePolicy("api-abc123", { allow: [], mode: "enforce" });
+	await writePolicy("api-abc123", { allow: [], mode: "enforce", ports: [] });
 	assert.equal(await dirMode(dir), 0o700);
 });
 

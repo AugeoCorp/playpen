@@ -420,3 +420,76 @@ test("reports a network key that is not an object", async (t) => {
 	const r = await loadProjectConfig(dir);
 	assert.match(r.error ?? "", /`network` must be an object/);
 });
+
+test("a port is a number for the same port on both sides, or { host, guest } to move it", () => {
+	const r = validateNetwork({ ports: [1234, { host: 5000, guest: 4321 }] });
+	assert.equal(r.error, undefined);
+	assert.deepEqual(r.ports, [
+		{ host: 1234, guest: 1234 },
+		{ host: 5000, guest: 4321 },
+	]);
+});
+
+test("no ports key forwards nothing", () => {
+	assert.deepEqual(validateNetwork({ allow: ["example.com"] }).ports, []);
+});
+
+test("a port outside 1 to 65535, or not a whole number, fails the load", () => {
+	for (const ports of [
+		[0],
+		[65536],
+		[80.5],
+		[{ host: 1234, guest: 70000 }],
+		[{ host: -1, guest: 4321 }],
+	]) {
+		const r = validateNetwork({ ports });
+		assert.match(r.error ?? "", /`network\.ports\[0\]` must be/);
+		assert.deepEqual(r.ports, []);
+	}
+});
+
+test("a ports entry of the wrong shape fails the load rather than being dropped", () => {
+	for (const ports of [
+		["1234"],
+		[null],
+		[{ host: 1234 }],
+		[{ host: "1234", guest: 1234 }],
+	]) {
+		const r = validateNetwork({ ports });
+		assert.match(r.error ?? "", /`network\.ports\[0\]` must be/);
+	}
+	const notArray = validateNetwork({ ports: 1234 });
+	assert.match(notArray.error ?? "", /`network\.ports` must be an array/);
+});
+
+test("two entries for the same guest port fail the load, whatever host ports they name", () => {
+	const r = validateNetwork({ ports: [4321, { host: 5000, guest: 4321 }] });
+	assert.match(r.error ?? "", /names guest port 4321 twice/);
+	assert.deepEqual(r.ports, []);
+});
+
+test("one host port may appear at two guest ports", () => {
+	const r = validateNetwork({ ports: [1234, { host: 1234, guest: 4321 }] });
+	assert.equal(r.error, undefined);
+	assert.equal(r.ports.length, 2);
+});
+
+test("reads ports from a default export", async (t) => {
+	const dir = await project(t, {
+		"playpen.config.js":
+			"export default { network: { ports: [{ host: 5000, guest: 4321 }] } };",
+	});
+	const r = await loadProjectConfig(dir);
+	assert.equal(r.error, undefined);
+	assert.deepEqual(r.network.ports, [{ host: 5000, guest: 4321 }]);
+});
+
+test("a bad port fails the whole load, the way an unknown mode does", async (t) => {
+	const dir = await project(t, {
+		"playpen.config.js":
+			'export default { network: { allow: ["example.com"], ports: [99999] } };',
+	});
+	const r = await loadProjectConfig(dir);
+	assert.match(r.error ?? "", /playpen\.config\.js: `network\.ports\[0\]`/);
+	assert.deepEqual(r.network, { allow: [], mode: "enforce", ports: [] });
+});

@@ -56,10 +56,26 @@ export const BUILTIN_ALLOW: readonly string[] = [
 	"files.pythonhosted.org",
 ];
 
+/** A port on this machine that the guest also reaches at its own loopback. */
+export interface PortForward {
+	host: number;
+	guest: number;
+}
+
 export interface Policy {
-	/** Built-in entries plus the project's `network.allow`, already merged. */
+	/**
+	 * Built-in entries plus the project's `network.allow`, already merged, and
+	 * a `localhost:<host>` for each of `ports`.
+	 */
 	allow: readonly string[];
 	mode: "enforce" | "log";
+	/**
+	 * For the helper, which listens on the guest's `127.0.0.1:<guest>` and
+	 * sends each connection on as a request for `HOST_ALIAS:<host>`. `decide`
+	 * never reads it: that request is allowed by the `localhost:<host>` entry
+	 * in `allow` like any other, so a port is never a second way through.
+	 */
+	ports: readonly PortForward[];
 }
 
 /**
