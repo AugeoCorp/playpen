@@ -26,7 +26,9 @@ import {
 	bringUp,
 	fencePaths,
 	fenceStatus,
+	killFenceLeftovers,
 	liveHelper,
+	policyStamp,
 	removeSocket,
 } from "./fence.ts";
 import type { LogEntry } from "./gatekeeper.ts";
@@ -42,11 +44,9 @@ const paths = fencePaths(sandbox);
 
 /**
  * Argv substrings that identify a process as belonging to this sandbox's
- * fence: the outside relay and the two inside socats all name `paths.egress`
- * or `paths.control` on their command line, and `__net-inside` names the
- * sandbox itself. A SIGKILLed helper leaves these orphaned with no other
- * record of them, so this is how a later step finds and kills them without
- * touching another sandbox's fence.
+ * fence, the same ones `killFenceLeftovers` kills by: the outside relay and
+ * the two inside socats all name `paths.egress` or `paths.control` on their
+ * command line, and `__net-inside` names the sandbox itself.
  */
 const LEFTOVER_PATTERNS = [
 	paths.egress,
@@ -131,11 +131,11 @@ async function waitFor(
 	return `${what} did not happen within ${seconds}s`;
 }
 
-async function up(): Promise<void> {
+async function up(allow: readonly string[] = [allowedHost]): Promise<void> {
 	await bringUp({
 		sandbox,
 		instance,
-		policy: { allow: [...BUILTIN_ALLOW, allowedHost], mode: "enforce" },
+		policy: { allow: [...BUILTIN_ALLOW, ...allow], mode: "enforce" },
 		log: (text) => process.stderr.write(text),
 	});
 }
@@ -165,6 +165,11 @@ async function main(): Promise<void> {
 		await step(`${deniedHost} is refused`, deniedRefused);
 		await step("a raw socket with no proxy setting gets out", rawSocket);
 		await step("the gatekeeper logged both verdicts", bothVerdicts);
+		await step("a query to Lima's resolver address gets no answer", noDns);
+		await step(
+			"a rewritten policy is applied before bringUp returns",
+			policyApplied,
+		);
 
 		console.log("\n4. killing the helper");
 		await step("the VM survives it, still fenced", helperKilled);
@@ -176,10 +181,14 @@ async function main(): Promise<void> {
 		await step("the helper tears the fence down and exits", stopped);
 	} finally {
 		console.log("\n6. leftover processes for this sandbox");
-		await step(
-			"no socat or __net-inside process left running",
-			noLeftoverProcesses,
-		);
+		try {
+			await step(
+				"no socat or __net-inside process left running",
+				noLeftoverProcesses,
+			);
+		} finally {
+			await cleanUp();
+		}
 	}
 
 	console.log(`\n${passed} passed, ${failed} failed`);
@@ -191,26 +200,58 @@ async function running(pattern: string): Promise<boolean> {
 	return stdout.trim() !== "";
 }
 
-/** Best effort, like `removeSocket`: a process already gone is the outcome wanted. */
-async function killLeftovers(): Promise<void> {
-	for (const pattern of LEFTOVER_PATTERNS)
-		await capture("pkill", ["-9", "-f", pattern]);
+/** Runs on every exit path so a failed step still leaves the machine tidy. */
+async function cleanUp(): Promise<void> {
+	await killFenceLeftovers(sandbox);
 	await removeSocket(paths.egress);
 	await removeSocket(paths.control);
 }
 
 /**
- * Runs on every exit path, including a failed step: the reattach in section 4
- * leaves the killed run's inside socats holding the fence's sockets, and a
- * thrown step would otherwise skip cleanup entirely.
+ * Checked before `cleanUp`, not after: the helper's own teardown is what must
+ * have killed the inside socats the reattach in section 4 found running.
  */
 async function noLeftoverProcesses(): Promise<string | null> {
-	await killLeftovers();
-	await sleep(200);
 	const stillUp = await Promise.all(LEFTOVER_PATTERNS.map(running));
 	return stillUp.some(Boolean)
 		? "a socat or __net-inside process for this sandbox is still running"
 		: null;
+}
+
+/**
+ * Lima's host resolver is off in the template, so the address the guest
+ * would ask, 192.168.5.3, is qemu's own forwarder -- which sends plain UDP to
+ * the host's nameservers, and inside the fence that has no route. A guest
+ * process asking it directly, past the system resolver that points at tun0,
+ * must get no answer with a record in it. python3 rather than dig, which the
+ * cloud image does not ship; the query is an A lookup for example.com, and
+ * the number printed is the answer count from the reply header.
+ */
+async function noDns(): Promise<string | null> {
+	const out = await guest(
+		[
+			"python3 - <<'PY'",
+			"import socket",
+			"s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)",
+			"s.settimeout(3)",
+			"query = bytes.fromhex('1234 0100 0001 0000 0000 0000') + b'\\x07example\\x03com\\x00\\x00\\x01\\x00\\x01'",
+			"s.sendto(query, ('192.168.5.3', 53))",
+			"try:",
+			"    reply = s.recv(512)",
+			"    print(int.from_bytes(reply[6:8], 'big'))",
+			"except OSError:",
+			"    print('none')",
+			"PY",
+		].join("\n"),
+	);
+	return out === "none" || out === "0" ? null : `got ${out} answer record(s)`;
+}
+
+async function policyApplied(): Promise<string | null> {
+	await up([allowedHost, "retightened.example"]);
+	const stamp = await policyStamp(sandbox);
+	const helper = await liveHelper(sandbox);
+	return wanted("applied policy stamp", stamp, helper?.policy ?? "none");
 }
 
 async function createIfMissing(): Promise<string | null> {
