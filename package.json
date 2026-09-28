@@ -23,7 +23,8 @@
 		"verify": "npm run test && npm run lint:fix && npm run typecheck"
 	},
 	"dependencies": {
-		"citty": "^0.1.6"
+		"citty": "^0.1.6",
+		"proxy-chain": "3.0.1"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.5.14",
