@@ -75,10 +75,10 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
 
 `examples/playpen.config.ts` shows every key, with a note on each.
 
-| Key       | Type                                                                                                                                                   | Effect                                                                                                        |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
-| `masked`  | `string[]`                                                                                                                                             | Project-relative dirs given guest-local storage, not 9p                                                       |
-| `setup`   | `string[]`                                                                                                                                             | Shell commands run in the guest, after masks, in order                                                        |
+| Key       | Type                                                                                                                                                   | Effect                                                                                                                              |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `masked`  | `string[]`                                                                                                                                             | Project-relative dirs given guest-local storage, not 9p                                                                             |
+| `setup`   | `string[]`                                                                                                                                             | Shell commands run in the guest, after masks, in order                                                                              |
 | `network` | `{ allow?: string[]; mode?: "enforce" \| "log"; ports?: (number \| { host: number; guest: number })[]; secrets?: { env: string; hosts: string[] }[] }` | Hosts this project may reach, on top of the ones playpen ships, host ports it sees at its own `localhost`, and credentials it names |
 
 - `masked` gives host and guest their own copy of a path: the 9p share is slow,
@@ -118,10 +118,9 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
   never a value — the file sits in the project directory, which the sandbox
   mounts. `env` is an upper-case variable name; each host is a plain hostname,
   with no port and not an address. Injection will match the host exactly; the
-  allow entry it implies covers subdomains, like any entry in `allow`. A
-  mistake here stops the config loading rather than being skipped. Nothing is
-  injected yet: in this version an entry is checked and reported and does
-  nothing else.
+  allow entry it implies covers subdomains, like any entry in `allow`. A mistake
+  here stops the config loading rather than being skipped. Nothing is injected
+  yet: in this version an entry is checked and reported and does nothing else.
 - `mode: "log"` records what the sandbox reaches and blocks nothing on the
   internet side; your own machine's localhost stays closed in every mode. Use it
   to find the hosts a project needs, then list them; the default is `enforce`.
