@@ -112,7 +112,7 @@ const helperRecord = ownerSchema.extend({
 	 * `bringUp` can tell a rewritten policy has been applied rather than
 	 * assume it. Empty until the first policy is loaded.
 	 */
-	policy: z.string(),
+	policy: z.string().default(""),
 	/**
 	 * Entries of the policy's `ports` with nothing listening at the guest's end,
 	 * so `playpen start` can name them. Absent from a helper older than

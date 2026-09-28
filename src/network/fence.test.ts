@@ -208,6 +208,14 @@ test("a running helper is found by the record it wrote", async (t) => {
 	assert.deepEqual(await liveHelper("api-abc123"), record);
 });
 
+test("a helper that wrote its record before the policy field existed is still found, with no policy applied yet", async (t) => {
+	await dataDir(t);
+	await mkdir(fencePaths("api-abc123").dir, { recursive: true });
+	const { policy: _, ...older } = { ...helper, ...(await self()) };
+	await writeFile(fencePaths("api-abc123").helper, JSON.stringify(older));
+	assert.deepEqual(await liveHelper("api-abc123"), { ...older, policy: "" });
+});
+
 test("a helper.json that is not a helper record reads as no helper", async (t) => {
 	await dataDir(t);
 	await mkdir(fencePaths("api-abc123").dir, { recursive: true });
