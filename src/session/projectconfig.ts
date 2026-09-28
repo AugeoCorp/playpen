@@ -175,12 +175,10 @@ const setupEntry = z.string().trim().min(1);
  * network/policy.ts decides all of that, because it is also what matches a
  * request: an entry that passes here cannot mean something else there.
  */
-const allowEntry = z.string().transform((raw, ctx) => {
-	const entry = parseEntry(raw);
-	if (entry !== null) return entry.text;
-	ctx.addIssue({ code: "custom", message: "is not a name to allow" });
-	return z.NEVER;
-});
+const allowEntry = z
+	.string()
+	.transform((raw) => parseEntry(raw)?.text)
+	.pipe(z.string());
 
 const PORT_ENTRY =
 	"must be a port number or { host, guest }, each from 1 to 65535";
