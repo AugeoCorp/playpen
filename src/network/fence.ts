@@ -1,15 +1,18 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import {
 	chmod,
+	lstat,
 	mkdir,
 	open,
 	readFile,
 	readlink,
+	realpath,
 	stat,
 	unlink,
 } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { z } from "zod";
 import { dataDir, limaHome } from "../config.ts";
 import { readAppended, sizeOf, writeAtomic } from "../fs.ts";
 import { assertSandboxName } from "../session/identity.ts";
@@ -48,6 +51,12 @@ export interface FencePaths {
 	control: string;
 	helper: string;
 	policy: string;
+	/** Which project paths the next fresh helper hides from qemu's 9p share. */
+	mounts: string;
+	/** Read-only source bound over a masked file; never written to. */
+	emptyFile: string;
+	/** Read-only source bound over a masked directory; never written to. */
+	emptyDir: string;
 	gatekeeperLog: string;
 	helperLog: string;
 	/** Written by the inside half once the VM is up; holds its ssh port. */
@@ -63,6 +72,9 @@ export function fencePaths(sandbox: string): FencePaths {
 		control: join(dir, "control.sock"),
 		helper: join(dir, "helper.json"),
 		policy: join(dir, "policy.json"),
+		mounts: join(dir, "mounts.json"),
+		emptyFile: join(dir, "empty-file"),
+		emptyDir: join(dir, "empty-dir"),
 		gatekeeperLog: join(dir, "gatekeeper.log"),
 		helperLog: join(dir, "helper.log"),
 		ready: join(dir, "ready"),
@@ -102,6 +114,15 @@ export interface HelperRecord extends Owner {
 	 * `ports`, and until the guest has first been asked.
 	 */
 	unboundPorts?: PortForward[];
+	/**
+	 * The `masked` entries (project-relative) this helper's qemu had a
+	 * placeholder bound over, so `bringUp` can tell a mask added since the
+	 * sandbox started from one the running qemu already has: a mount table
+	 * cannot be rewritten under a running process. Empty for a helper older
+	 * than host-side masks, and for one that reattached to a qemu it did not
+	 * start, which cannot know.
+	 */
+	masked: string[];
 }
 
 export async function writeHelper(
@@ -114,7 +135,9 @@ export async function writeHelper(
 async function readHelper(sandbox: string): Promise<HelperRecord | null> {
 	try {
 		const raw = await readFile(fencePaths(sandbox).helper, "utf8");
-		return JSON.parse(raw) as HelperRecord;
+		const parsed = JSON.parse(raw) as Omit<HelperRecord, "masked"> &
+			Partial<Pick<HelperRecord, "masked">>;
+		return { ...parsed, masked: parsed.masked ?? [] };
 	} catch {
 		return null;
 	}
@@ -183,6 +206,75 @@ export async function readPolicy(sandbox: string): Promise<Policy> {
 		throw new Error(`${path}: \`ports\` must be an array of { host, guest }`);
 	}
 	return { allow, mode, ports };
+}
+
+/**
+ * What qemu is denied a view of, decided when the fence starts and never
+ * reloaded: unlike policy.json, a mount table under a running process cannot
+ * be rewritten.
+ */
+export interface Mounts {
+	/** Absolute, real path of the project directory the guest shares. */
+	project: string;
+	/** Validated `masked` entries, relative to `project`. */
+	masked: string[];
+}
+
+const mountsFile = z.strictObject({
+	project: z.string().min(1),
+	masked: z.array(z.string().min(1)),
+});
+
+export async function writeMounts(
+	sandbox: string,
+	mounts: Mounts,
+): Promise<void> {
+	await ensureFenceDir(sandbox);
+	await writeAtomic(fencePaths(sandbox).mounts, `${JSON.stringify(mounts)}\n`);
+}
+
+/**
+ * Throws rather than reading a bad file as "mask nothing": an unreadable mask
+ * list must stop the sandbox coming up, never expose the project.
+ */
+export async function readMounts(sandbox: string): Promise<Mounts> {
+	const path = fencePaths(sandbox).mounts;
+	const parsed = mountsFile.safeParse(JSON.parse(await readFile(path, "utf8")));
+	if (!parsed.success) {
+		const bad = parsed.error.issues
+			.map((i) => `\`${i.path.join(".") || "(root)"}\` ${i.message}`)
+			.join("; ");
+		throw new Error(`${path}: ${bad}`);
+	}
+	return parsed.data;
+}
+
+export type MaskKind = "dir" | "file" | "missing" | "symlink" | "under-symlink";
+
+/**
+ * What is on the host at a masked entry, without following it. Only a `dir` or
+ * a `file` can have a placeholder bound over it: bwrap would create a missing
+ * path on the host's disk, and a symlink, or a path through one, may lead
+ * outside the project.
+ */
+export async function maskKind(
+	project: string,
+	entry: string,
+): Promise<MaskKind> {
+	const path = join(project, entry);
+	try {
+		const parent = await realpath(dirname(path));
+		if (parent !== join(await realpath(project), dirname(entry))) {
+			return "under-symlink";
+		}
+		const info = await lstat(path);
+		if (info.isSymbolicLink()) return "symlink";
+		return info.isDirectory() ? "dir" : "file";
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException).code;
+		if (code === "ENOENT" || code === "ENOTDIR") return "missing";
+		throw err;
+	}
 }
 
 export type FenceState =
@@ -310,6 +402,8 @@ export interface BringUpOptions {
 	sandbox: string;
 	instance: string;
 	policy: Policy;
+	/** The project and its masked entries; see `Mounts`. */
+	mounts: Mounts;
 	/** Where helper.log goes while the caller waits; usually stderr. */
 	log: (text: string) => void;
 	timeoutMs?: number;
@@ -332,6 +426,10 @@ const APPLY_WINDOW_MS = 15_000;
  * policy applied, or throws, so "updated" is never said of a policy that is
  * not yet deciding anything. Connections already open stay open either way;
  * the policy decides new ones.
+ *
+ * Masks are the opposite: fixed when qemu starts. A running helper is only
+ * asked which entries it bound, and told to restart for the rest; mounts.json
+ * is written only for a helper about to be spawned.
  */
 export async function bringUp(opts: BringUpOptions): Promise<void> {
 	const { sandbox, instance } = opts;
@@ -344,9 +442,15 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 			await applied(sandbox, stamp);
 			opts.log(`network policy updated for new connections\n`);
 		}
+		await warnUnboundMasks(
+			opts.mounts,
+			(await liveHelper(sandbox))?.masked ?? [],
+			opts.log,
+		);
 		return;
 	}
 
+	await writeMounts(sandbox, opts.mounts);
 	const paths = fencePaths(sandbox);
 	let offset = await sizeOf(paths.helperLog);
 	const child = await spawnHelper(sandbox, instance);
@@ -371,6 +475,27 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 			);
 		}
 		await sleep(250);
+	}
+}
+
+/**
+ * Says which masked entries the running qemu still serves the host's contents
+ * for. Only the host's bytes are at stake: the guest side of every entry is
+ * applied on each start whatever the helper bound. An entry with nothing on the
+ * host has nothing for a restart to hide, so it is not mentioned.
+ */
+export async function warnUnboundMasks(
+	mounts: Mounts,
+	bound: readonly string[],
+	log: (text: string) => void,
+): Promise<void> {
+	for (const entry of mounts.masked) {
+		if (bound.includes(entry)) continue;
+		const kind = await maskKind(mounts.project, entry);
+		if (kind !== "dir" && kind !== "file") continue;
+		log(
+			`masked: ${entry} keeps the host's contents out after: playpen stop && playpen start\n`,
+		);
 	}
 }
 

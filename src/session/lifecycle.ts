@@ -5,7 +5,12 @@ import { ensureBase, findBase } from "../image/bake.ts";
 import { baseImage } from "../image/base.ts";
 import { maskScript, render, serialize } from "../image/render.ts";
 import * as lima from "../lima/client.ts";
-import { bringUp, fenceStatus, liveHelper } from "../network/fence.ts";
+import {
+	bringUp,
+	fenceStatus,
+	liveHelper,
+	readMounts,
+} from "../network/fence.ts";
 import {
 	BUILTIN_ALLOW,
 	NO_EGRESS_ADVICE,
@@ -203,6 +208,10 @@ async function giveCloneItsMount(sb: Sandbox): Promise<void> {
 /**
  * Applied on every start, because a bind mount does not survive a reboot and
  * the mask set can change without the sandbox being rebuilt.
+ *
+ * This is the guest half; the host half is the placeholder the fence's helper
+ * binds over the same paths in qemu's mount table, which is in place before the
+ * guest boots and so before this runs.
  */
 async function applyMasks(
 	sb: Sandbox,
@@ -287,25 +296,34 @@ export interface Running {
  */
 async function startFenced(sb: Sandbox, template: Template): Promise<void> {
 	const { allow, mode, ports } = template.network;
-	await fenced(sb, {
-		// A port is a grant of that host port, so writing it once is enough.
-		allow: [
-			...BUILTIN_ALLOW,
-			...allow,
-			...ports.map(({ host }) => `localhost:${host}`),
-		],
-		mode,
-		ports,
-	});
+	await fenced(
+		sb,
+		{
+			// A port is a grant of that host port, so writing it once is enough.
+			allow: [
+				...BUILTIN_ALLOW,
+				...allow,
+				...ports.map(({ host }) => `localhost:${host}`),
+			],
+			mode,
+			ports,
+		},
+		template.masks,
+	);
 	await warnWithoutEgress(sb);
 	await warnUnboundPorts(sb);
 }
 
-function fenced(sb: Sandbox, policy: Policy): Promise<void> {
+function fenced(
+	sb: Sandbox,
+	policy: Policy,
+	masked: readonly string[],
+): Promise<void> {
 	return bringUp({
 		sandbox: sb.sandbox,
 		instance: sb.instance,
 		policy,
+		mounts: { project: sb.cwd, masked: [...masked] },
 		log: (text) => process.stderr.write(text),
 	});
 }
@@ -526,7 +544,14 @@ async function saveHistory(sb: Sandbox, running: boolean): Promise<void> {
 		if (!running && !(await store.load(sb.sandbox))) return;
 		if (!running) {
 			console.error(`starting it briefly to save Claude history`);
-			await fenced(sb, { allow: [], mode: "enforce", ports: [] });
+			// The masks the sandbox last ran with: the guest side is not applied
+			// for this boot, so the host side is all that keeps them out of it.
+			const mounts = await readMounts(sb.sandbox).catch(() => null);
+			await fenced(
+				sb,
+				{ allow: [], mode: "enforce", ports: [] },
+				mounts?.masked ?? [],
+			);
 		}
 		await history.archive(sb.instance, sb.sandbox);
 	} catch (err) {

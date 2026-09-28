@@ -1,14 +1,21 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
+import { self } from "../session/proc.ts";
 import {
 	classifyFence,
 	fencePaths,
+	liveHelper,
 	looksLikeQemu,
+	maskKind,
 	policyStamp,
+	readMounts,
 	readPolicy,
+	warnUnboundMasks,
+	writeHelper,
+	writeMounts,
 	writePolicy,
 } from "./fence.ts";
 
@@ -23,6 +30,7 @@ const helper = {
 	ready: true,
 	egress: true,
 	policy: "1:2",
+	masked: [],
 };
 
 test("a sandbox's sockets and logs live together under the data directory", () => {
@@ -217,4 +225,109 @@ test("a recycled pid now running an unrelated process is not mistaken for qemu",
 
 test("an empty cmdline, as a zombie or an unreadable process reads, is not qemu", () => {
 	assert.equal(looksLikeQemu(""), false);
+});
+
+test("mounts.json comes back as it was written", async (t) => {
+	await dataDir(t);
+	const mounts = { project: "/work/api", masked: ["node_modules", ".env"] };
+	await writeMounts("api-abc123", mounts);
+	assert.deepEqual(await readMounts("api-abc123"), mounts);
+});
+
+/** A mounts.json written by hand rather than by `writeMounts`. */
+async function mountsFileWith(contents: unknown): Promise<void> {
+	await writeMounts("api-abc123", { project: "/work/api", masked: [] });
+	await writeFile(fencePaths("api-abc123").mounts, JSON.stringify(contents));
+}
+
+test("a mounts.json with a malformed key is refused, naming the key", async (t) => {
+	await dataDir(t);
+	await mountsFileWith({ project: "/work/api", masked: ".env" });
+	await assert.rejects(readMounts("api-abc123"), /`masked`/);
+	await mountsFileWith({ project: 7, masked: [] });
+	await assert.rejects(readMounts("api-abc123"), /`project`/);
+	await mountsFileWith({ project: "/work/api", masked: [".env", 3] });
+	await assert.rejects(readMounts("api-abc123"), /`masked\.1`/);
+});
+
+test("a mounts.json missing a key, or missing altogether, is refused rather than read as masking nothing", async (t) => {
+	await dataDir(t);
+	await mountsFileWith({ project: "/work/api" });
+	await assert.rejects(readMounts("api-abc123"), /`masked`/);
+	await assert.rejects(readMounts("never-written"), /ENOENT/);
+});
+
+test("writeMounts leaves the fence directory readable only by its owner", async (t) => {
+	await dataDir(t);
+	await writeMounts("api-abc123", { project: "/work/api", masked: [] });
+	assert.equal(await dirMode(fencePaths("api-abc123").dir), 0o700);
+});
+
+test("a helper record carries the entries it bound", async (t) => {
+	await dataDir(t);
+	await mkdir(fencePaths("api-abc123").dir, { recursive: true });
+	await writeHelper("api-abc123", {
+		...helper,
+		...(await self()),
+		masked: ["node_modules"],
+	});
+	assert.deepEqual((await liveHelper("api-abc123"))?.masked, ["node_modules"]);
+});
+
+test("a helper record from before host-side masks still reads as live, binding nothing", async (t) => {
+	await dataDir(t);
+	await mkdir(fencePaths("api-abc123").dir, { recursive: true });
+	const { masked: _, ...older } = helper;
+	await writeFile(
+		fencePaths("api-abc123").helper,
+		JSON.stringify({ ...older, ...(await self()) }),
+	);
+	const record = await liveHelper("api-abc123");
+	assert.notEqual(record, null);
+	assert.deepEqual(record?.masked, []);
+});
+
+/** A project with a file, a directory and a symlink in it. */
+async function projectDir(t: TestContext): Promise<string> {
+	const dir = await mkdtemp(join(tmpdir(), "playpen-mask-"));
+	t.after(() => rm(dir, { recursive: true, force: true }));
+	await writeFile(join(dir, ".env"), "SECRET=1\n");
+	await mkdir(join(dir, "node_modules"));
+	await symlink(".env", join(dir, "linked"));
+	await symlink("node_modules", join(dir, "via"));
+	return dir;
+}
+
+test("a masked entry is classed by what is on the host, without following it", async (t) => {
+	const dir = await projectDir(t);
+	assert.equal(await maskKind(dir, ".env"), "file");
+	assert.equal(await maskKind(dir, "node_modules"), "dir");
+	assert.equal(await maskKind(dir, "absent"), "missing");
+	assert.equal(await maskKind(dir, ".env/inside"), "missing");
+	assert.equal(await maskKind(dir, "linked"), "symlink");
+	assert.equal(await maskKind(dir, "via/inside"), "under-symlink");
+});
+
+test("an entry the running helper did not bind is told to restart, and one it bound is not", async (t) => {
+	const dir = await projectDir(t);
+	const said: string[] = [];
+	await warnUnboundMasks(
+		{ project: dir, masked: ["node_modules", ".env"] },
+		["node_modules"],
+		(text) => said.push(text),
+	);
+	assert.deepEqual(said, [
+		"masked: .env keeps the host's contents out after: playpen stop && playpen start\n",
+	]);
+});
+
+test("an entry with nothing on the host, or a symlink, is not asked to be restarted for", async (t) => {
+	const dir = await projectDir(t);
+	const said: string[] = [];
+	await warnUnboundMasks(
+		{ project: dir, masked: ["absent", "linked", "via/inside"] },
+		[],
+		(text) => said.push(text),
+	);
+	assert.deepEqual(said, []);
 });

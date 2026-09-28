@@ -1,5 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { unlink } from "node:fs/promises";
+import { mkdir, unlink, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { exists, readAppended, sizeOf, writeAtomic } from "../fs.ts";
 import * as lima from "../lima/client.ts";
 import { self } from "../session/proc.ts";
@@ -13,7 +14,10 @@ import {
 	type HelperRecord,
 	killFenceLeftovers,
 	liveHelper,
+	type Mounts,
+	maskKind,
 	policyStamp,
+	readMounts,
 	readPolicy,
 	removeSocket,
 	writeHelper,
@@ -146,6 +150,65 @@ function jsonLineAppender(path: string): (entry: LogEntry) => void {
 	};
 }
 
+/**
+ * One `--ro-bind` per masked entry that is on the host, laying an empty
+ * placeholder over it in the mount table bwrap gives qemu -- and qemu is the
+ * 9p server, so the guest's share then has nothing of the host's at that path.
+ * Read-only because the source is shared by every entry: a write through the
+ * share must never land in it. `bound` is what got one, project-relative.
+ *
+ * A missing entry is skipped, since bwrap would create the path on the host's
+ * disk to bind over; so is a symlink, which may lead out of the project.
+ */
+export async function maskBinds(
+	paths: Pick<FencePaths, "emptyFile" | "emptyDir">,
+	mounts: Mounts,
+	note: (line: string) => void = say,
+): Promise<{ args: string[]; bound: string[] }> {
+	const args: string[] = [];
+	const bound: string[] = [];
+	for (const entry of mounts.masked) {
+		const kind = await maskKind(mounts.project, entry);
+		if (kind === "missing") {
+			note(`masked: ${entry} is not on the host; nothing to hide`);
+		} else if (kind === "symlink" || kind === "under-symlink") {
+			const where = kind === "symlink" ? "is" : "is under";
+			note(`masked: ${entry} ${where} a symlink; a symlink is not masked`);
+		} else {
+			args.push(
+				"--ro-bind",
+				kind === "dir" ? paths.emptyDir : paths.emptyFile,
+				join(mounts.project, entry),
+			);
+			bound.push(entry);
+		}
+	}
+	if (bound.length > 0) {
+		await mkdir(paths.emptyDir, { recursive: true });
+		await writeFile(paths.emptyFile, "");
+	}
+	return { args, bound };
+}
+
+/** The mask binds come after the root bind, because they lay over what it mounted. */
+export function bwrapArgv(
+	binds: readonly string[],
+	hidden: readonly string[],
+	command: readonly string[],
+): string[] {
+	return [
+		"--unshare-net",
+		"--dev-bind",
+		"/",
+		"/",
+		...binds,
+		...hidden,
+		"--die-with-parent",
+		"--",
+		...command,
+	];
+}
+
 function socatListen(path: string, target: string): ChildProcess {
 	return spawnSocat(unixListenAddress(path), target);
 }
@@ -180,6 +243,13 @@ export async function runHelper(
 	const reattach = state !== "stopped";
 	if (reattach) say(`${instance} is already fenced; reattaching`);
 
+	// Before anything is started, so a mask list that cannot be read stops the
+	// sandbox coming up rather than leaving the project unmasked. A reattach
+	// starts no bwrap, so the qemu it found keeps the table it was born with.
+	const masks = reattach
+		? { args: [], bound: [] }
+		: await maskBinds(paths, await readMounts(sandbox));
+
 	const logFrom = await sizeOf(paths.gatekeeperLog);
 	const gatekeeper = await startGatekeeper({
 		policy: () => policy,
@@ -195,20 +265,13 @@ export async function runHelper(
 		await unlink(paths.ready).catch(() => {});
 		inside = spawn(
 			"bwrap",
-			[
-				"--unshare-net",
-				"--dev-bind",
-				"/",
-				"/",
-				...(await hiddenResolverDirs()),
-				"--die-with-parent",
-				"--",
+			bwrapArgv(masks.args, await hiddenResolverDirs(), [
 				process.execPath,
 				cliPath(),
 				"__net-inside",
 				sandbox,
 				instance,
-			],
+			]),
 			{ stdio: "inherit" },
 		);
 	}
@@ -219,6 +282,7 @@ export async function runHelper(
 		ready: false,
 		egress: false,
 		policy: stamp,
+		masked: masks.bound,
 	};
 	const report = async (patch: Partial<HelperRecord>): Promise<void> => {
 		record = { ...record, ...patch };

@@ -78,7 +78,9 @@ function guard(hash: string, name: string, body: string): string {
  * resolved yaml, which playpen cannot add provision entries to.
  *
  * Backing storage is on the VM disk, which keeps it off 9p and lets an install
- * survive stop/start.
+ * survive stop/start. An entry that is a file at the target gets a file, any
+ * other a directory; the host half of a mask leaves a placeholder of the host's
+ * kind there, which is how the two are told apart.
  */
 export function maskScript(mount: string, masks: readonly string[]): string {
 	const quoted = masks.map((m) => `'${m.replace(/'/g, `'\\''`)}'`).join(" ");
@@ -91,6 +93,14 @@ export function maskScript(mount: string, masks: readonly string[]): string {
 		`for rel in ${quoted}; do`,
 		'  target="$MOUNT/$rel"',
 		'  store="/var/lib/playpen/masks/$rel"',
+		// A symlink is not masked on the host, so it takes the directory path as it always has.
+		'  if [ -f "$target" ] && [ ! -L "$target" ]; then',
+		'    mkdir -p "$(dirname "$store")"',
+		'    touch "$store"',
+		'    chown "$owner" "$store"',
+		'    mountpoint -q "$target" || mount --bind "$store" "$target"',
+		"    continue",
+		"  fi",
 		'  mkdir -p "$store"',
 		'  chown "$owner" "$store"',
 		// Creates an empty directory on the host share when the path is absent; a bind mount needs a target.
