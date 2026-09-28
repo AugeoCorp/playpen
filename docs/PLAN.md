@@ -61,8 +61,6 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
   `ensureRunning` and is only unit-tested with the fence module faked, and the
   base image's tun2proxy unit, which the probe VM does not have (the e2e copies
   the binary in and starts it by hand).
-- `destroy` still boots a stopped sandbox unfenced to archive Claude history. It
-  is about to be deleted, but for those seconds its egress is unfiltered.
 - `playpen stop` followed at once by `playpen start` can report "running" while
   the VM is still shutting down: Lima's status and `qemu.pid` lag the stop for a
   few seconds. Seen once in the container; the helper's record disappearing is
@@ -169,6 +167,20 @@ bugs.
 - Preset bases, selected from `playpen.config.ts`; later, defined there. Needs a
   cap or a GC story first: bases share no extents with each other, so one image
   per project is one full copy per project.
+
+### 5. A measured built-in host list
+
+`BUILTIN_ALLOW` in `src/network/policy.ts` is a guess, and says so in its own
+comment. Replace it: run Claude Code against real projects on the maintainer's
+machine with `network.mode: "log"`, read the hosts it actually reached out of
+`gatekeeper.log`, then swap that list in for `BUILTIN_ALLOW` and drop the
+"guess" wording from its comment and from `docs/NETWORK.md`.
+
+### 6. `list` and `doctor` show fence state
+
+In progress on this branch, by another agent: `playpen list` gains a `NET`
+column and `playpen doctor` checks for `bwrap` and `socat`. Lands with this
+branch.
 
 ## Tests
 
