@@ -1,23 +1,21 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import type { FenceState } from "../network/fence.ts";
 import { netLabel } from "./list.ts";
 
-test("a sealed fence reads as sealed", () => {
-	assert.equal(netLabel("sealed"), "sealed");
-});
+const cases: Array<[FenceState | null, string]> = [
+	["sealed", "sealed"],
+	["sealed-no-egress", "no egress"],
+	["sealed-no-gatekeeper", "no gate"],
+	["unsealed", "OPEN"],
+	["stopped", "-"],
+	[null, "?"],
+];
 
-test("a fenced VM with no gatekeeper answering reads as no gate", () => {
-	assert.equal(netLabel("sealed-no-gatekeeper"), "no gate");
-});
-
-test("a VM running outside the fence reads as OPEN, in upper case to stand out", () => {
-	assert.equal(netLabel("unsealed"), "OPEN");
-});
-
-test("a stopped sandbox has no network state to show", () => {
-	assert.equal(netLabel("stopped"), "-");
-});
-
-test("a fence status that could not be read shows a question mark, not a crash", () => {
-	assert.equal(netLabel(null), "?");
+test("every fence state, and a fence status that could not be read, has its own NET label", () => {
+	for (const [state, label] of cases) {
+		assert.equal(netLabel(state), label);
+	}
+	const labels = new Set(cases.map(([, label]) => label));
+	assert.equal(labels.size, cases.length);
 });
