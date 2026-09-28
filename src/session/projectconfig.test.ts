@@ -434,32 +434,39 @@ test("no ports key forwards nothing", () => {
 	assert.deepEqual(validateNetwork({ allow: ["example.com"] }).ports, []);
 });
 
+/** What validation says about a `ports` value, or "no error". */
+function portsError(ports: unknown): string {
+	return validateNetwork({ ports }).error ?? "no error";
+}
+
 test("a port outside 1 to 65535, or not a whole number, fails the load", () => {
-	for (const ports of [
-		[0],
-		[65536],
-		[80.5],
-		[{ host: 1234, guest: 70000 }],
-		[{ host: -1, guest: 4321 }],
-	]) {
-		const r = validateNetwork({ ports });
-		assert.match(r.error ?? "", /`network\.ports\[0\]` must be/);
-		assert.deepEqual(r.ports, []);
-	}
+	const bad =
+		/`network\.ports\[0\]` must be a port number or \{ host, guest \}/;
+	assert.match(portsError([0]), bad);
+	assert.match(portsError([65536]), bad);
+	assert.match(portsError([80.5]), bad);
+	assert.match(portsError([{ host: 1234, guest: 70000 }]), bad);
+	assert.match(portsError([{ host: -1, guest: 4321 }]), bad);
 });
 
 test("a ports entry of the wrong shape fails the load rather than being dropped", () => {
-	for (const ports of [
-		["1234"],
-		[null],
-		[{ host: 1234 }],
-		[{ host: "1234", guest: 1234 }],
-	]) {
-		const r = validateNetwork({ ports });
-		assert.match(r.error ?? "", /`network\.ports\[0\]` must be/);
-	}
-	const notArray = validateNetwork({ ports: 1234 });
-	assert.match(notArray.error ?? "", /`network\.ports` must be an array/);
+	const bad =
+		/`network\.ports\[0\]` must be a port number or \{ host, guest \}/;
+	assert.match(portsError(["1234"]), bad);
+	assert.match(portsError([null]), bad);
+	assert.match(portsError([{ host: 1234 }]), bad);
+	assert.match(portsError([{ host: "1234", guest: 1234 }]), bad);
+	assert.match(portsError(1234), /`network\.ports` must be an array/);
+});
+
+test("the error names which ports entry is wrong", () => {
+	assert.match(portsError([1234, 0]), /`network\.ports\[1\]`/);
+});
+
+test("a bad ports entry forwards nothing and allows nothing", () => {
+	const r = validateNetwork({ allow: ["example.com"], ports: [1234, 0] });
+	assert.deepEqual(r.ports, []);
+	assert.deepEqual(r.allow, []);
 });
 
 test("two entries for the same guest port fail the load, whatever host ports they name", () => {
@@ -471,7 +478,10 @@ test("two entries for the same guest port fail the load, whatever host ports the
 test("one host port may appear at two guest ports", () => {
 	const r = validateNetwork({ ports: [1234, { host: 1234, guest: 4321 }] });
 	assert.equal(r.error, undefined);
-	assert.equal(r.ports.length, 2);
+	assert.deepEqual(r.ports, [
+		{ host: 1234, guest: 1234 },
+		{ host: 1234, guest: 4321 },
+	]);
 });
 
 test("reads ports from a default export", async (t) => {

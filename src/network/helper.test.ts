@@ -30,7 +30,10 @@ test("when what is running is unknown, every port unit is stopped before any is 
 	const script = portsScript(null, [{ host: 5000, guest: 4321 }]);
 	assert.deepEqual(stops(script), ["'playpen-port-*.service'"]);
 	assert.deepEqual(starts(script), ["playpen-port-4321.service"]);
-	assert.ok(script.indexOf("systemctl stop") < script.indexOf("systemd-run"));
+	assert.ok(
+		script.indexOf("systemctl stop") < script.indexOf("systemd-run"),
+		`expected the stop before the start in:\n${script}`,
+	);
 });
 
 test("a reattach with no ports still clears what the last helper left listening", () => {
@@ -67,7 +70,10 @@ test("a guest port moved to another host port is stopped and started again", () 
 	assert.deepEqual(stops(script), ["playpen-port-4321.service"]);
 	assert.deepEqual(starts(script), ["playpen-port-4321.service"]);
 	assert.match(script, /host\.playpen\.internal:5001,/);
-	assert.ok(script.indexOf("systemctl stop") < script.indexOf("systemd-run"));
+	assert.ok(
+		script.indexOf("systemctl stop") < script.indexOf("systemd-run"),
+		`expected the stop before the start in:\n${script}`,
+	);
 });
 
 test("every entry not active at the end is printed as unbound", () => {

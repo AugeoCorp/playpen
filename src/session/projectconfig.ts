@@ -236,7 +236,6 @@ export function validateNetwork(raw: unknown): {
 	return { allow: accepted, mode: mode ?? "enforce", ports, rejected };
 }
 
-/** The entries, or what is wrong with them. */
 function validatePorts(raw: unknown): PortForward[] | string {
 	if (raw === undefined) return [];
 	const shape = "a port number or { host, guest }";

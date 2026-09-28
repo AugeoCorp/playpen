@@ -155,21 +155,29 @@ test("the ports a policy forwards come back from policy.json as they were writte
 	assert.deepEqual(await readPolicy("api-abc123"), policy);
 });
 
+/** A policy.json written by hand rather than by `writePolicy`. */
+async function policyWithPorts(ports: unknown): Promise<void> {
+	await writePolicy("api-abc123", { allow: [], mode: "enforce", ports: [] });
+	await writeFile(
+		fencePaths("api-abc123").policy,
+		JSON.stringify({ allow: [], mode: "enforce", ports }),
+	);
+}
+
 test("a policy.json whose ports are not all port numbers is refused, since the guest runs them as root", async (t) => {
 	await dataDir(t);
-	await writePolicy("api-abc123", { allow: [], mode: "enforce", ports: [] });
-	for (const ports of [
-		[{ host: 5000, guest: "4321; reboot" }],
-		[{ host: 5000 }],
-		"5000",
-		undefined,
-	]) {
-		await writeFile(
-			fencePaths("api-abc123").policy,
-			JSON.stringify({ allow: [], mode: "enforce", ports }),
-		);
-		await assert.rejects(readPolicy("api-abc123"), /`ports` must be/);
-	}
+	await policyWithPorts([{ host: 5000, guest: "4321; reboot" }]);
+	await assert.rejects(readPolicy("api-abc123"), /`ports` must be/);
+	await policyWithPorts([{ host: 5000 }]);
+	await assert.rejects(readPolicy("api-abc123"), /`ports` must be/);
+	await policyWithPorts("5000");
+	await assert.rejects(readPolicy("api-abc123"), /`ports` must be/);
+});
+
+test("a policy.json with no ports at all is refused rather than read as forwarding nothing", async (t) => {
+	await dataDir(t);
+	await policyWithPorts(undefined);
+	await assert.rejects(readPolicy("api-abc123"), /`ports` must be/);
 });
 
 async function dirMode(path: string): Promise<number> {
