@@ -14,7 +14,7 @@ import { dataDir, limaHome } from "../config.ts";
 import { readAppended, sizeOf, writeAtomic } from "../fs.ts";
 import { assertSandboxName } from "../session/identity.ts";
 import { isLive, type Owner } from "../session/proc.ts";
-import { capture } from "../sh.ts";
+import { capture, which } from "../sh.ts";
 import { sleep } from "../time.ts";
 import type { Policy } from "./policy.ts";
 
@@ -330,6 +330,9 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 		return;
 	}
 
+	const missing = await missingFenceTools();
+	if (missing.length > 0) throw new Error(fenceToolsAdvice(missing));
+
 	const paths = fencePaths(sandbox);
 	let offset = await sizeOf(paths.helperLog);
 	const child = await spawnHelper(sandbox, instance);
@@ -355,6 +358,28 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 		}
 		await sleep(250);
 	}
+}
+
+/**
+ * The two host programs the fence is made of. Checked before anything is
+ * spawned, so a machine without them is told in one line rather than by the
+ * helper dying part way through a boot. `playpen doctor` checks the same two.
+ */
+const FENCE_TOOLS = ["bwrap", "socat"] as const;
+
+async function missingFenceTools(): Promise<string[]> {
+	const missing: string[] = [];
+	for (const tool of FENCE_TOOLS)
+		if ((await which(tool)) === null) missing.push(tool);
+	return missing;
+}
+
+export function fenceToolsAdvice(missing: readonly string[]): string {
+	const names = missing.join(" and ");
+	const install = missing.includes("bwrap")
+		? "install bubblewrap, and socat (brew install socat on a Homebrew host)"
+		: "install socat (brew install socat on a Homebrew host)";
+	return `the network fence needs ${names}, not found on PATH; ${install}, then run playpen doctor`;
 }
 
 async function applied(sandbox: string, stamp: string): Promise<void> {

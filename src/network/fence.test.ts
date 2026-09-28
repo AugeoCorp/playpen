@@ -6,6 +6,7 @@ import { type TestContext, test } from "node:test";
 import {
 	classifyFence,
 	fencePaths,
+	fenceToolsAdvice,
 	looksLikeQemu,
 	policyStamp,
 	writePolicy,
@@ -175,4 +176,18 @@ test("a recycled pid now running an unrelated process is not mistaken for qemu",
 
 test("an empty cmdline, as a zombie or an unreadable process reads, is not qemu", () => {
 	assert.equal(looksLikeQemu(""), false);
+});
+
+test("a host without socat is told what to install and where doctor is, in one line", () => {
+	const advice = fenceToolsAdvice(["socat"]);
+	assert.match(advice, /needs socat, not found on PATH/);
+	assert.match(advice, /brew install socat/);
+	assert.match(advice, /playpen doctor/);
+	assert.doesNotMatch(advice, /bubblewrap/);
+});
+
+test("a host missing both fence tools is told about both", () => {
+	const advice = fenceToolsAdvice(["bwrap", "socat"]);
+	assert.match(advice, /needs bwrap and socat/);
+	assert.match(advice, /install bubblewrap, and socat/);
 });

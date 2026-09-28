@@ -27,5 +27,11 @@ export function tcpListenAddress(port: number, bind = "127.0.0.1"): string {
 }
 
 export function spawnSocat(from: string, to: string): ChildProcess {
-	return spawn("socat", [from, to], { stdio: "inherit" });
+	const child = spawn("socat", [from, to], { stdio: "inherit" });
+	// Without a listener a spawn failure is an uncaught exception that takes
+	// the helper down with a stack trace; the exit that follows says enough.
+	child.on("error", (err) =>
+		console.error(`socat could not start: ${err.message}`),
+	);
+	return child;
 }
