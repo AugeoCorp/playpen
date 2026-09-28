@@ -67,9 +67,10 @@ test("an unreadable lease is discarded rather than throwing", async (t) => {
 	assert.deepEqual(await leases.live(SANDBOX), []);
 });
 
-test("a lease that does not name a process is discarded, and deleted", async (t) => {
+test("a lease whose pid is written as a string is discarded, and deleted, even when it names a running process", async (t) => {
 	const dir = await dataHome(t);
-	await writeFile(join(dir, "7"), JSON.stringify({ pid: 7 }), "utf8");
+	const me = { ...(await self()), pid: String(process.pid) };
+	await writeFile(join(dir, me.pid), JSON.stringify(me), "utf8");
 	assert.deepEqual(await leases.live(SANDBOX), []);
 	assert.deepEqual(await readdir(dir), []);
 });
