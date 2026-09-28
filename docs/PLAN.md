@@ -61,6 +61,9 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
   `ensureRunning` and is only unit-tested with the fence module faked, and the
   base image's tun2proxy unit, which the probe VM does not have (the e2e copies
   the binary in and starts it by hand).
+- `network.ports` (a host port at the guest's own `localhost`, in
+  `docs/NETWORK.md`) is unit-tested only: its e2e step and a `playpen start` on
+  a base rebaked with socat have not been run yet.
 - `playpen stop` followed at once by `playpen start` can report "running" while
   the VM is still shutting down: Lima's status and `qemu.pid` lag the stop for a
   few seconds. Seen once in the container; the helper's record disappearing is

@@ -72,11 +72,11 @@ Optional `playpen.config.ts` in the project root:
 export default { masked: ["node_modules"], setup: ["npm ci"] };
 ```
 
-| Key       | Type                                              | Effect                                                         |
-| --------- | ------------------------------------------------- | -------------------------------------------------------------- |
-| `masked`  | `string[]`                                        | Project-relative dirs given guest-local storage, not 9p        |
-| `setup`   | `string[]`                                        | Shell commands run in the guest, after masks, in order         |
-| `network` | `{ allow?: string[]; mode?: "enforce" \| "log" }` | Hosts this project may reach, on top of the ones playpen ships |
+| Key       | Type                                                                                                     | Effect                                                                                                        |
+| --------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `masked`  | `string[]`                                                                                               | Project-relative dirs given guest-local storage, not 9p                                                       |
+| `setup`   | `string[]`                                                                                               | Shell commands run in the guest, after masks, in order                                                        |
+| `network` | `{ allow?: string[]; mode?: "enforce" \| "log"; ports?: (number \| { host: number; guest: number })[] }` | Hosts this project may reach, on top of the ones playpen ships, and host ports it sees at its own `localhost` |
 
 - `masked` gives host and guest their own copy of a path: the 9p share is slow,
   and the two often need different contents there — native modules and toolchain
@@ -100,6 +100,16 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
   `host.playpen.internal` instead: `http://host.playpen.internal:11434/` gets to
   your Ollama if and only if `localhost:11434` is listed. The port is required;
   a bare `localhost` would mean every service on your machine and is rejected.
+- `network.ports` puts a port on your machine at the guest's own `localhost`
+  too, for a client in the guest you cannot point at `host.playpen.internal` —
+  an MCP server configured as `http://localhost:4321/`, say. `1234` is the same
+  port on both sides; `{ host: 1234, guest: 4321 }` moves it. An entry is a
+  grant of that host port, so it implies `localhost:1234` and you do not list
+  that as well; the gatekeeper logs each connection as
+  `host.playpen.internal:1234`, like any other. The guest port must be free in
+  the guest: `playpen start` warns and carries on if something there already
+  holds it. A stdio MCP server is a process, not a port, and this does not cover
+  it.
 - `mode: "log"` records what the sandbox reaches and blocks nothing on the
   internet side; your own machine's localhost stays closed in every mode. Use it
   to find the hosts a project needs, then list them; the default is `enforce`.

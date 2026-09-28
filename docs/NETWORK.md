@@ -112,12 +112,43 @@ is `socat - UNIX-CONNECT:control.sock`. Lima runs `$SSH` in place of `ssh` when
 it is set, so this reaches the guest without anything outside ever joining the
 namespace.
 
+**Host ports at the guest's own `localhost`.** Some clients in the guest cannot
+be pointed at `host.playpen.internal` -- an MCP server configured as
+`localhost:4321`, say. A `network.ports` entry covers that: `1234` puts the
+host's port 1234 at the guest's `127.0.0.1:1234`, and
+`{ host: 1234, guest: 4321 }` puts it at `127.0.0.1:4321`. The helper runs one
+`socat` per entry in the guest, as a transient systemd unit
+(`playpen-port-<guest>`, started with `systemd-run --collect`):
+
+```
+socat TCP-LISTEN:4321,bind=127.0.0.1,fork,reuseaddr PROXY:192.168.5.2:host.playpen.internal:1234,proxyport=1080
+```
+
+so each connection reaches the gatekeeper as a `CONNECT` to
+`host.playpen.internal:1234` over the same address tun2proxy uses, and is
+decided and logged there like any other: it is not a second way out. An entry is
+an explicit grant of that host port, so `playpen start` adds `localhost:1234` to
+the allow list for it; the project does not write both. `decide()` never sees
+`ports` at all. The units are set up once the helper's start check is done, and
+again on every policy reload: one whose entry went away is stopped, a new one is
+started, and one that stayed is left running, so its open connections survive
+the reload. A helper reattaching to a running VM does not know what the last one
+started, so it stops them all first. socat is installed by the base image's
+build-tools layer.
+
+The guest port must be free in the guest. If something there already listens on
+it, or the unit is not active a second after starting, the helper names it in
+helper.log and in its record, and `playpen start` warns that the host port is
+not at that guest port -- without failing the start. A stdio MCP server is a
+process the guest runs, not a port, so nothing here applies to it.
+
 ## Lifecycle
 
 `playpen start` writes the merged policy (the built-in list plus the project's
-`network.allow`) to disk, then spawns the helper process detached so it outlives
-the command that started it. The helper starts the gatekeeper and the two
-relays, brings the VM up inside a fresh `bwrap` namespace, and waits for the
+`network.allow`, a `localhost:<host>` for each of its `network.ports`, and the
+ports themselves) to disk, then spawns the helper process detached so it
+outlives the command that started it. The helper starts the gatekeeper and the
+two relays, brings the VM up inside a fresh `bwrap` namespace, and waits for the
 guest to answer before returning -- streaming its own log to the terminal in the
 meantime. If a VM is already running and fenced with a live helper, `start`
 leaves the VM alone but still writes the policy, and says so when the file
@@ -255,7 +286,10 @@ already merged -- and a mode, and applies these rules to every `CONNECT`:
   It is the honest spelling when no DNS name is involved, and the only route to
   the host that does not depend on some other name's DNS answering there. The
   port is required: a bare `localhost` would mean every service on the host, and
-  is rejected when the config is read.
+  is rejected when the config is read. A `network.ports` entry brings its own
+  `localhost:<host>` entry (see "Host ports at the guest's own `localhost`"
+  above), and its connections arrive as `host.playpen.internal:<host>` like any
+  other, so this rule is the only one they meet.
 - **The guest's own idea of loopback never reaches the gatekeeper** -- that
   traffic stays inside the guest. A `CONNECT` that literally names `localhost`
   or `127.0.0.1` is therefore read as an attempt to reach the _host's_ loopback
@@ -323,6 +357,13 @@ returns; `limactl stop` tears the fence down cleanly; and no socat or
 `__net-inside` process is left running for the sandbox, checked before the
 script's own cleanup. All 17 passed, run as an unprivileged user in a container,
 Lima 2.2.0 under software emulation.
+
+An 18th step came with `network.ports` and has not been run yet: it installs
+socat in the guest with `apt-get` through the fence (Ubuntu's two archive names
+allowed for that step only, since this VM has none of the base's layers), lists
+a port whose host side is a listener on the host's loopback, fetches it from the
+guest's own `localhost`, and looks for its `allow` line for
+`host.playpen.internal:<host>` in `gatekeeper.log`.
 
 `playpen start` against a baked base has now been run too, on Ubuntu 26.04
 (kernel 7.0.0-28) under the same software emulation: the base's own
