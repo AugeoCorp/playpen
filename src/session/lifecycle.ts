@@ -11,7 +11,11 @@ import { instanceName, sandboxName } from "./identity.ts";
 import * as leases from "./leases.ts";
 import { withLock } from "./lock.ts";
 import { checkMount } from "./mountguard.ts";
-import { CONFIG_FILE, LEGACY_IGNORE_FILE } from "./projectconfig.ts";
+import {
+	CONFIG_FILE,
+	LEGACY_IGNORE_FILE,
+	type NetworkMode,
+} from "./projectconfig.ts";
 import * as store from "./store.ts";
 import { loadTrustedConfig } from "./trust.ts";
 
@@ -39,11 +43,21 @@ function renderFor(sb: Sandbox) {
 	return render(baseImage, { ...defaults, mount: sb.cwd });
 }
 
-async function loadConfig(
-	sb: Sandbox,
-): Promise<{ masked: string[]; setup: string[] }> {
-	const { masked, setup, rejected, rejectedSetup, error, legacyIgnore } =
-		await loadTrustedConfig(sb.cwd, sb.sandbox);
+async function loadConfig(sb: Sandbox): Promise<{
+	masked: string[];
+	setup: string[];
+	network: { allow: string[]; mode: NetworkMode };
+}> {
+	const {
+		masked,
+		setup,
+		network,
+		rejected,
+		rejectedSetup,
+		rejectedNetwork,
+		error,
+		legacyIgnore,
+	} = await loadTrustedConfig(sb.cwd, sb.sandbox);
 	if (error) {
 		console.error(`warning: ${CONFIG_FILE} not loaded (${error})`);
 		console.error(
@@ -64,10 +78,25 @@ async function loadConfig(
 	for (const bad of rejectedSetup) {
 		console.error(`warning: ignoring invalid \`setup\` entry: ${bad}`);
 	}
+	for (const bad of rejectedNetwork) {
+		console.error(`warning: ignoring invalid \`network.allow\` entry: ${bad}`);
+	}
+	if (network.mode === "log") {
+		console.error(
+			`warning: network blocking is off for this project (\`network.mode\` is "log")`,
+		);
+		console.error(`  connections are recorded and allowed.`);
+	}
 	if (masked.length > 0) {
 		console.error(`masking with guest-local storage: ${masked.join(", ")}`);
 	}
-	return { masked, setup };
+	const hosts = network.allow.length;
+	if (hosts > 0) {
+		console.error(
+			`allowing network access to ${hosts === 1 ? "1 host" : `${hosts} hosts`} named by this project`,
+		);
+	}
+	return { masked, setup, network };
 }
 
 /**
@@ -107,17 +136,19 @@ interface Template {
 	hash: string;
 	masks: string[];
 	setup: string[];
+	network: { allow: string[]; mode: NetworkMode };
 }
 
 /** Loads the project config, so it is read once per command and reused. */
 async function renderTemplate(sb: Sandbox): Promise<Template> {
-	const { masked, setup } = await loadConfig(sb);
+	const { masked, setup, network } = await loadConfig(sb);
 	const rendered = renderFor(sb);
 	return {
 		yaml: `${serialize(rendered)}\n`,
 		hash: rendered.contentHash,
 		masks: masked,
 		setup,
+		network,
 	};
 }
 

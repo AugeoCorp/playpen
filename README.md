@@ -63,10 +63,11 @@ Optional `playpen.config.ts` in the project root:
 export default { masked: ["node_modules"], setup: ["npm ci"] };
 ```
 
-| Key      | Type       | Effect                                                  |
-| -------- | ---------- | ------------------------------------------------------- |
-| `masked` | `string[]` | Project-relative dirs given guest-local storage, not 9p |
-| `setup`  | `string[]` | Shell commands run in the guest, after masks, in order  |
+| Key       | Type                                              | Effect                                                         |
+| --------- | ------------------------------------------------- | -------------------------------------------------------------- |
+| `masked`  | `string[]`                                        | Project-relative dirs given guest-local storage, not 9p        |
+| `setup`   | `string[]`                                        | Shell commands run in the guest, after masks, in order         |
+| `network` | `{ allow?: string[]; mode?: "enforce" \| "log" }` | Hosts this project may reach, on top of the ones playpen ships |
 
 - `masked` gives host and guest their own copy of a path: the 9p share is slow,
   and the two often need different contents there — native modules and toolchain
@@ -75,6 +76,23 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
   root. Keep secrets outside the project.
 - `setup` runs on create and after a rebuild, never on start. Nothing is
   inferred from a lockfile. `playpen setup` re-runs it.
+- `network.allow` is a list of names, not addresses: an entry is a hostname,
+  optionally with a port, and covers that name and everything under it, so
+  `*.example.com` is rejected — `example.com` already says it. Named with a
+  port, it may resolve inside — to loopback or a LAN address — on that port
+  alone; named without one, it must resolve to a public address. Link-local
+  addresses and the 0.0.0.0 spelling of loopback are never reached either way.
+  An IPv4 literal is the other address you can name: it needs a port, it may be
+  on your LAN, and it is never a loopback one.
+- `localhost:PORT` means your machine, not the guest's: the computer running
+  playpen, on that one port. Inside the guest, `localhost` still means the guest
+  itself and never leaves the VM, so the guest reaches your machine by the name
+  `host.playpen.internal` instead: `http://host.playpen.internal:11434/` gets to
+  your Ollama if and only if `localhost:11434` is listed. The port is required;
+  a bare `localhost` would mean every service on your machine and is rejected.
+- `mode: "log"` records what the sandbox reaches and blocks nothing on the
+  internet side; your own machine's localhost stays closed in every mode. Use it
+  to find the hosts a project needs, then list them; the default is `enforce`.
 - The file is imported on the host and runs as you. `setup` commands do not —
   they run in the guest.
 - playpen prints the file and asks before executing it, again whenever it or
