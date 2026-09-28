@@ -367,7 +367,7 @@ test("a ported name entry is dispatched to resolution rather than refused outrig
 		// handed a real address to dial: this sandbox has no route to a LAN
 		// address, and net.connect does not fail fast on one, it hangs. Whether
 		// 192.168.1.50 itself clears the filter is names.test.ts's job
-		// (isReachableIpv4), which is the same check this path runs.
+		// (isPublicOrLanIpv4), which is the same check this path runs.
 		resolve: async (host) => {
 			asked.push(host);
 			notify();
