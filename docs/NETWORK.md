@@ -358,12 +358,16 @@ returns; `limactl stop` tears the fence down cleanly; and no socat or
 script's own cleanup. All 17 passed, run as an unprivileged user in a container,
 Lima 2.2.0 under software emulation.
 
-An 18th step came with `network.ports` and has not been run yet: it installs
-socat in the guest with `apt-get` through the fence (Ubuntu's two archive names
-allowed for that step only, since this VM has none of the base's layers), lists
-a port whose host side is a listener on the host's loopback, fetches it from the
-guest's own `localhost`, and looks for its `allow` line for
-`host.playpen.internal:<host>` in `gatekeeper.log`.
+An 18th step came with `network.ports`: it installs socat in the guest with
+`apt-get` through the fence (Ubuntu's two archive names allowed for that step
+only, since this VM has none of the base's layers), lists a port whose host side
+is a listener on the host's loopback, fetches it from the guest's own
+`localhost`, and looks for its `allow` line for `host.playpen.internal:<host>`
+in `gatekeeper.log`. All 18 pass. By hand, on a sandbox cloned from a base
+rebaked with socat: `playpen start` said the host port was at the guest's
+`localhost:4321` before it said ready, `curl localhost:4321` in the guest
+returned the host's answer, and a second start mapping the same host port to the
+guest's port 22 warned that nothing could listen there and carried on.
 
 `playpen start` against a baked base has now been run too, on Ubuntu 26.04
 (kernel 7.0.0-28) under the same software emulation: the base's own
