@@ -73,6 +73,8 @@ Optional `playpen.config.ts` in the project root:
 export default { masked: ["node_modules"], setup: ["npm ci"] };
 ```
 
+`examples/playpen.config.ts` shows every key, with a note on each.
+
 | Key       | Type                                                                                                     | Effect                                                                                                        |
 | --------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
 | `masked`  | `string[]`                                                                                               | Project-relative dirs given guest-local storage, not 9p                                                       |
