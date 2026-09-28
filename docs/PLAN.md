@@ -17,12 +17,19 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
 | `image build`, base image + clone                                  | done, verified on host |
 | `completion bash\|zsh`, generated from the citty command tree      | done; zsh unverified   |
 | network fence (mechanism in `docs/NETWORK.md`)                     | done, see below        |
+| per-install CA in `<dataDir>/ca/`, trusted by the base image       | unit-tested; no VM yet |
 
 ## Known problems
 
 - An existing sandbox does not pick up image or config changes, or a rebaked
   base, on its own. `start` notices both and offers a ~10s rebuild; declining
   keeps the old one running.
+- The CA certificate is part of the image hash, and the CA is created on first
+  use, so the first `start` or `image build` after it lands mints the CA and
+  finds no matching base: every existing sandbox is offered a rebuild, and the
+  base is rebaked. Deleting `<dataDir>/ca/` does the same again. Whether a
+  booted guest trusts the CA (curl, Node, Python requests) is unverified; it
+  needs `playpen start` on a host with `limactl`.
 - `start` leaves 8GiB running until `stop`. Idle auto-stop deferred to v1; a
   forgotten VM happened twice in the first half hour, so revisit.
 - Nothing collects old sandboxes, old bases, or history archives. A clone costs

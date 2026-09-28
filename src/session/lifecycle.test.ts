@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mock, type TestContext, test } from "node:test";
-import { baseImage } from "../image/base.ts";
+import { loadBaseImage } from "../image/base.ts";
 import { imageHash } from "../image/render.ts";
 import type { Policy, PortForward } from "../network/policy.ts";
 import { baseInstanceName } from "./identity.ts";
@@ -71,7 +71,9 @@ mock.module("../lima/client.ts", {
 	exports: {
 		isRunning: (i: { status: string } | null) => i?.status === "Running",
 		list: async () => [
-			{ name: baseInstanceName(imageHash(baseImage), "2026-09-16") },
+			{
+				name: baseInstanceName(imageHash(await loadBaseImage()), "2026-09-16"),
+			},
 		],
 		get: async (name: string) => (exists ? { name, status } : null),
 		stop: async () => {

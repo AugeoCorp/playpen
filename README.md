@@ -120,7 +120,8 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
   with no port and not an address. Injection will match the host exactly; the
   allow entry it implies covers subdomains, like any entry in `allow`. A mistake
   here stops the config loading rather than being skipped. Nothing is injected
-  yet: in this version an entry is checked and reported and does nothing else.
+  yet: in this version an entry is checked and reported and does nothing else,
+  apart from the per-install certificate authority now installed into the image.
 - `mode: "log"` records what the sandbox reaches and blocks nothing on the
   internet side; your own machine's localhost stays closed in every mode. Use it
   to find the hosts a project needs, then list them; the default is `enforce`.

@@ -19,6 +19,46 @@ export function buildTools() {
 }
 
 /**
+ * Trusts playpen's own certificate authority (src/network/ca.ts) so a later
+ * interceptor can terminate TLS for the hosts named in `network.secrets`. The
+ * certificate is public and is embedded in the script; the key never leaves the
+ * host. Because the script is part of the image hash, a new CA rebakes the
+ * base instead of reusing one that trusts the old.
+ *
+ * `update-ca-certificates` covers curl and anything else that reads the system
+ * store. Node reads no system store and Python's requests carries its own
+ * bundle, so both are pointed at a file by the login environment.
+ */
+const CA_CRT = "/usr/local/share/ca-certificates/playpen.crt";
+const SYSTEM_BUNDLE = "/etc/ssl/certs/ca-certificates.crt";
+
+export function caTrust(certPem: string) {
+	// The PEM goes into a quoted heredoc; anything else in it could end the
+	// heredoc early and run as root at bake time.
+	if (
+		!/^-----BEGIN CERTIFICATE-----\n[A-Za-z0-9+/=\n]+-----END CERTIFICATE-----\n?$/.test(
+			certPem,
+		)
+	) {
+		throw new Error("caTrust needs one PEM certificate and nothing else");
+	}
+	return defineLayer({
+		name: "ca-trust",
+		script: [
+			`cat > ${CA_CRT} <<'PEM'`,
+			certPem.trimEnd(),
+			"PEM",
+			"update-ca-certificates",
+			"cat > /etc/profile.d/playpen-ca.sh <<'SH'",
+			`export NODE_EXTRA_CA_CERTS=${CA_CRT}`,
+			`export SSL_CERT_FILE=${SYSTEM_BUNDLE}`,
+			`export REQUESTS_CA_BUNDLE=${SYSTEM_BUNDLE}`,
+			"SH",
+		].join("\n"),
+	});
+}
+
+/**
  * The distro package is Node 22 built without Amaro, so `node file.ts` fails
  * with ERR_NO_TYPESCRIPT at any version: enough to run Claude Code, not enough
  * to run playpen's own tests in the guest. The official tarball carries type

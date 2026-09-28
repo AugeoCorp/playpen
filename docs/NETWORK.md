@@ -312,6 +312,22 @@ already merged -- and a mode, and applies these rules to every `CONNECT`:
 common package managers need, not a measurement. It stays a guess until a
 `mode: "log"` run against real projects replaces it (see "Later").
 
+## Secrets
+
+`network.secrets` will let a later interceptor terminate TLS for the hosts it
+names, so the guest can hold a placeholder while the real value is swapped in on
+the host side. For the guest to accept the interceptor's certificates, each
+install has one certificate authority (`src/network/ca.ts`) in the `ca/`
+directory under the data directory: its key is mode 0600, is refused if it is
+readable by group or others, and never leaves the host. Its certificate is
+public and is installed into the guest's trust store when the base image is
+baked (the `caTrust()` layer), with `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE` and
+`REQUESTS_CA_BUNDLE` set for login shells, since Node reads no system store and
+Python's requests carries its own bundle. The certificate is part of the image
+hash, so a new CA rebakes the base. The CA has no name constraints: the hosts
+differ per project and change over time, while the CA is one per install.
+Nothing intercepts yet.
+
 ## What it does not contain
 
 - **An allowed destination is still a way out.** Allow `github.com` and an agent

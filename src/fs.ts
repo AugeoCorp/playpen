@@ -57,8 +57,14 @@ export async function readAppended(
  * lease. `rename` within a directory is atomic, so the file appears complete or
  * not at all.
  */
-export async function writeAtomic(path: string, data: string): Promise<void> {
+export async function writeAtomic(
+	path: string,
+	data: string,
+	mode?: number,
+): Promise<void> {
 	const temp = `${path}.${process.pid}.tmp`;
-	await writeFile(temp, data, "utf8");
+	// `mode` applies at creation, so a secret is never readable under a
+	// looser one between the write and a later chmod.
+	await writeFile(temp, data, { encoding: "utf8", mode });
 	await rename(temp, path);
 }
