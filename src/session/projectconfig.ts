@@ -224,7 +224,7 @@ const portForwards = z
  * enforce instead, and a dropped port would leave a client in the guest
  * talking to whatever else holds that port.
  */
-const network = z
+const networkSchema = z
 	.object(
 		{
 			allow: lenientList(allowEntry),
@@ -235,12 +235,12 @@ const network = z
 	)
 	.prefault({});
 
-const config = z
+const configSchema = z
 	.object(
 		{
 			masked: lenientList(maskEntry),
 			setup: lenientList(setupEntry),
-			network,
+			network: networkSchema,
 		},
 		{
 			error: (issue) =>
@@ -261,19 +261,19 @@ const config = z
 	);
 
 export function validateMasks(entries: readonly unknown[]) {
-	const { masked, rejected } = config.parse({ masked: entries });
+	const { masked, rejected } = configSchema.parse({ masked: entries });
 	return { masked, rejected };
 }
 
 export function validateSetup(entries: readonly unknown[]) {
-	const { setup, rejectedSetup } = config.parse({ setup: entries });
+	const { setup, rejectedSetup } = configSchema.parse({ setup: entries });
 	return { setup, rejected: rejectedSetup };
 }
 
 export function validateNetwork(
 	raw: unknown,
 ): LoadedNetwork & { rejected: string[]; error?: string } {
-	const result = config.safeParse({ network: raw });
+	const result = configSchema.safeParse({ network: raw });
 	if (!result.success) {
 		return {
 			allow: [],
@@ -334,7 +334,9 @@ export async function importConfig(file: string): Promise<LoadedConfig> {
 		return { ...empty, error: explain(err) };
 	}
 
-	const result = config.safeParse((loaded as { default?: unknown }).default);
+	const result = configSchema.safeParse(
+		(loaded as { default?: unknown }).default,
+	);
 	if (result.success) return result.data;
 	return { ...empty, error: describeIssue(result.error, name) };
 }
