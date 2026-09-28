@@ -236,6 +236,16 @@ export function validateNetwork(raw: unknown): {
 	return { allow: accepted, mode: mode ?? "enforce", ports, rejected };
 }
 
+/** A number is the same port on both sides; `{ host, guest }` moves it. */
+function portForward(entry: unknown): PortForward | null {
+	const pair =
+		typeof entry === "number" ? { host: entry, guest: entry } : entry;
+	if (typeof pair !== "object" || pair === null) return null;
+	const { host, guest } = pair as Record<string, unknown>;
+	if (typeof host !== "number" || typeof guest !== "number") return null;
+	return isPort(host) && isPort(guest) ? { host, guest } : null;
+}
+
 function validatePorts(raw: unknown): PortForward[] | string {
 	if (raw === undefined) return [];
 	const shape = "a port number or { host, guest }";
@@ -244,24 +254,12 @@ function validatePorts(raw: unknown): PortForward[] | string {
 
 	const ports: PortForward[] = [];
 	for (const [i, entry] of raw.entries()) {
-		const { host, guest } =
-			typeof entry === "number"
-				? { host: entry, guest: entry }
-				: typeof entry === "object" && entry !== null
-					? (entry as Partial<Record<keyof PortForward, unknown>>)
-					: {};
-		if (
-			typeof host !== "number" ||
-			typeof guest !== "number" ||
-			!isPort(host) ||
-			!isPort(guest)
-		) {
+		const port = portForward(entry);
+		if (port === null)
 			return `\`network.ports[${i}]\` must be ${shape}, each from 1 to 65535`;
-		}
-		if (ports.some((p) => p.guest === guest)) {
-			return `\`network.ports\` names guest port ${guest} twice`;
-		}
-		ports.push({ host, guest });
+		if (ports.some((p) => p.guest === port.guest))
+			return `\`network.ports\` names guest port ${port.guest} twice`;
+		ports.push(port);
 	}
 	return ports;
 }
