@@ -100,17 +100,18 @@ tun2proxy      --------> qemu (slirp): 192.168.5.2 is the
 **`limactl shell` in.** Lima normally multiplexes shells over its own ssh master
 connection, `ssh.sock`, which is a plain file -- a unix socket crosses a network
 namespace freely, since it is looked up by filesystem path, not by address, and
-`bwrap` here only isolates the network, not the filesystem. So an ordinary
-`limactl shell` keeps working for as long as that master connection lives. When
-it does not -- the master died, or a shell is opened fresh -- a new connection
-would have to reach the guest's forwarded ssh port over TCP, and that port is
-bound inside the fence's own loopback, unreachable from outside. The fallback is
-`control.sock`: the fence's inside half runs a `socat` that listens on that path
-and forwards to the guest's ssh port, and every shell playpen opens sets `$SSH`
-(`sshThroughControl` in `src/lima/client.ts`) to an `ssh` whose `ProxyCommand`
-is `socat - UNIX-CONNECT:control.sock`. Lima runs `$SSH` in place of `ssh` when
-it is set, so this reaches the guest without anything outside ever joining the
-namespace.
+`bwrap` here isolates the network and hides nothing but the masked paths (see
+"Masks are the one thing" under Lifecycle), not the rest of the filesystem. So
+an ordinary `limactl shell` keeps working for as long as that master connection
+lives. When it does not -- the master died, or a shell is opened fresh -- a new
+connection would have to reach the guest's forwarded ssh port over TCP, and that
+port is bound inside the fence's own loopback, unreachable from outside. The
+fallback is `control.sock`: the fence's inside half runs a `socat` that listens
+on that path and forwards to the guest's ssh port, and every shell playpen opens
+sets `$SSH` (`sshThroughControl` in `src/lima/client.ts`) to an `ssh` whose
+`ProxyCommand` is `socat - UNIX-CONNECT:control.sock`. Lima runs `$SSH` in place
+of `ssh` when it is set, so this reaches the guest without anything outside ever
+joining the namespace.
 
 **Host ports at the guest's own `localhost`.** Some clients in the guest cannot
 be pointed at `host.playpen.internal` -- an MCP server configured as
@@ -165,6 +166,23 @@ reachable within a few seconds. A policy.json that will not parse is a corrupt
 file rather than a half-written one -- it is written by rename -- so the helper
 swaps in an empty enforcing policy and says so: the sandbox loses its network
 until the next `playpen start` rather than keeping a list nobody can read.
+
+**Masks are the one thing `bwrap` does to the filesystem.** qemu is the 9p
+server for the project share, and `bwrap` gives it its own mount table, so the
+helper lays a read-only bind of an empty file or directory (both kept in the
+fence directory) over each `masked` entry that is on the host, after
+`--dev-bind / /`. qemu then serves an empty placeholder at that path and the
+real bytes never reach the share. Read-only, because the one source is shared by
+every entry. The list is `mounts.json`, written by `bringUp` just before it
+spawns a helper and read once, when the helper starts: a mount table under a
+running qemu cannot be rewritten, so unlike policy.json it is never reloaded. An
+entry missing on the host is skipped, since the bind would create it on the
+host's disk, and so is a symlink or a path under one; the helper logs each. The
+guest binds its own VM-disk copy on top after it boots. The entries the helper
+bound are in helper.json as `masked`; `bringUp` on a running sandbox tells the
+user to `playpen stop && playpen start` for any entry that is on the host and
+not in that list. A helper that reattaches to a qemu it did not start records
+none, since it cannot know.
 
 **helper.json carries a `policy` field**, alongside `ready` and `egress`: the
 stamp (`mtime:size` of policy.json) of the policy the gatekeeper is deciding

@@ -1,7 +1,7 @@
 // Every key, with one line each. The rules are in README.md under Config.
 export default {
-	// Guest-local storage for paths that are slow or platform-specific on the share.
-	masked: ["node_modules", ".venv"],
+	// Guest-local copies of dirs or files: slow or platform-specific paths, and a .env kept out of the VM.
+	masked: ["node_modules", ".venv", ".env"],
 
 	// Run in the guest on create and after a rebuild. `playpen setup` re-runs them.
 	setup: ["npm ci", "uv sync"],
