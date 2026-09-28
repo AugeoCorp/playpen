@@ -256,17 +256,31 @@ const secretHost = z
 		return z.NEVER;
 	});
 
-const secretEntry = z.object(
-	{
-		env: z
-			.string({ error: SECRET_ENV })
-			.refine(isEnvName, { error: SECRET_ENV }),
-		hosts: z
-			.array(secretHost, { error: "must be an array of hostnames" })
-			.min(1, { error: "must name at least one host" }),
-	},
-	{ error: "must be { env, hosts }" },
-);
+/**
+ * Loose, then checked for extra keys by hand: a `value` written here would be
+ * a secret in a file the guest can read, and zod would otherwise strip it
+ * silently.
+ */
+const secretEntry = z
+	.looseObject(
+		{
+			env: z
+				.string({ error: SECRET_ENV })
+				.refine(isEnvName, { error: SECRET_ENV }),
+			hosts: z
+				.array(secretHost, { error: "must be an array of hostnames" })
+				.min(1, { error: "must name at least one host" }),
+		},
+		{ error: "must be { env, hosts }" },
+	)
+	.refine(
+		(entry) => Object.keys(entry).every((k) => k === "env" || k === "hosts"),
+		{
+			error:
+				"must be { env, hosts } and nothing else; a value never goes in this file",
+		},
+	)
+	.transform(({ env, hosts }) => ({ env, hosts }));
 
 /** Two entries for one variable could send it to different hosts by accident. */
 const secrets = z
