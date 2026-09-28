@@ -1,8 +1,6 @@
 # Host tools for working on playpen, for https://mise.jdx.dev: `mise install`.
 #
-# Only what mise can install. bubblewrap, socat and qemu are not in its
-# registry and come from the distro or Homebrew; see README.md, Requirements.
-# Lima is here for hosts without Homebrew; a Homebrew Lima works the same.
+# Only what mise can install. Lima, bubblewrap, socat and qemu come from the
+# distro or Homebrew; see README.md, Requirements. npm comes with Node.
 [tools]
-node = "24"
-lima = "2.2.0"
+node = "26"

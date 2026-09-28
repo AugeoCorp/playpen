@@ -13,7 +13,7 @@ playpen claude
 
 - Linux host with Lima ≥ 2.0 and QEMU
 - Node ≥ 23.6 with TypeScript support (runs `.ts` directly, no build);
-  `mise install` gives you the pinned one from `mise.toml`, and Lima with it
+  `mise install` gives you the pinned one from `mise.toml`
 - [bubblewrap](https://github.com/containers/bubblewrap) and
   [socat](http://www.dest-unreach.org/socat/), for the network fence
   (`brew install socat` on a Homebrew host)
