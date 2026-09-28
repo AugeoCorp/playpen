@@ -85,10 +85,6 @@ async function ensureFenceDir(sandbox: string): Promise<void> {
 
 const PORT_RANGE = "must be a port from 1 to 65535";
 
-/**
- * The guest numbers are printed into a root script in the guest, so a
- * hand-edited file must not get anything else in.
- */
 const port = z
 	.number({ error: PORT_RANGE })
 	.refine(isPort, { error: PORT_RANGE });
@@ -184,6 +180,10 @@ const policyFile = z.object(
 			error: "must be an array of strings",
 		}),
 		mode: networkMode,
+		/**
+		 * Both numbers are printed into a root script in the guest, so a
+		 * hand-edited policy.json must not get anything else in.
+		 */
 		ports: z.array(portForward, {
 			error: "must be an array of { host, guest }",
 		}),
