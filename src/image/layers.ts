@@ -12,6 +12,8 @@ export function buildTools() {
 			"ripgrep",
 			"build-essential",
 			"unzip",
+			// The guest end of `network.ports`: the helper runs one per entry.
+			"socat",
 		],
 	});
 }

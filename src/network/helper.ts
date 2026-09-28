@@ -25,8 +25,10 @@ import {
 } from "./gatekeeper.ts";
 import {
 	DENY_HOST,
+	HOST_ALIAS,
 	NO_EGRESS_ADVICE,
 	type Policy,
+	type PortForward,
 	PROBE_HOST,
 } from "./policy.ts";
 import {
@@ -94,7 +96,7 @@ async function reloadPolicy(sandbox: string): Promise<Policy> {
 		say(
 			`policy.json is unreadable (${err}); denying everything until the next start`,
 		);
-		return { allow: [], mode: "enforce" };
+		return { allow: [], mode: "enforce", ports: [] };
 	}
 }
 
@@ -253,7 +255,17 @@ export async function runHelper(
 	}
 
 	const egress = await guestReachesGatekeeper(instance, paths, logFrom);
-	await report({ ready: true, egress });
+	// Before `ready`, so the `playpen start` waiting on it can already name a
+	// port that could not be bound. A fresh boot has no listeners yet; a guest
+	// being reattached to may still run the last helper's, which nothing here
+	// remembers.
+	let forwarded = policy.ports;
+	const unboundPorts = await forwardPorts(
+		instance,
+		reattach ? null : [],
+		forwarded,
+	);
+	await report({ ready: true, egress, unboundPorts });
 	say(`${instance} is up and fenced`);
 	if (egress) {
 		say(`the guest reached the gatekeeper`);
@@ -266,7 +278,12 @@ export async function runHelper(
 
 	await serveWhileRunning(sandbox, instance, stamp, async (next, applied) => {
 		policy = next;
-		await report({ policy: applied });
+		// After the swap, so a new listener's first connection already finds
+		// its `localhost:<host>` entry; and before the stamp is reported, so
+		// `bringUp` returns with the listeners in place.
+		const unboundPorts = await forwardPorts(instance, forwarded, next.ports);
+		forwarded = next.ports;
+		await report({ policy: applied, unboundPorts });
 	});
 	say(`${instance} is no longer running; shutting the fence down`);
 	await teardown(true);
@@ -323,6 +340,110 @@ async function checksLogged(path: string, from: number): Promise<boolean> {
 		}
 	}
 	return probed && denied;
+}
+
+/** Named by the guest port, which is what a reload has to find again. */
+function portUnit(guest: number): string {
+	return `playpen-port-${guest}.service`;
+}
+
+/**
+ * The guest script that takes its port listeners from `before` to `after`:
+ * one transient systemd unit per entry, running a socat that listens on the
+ * guest's `127.0.0.1:<guest>` and asks the gatekeeper for
+ * `HOST_ALIAS:<host>` over the address tun2proxy uses, so each connection is
+ * decided and logged like any other. `before` is null when what is running is
+ * not known, and then every such unit is stopped first.
+ *
+ * An entry already listening is left alone, so a reload does not cut
+ * connections through it. One whose port something else holds is not started,
+ * and every entry not active at the end is printed as `unbound <guest>` for
+ * `unboundIn` to read. The ports are validated integers, the one thing here
+ * not written by this function.
+ */
+export function portsScript(
+	before: readonly PortForward[] | null,
+	after: readonly PortForward[],
+): string {
+	const lines: string[] = [];
+	if (before === null) {
+		lines.push(`systemctl stop 'playpen-port-*.service' 2>/dev/null || true`);
+	} else {
+		for (const old of before) {
+			const kept = after.some(
+				(p) => p.host === old.host && p.guest === old.guest,
+			);
+			if (!kept)
+				lines.push(`systemctl stop ${portUnit(old.guest)} 2>/dev/null || true`);
+		}
+	}
+	for (const { host, guest } of after) {
+		const unit = portUnit(guest);
+		lines.push(
+			`if ! systemctl is-active --quiet ${unit} && ! ss -Hltn 'sport = :${guest}' | grep -q .; then`,
+			`  systemd-run --quiet --collect --unit=${unit} socat TCP-LISTEN:${guest},bind=127.0.0.1,fork,reuseaddr PROXY:192.168.5.2:${HOST_ALIAS}:${host},proxyport=${GUEST_PROXY_PORT}`,
+			"fi",
+		);
+	}
+	if (after.length > 0) {
+		// A socat that cannot bind exits just after it starts, and `--collect`
+		// then unloads its unit, which reads as inactive.
+		lines.push("sleep 1");
+		for (const { guest } of after) {
+			lines.push(
+				`systemctl is-active --quiet ${portUnit(guest)} || echo 'unbound ${guest}'`,
+			);
+		}
+	}
+	return lines.join("\n");
+}
+
+/** The entries of `after` that `portsScript`'s output names as unbound. */
+export function unboundIn(
+	after: readonly PortForward[],
+	stdout: string,
+): PortForward[] {
+	const named = new Set(
+		stdout.split("\n").flatMap((line) => {
+			const match = /^unbound (\d+)$/.exec(line.trim());
+			return match ? [Number(match[1])] : [];
+		}),
+	);
+	return after.filter(({ guest }) => named.has(guest));
+}
+
+/**
+ * Returns the entries left unbound. A guest that cannot be asked at all is
+ * taken to have none of them, so `playpen start` says so rather than
+ * claiming ports that may not be there.
+ */
+async function forwardPorts(
+	instance: string,
+	before: readonly PortForward[] | null,
+	after: readonly PortForward[],
+): Promise<PortForward[]> {
+	const script = portsScript(before, after);
+	if (script === "") return [];
+	let unbound: PortForward[];
+	try {
+		const result = await lima.runScript(instance, script, { root: true });
+		if (result.code !== 0) throw new Error(result.stderr.trim());
+		unbound = unboundIn(after, result.stdout.toString("utf8"));
+		// systemd-run's own complaint, such as a guest with no socat.
+		if (unbound.length > 0 && result.stderr.trim() !== "")
+			say(result.stderr.trim());
+	} catch (err) {
+		say(`warning: could not set up forwarded ports in the guest: ${err}`);
+		unbound = [...after];
+	}
+	for (const { host, guest } of after) {
+		say(
+			unbound.some((p) => p.guest === guest)
+				? `warning: nothing could listen on the guest's localhost:${guest} for host port ${host}`
+				: `host port ${host} is at the guest's localhost:${guest}`,
+		);
+	}
+	return unbound;
 }
 
 /**
