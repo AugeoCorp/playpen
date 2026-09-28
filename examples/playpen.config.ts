@@ -32,6 +32,14 @@ export default {
 			"localhost:11434",
 		],
 
+		// A port on your machine at the guest's own localhost too, for a
+		// client in the guest that cannot be pointed at host.playpen.internal,
+		// such as an MCP server configured as http://localhost:4321/. A bare
+		// number keeps the same port on both sides; { host, guest } moves it.
+		// An entry implies its "localhost:<host>" allow entry. The guest port
+		// must be free in the guest; `playpen start` warns if it is not.
+		ports: [{ host: 1234, guest: 4321 }],
+
 		// Finding the list: "log" lets internet connections through and
 		// records each one in $XDG_DATA_HOME/playpen/net/<sandbox>/gatekeeper.log
 		// as a `report` line. Read them after a real session, move the hosts
