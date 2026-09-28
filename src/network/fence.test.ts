@@ -191,6 +191,26 @@ test("a policy.json whose ports are not all port numbers is refused, since the g
 	);
 });
 
+test("a port in policy.json reaches the helper as its host and guest numbers alone, whatever else the entry holds", async (t) => {
+	await dataDir(t);
+	await policyWithPorts([{ host: 5000, guest: 4321, command: "; reboot" }]);
+	const { ports } = await readPolicy("api-abc123");
+	assert.deepEqual(ports, [{ host: 5000, guest: 4321 }]);
+});
+
+test("a policy.json port that is not an object is refused by its position", async (t) => {
+	await dataDir(t);
+	const path = fencePaths("api-abc123").policy;
+	await policyWithPorts([null]);
+	await assert.rejects(readPolicy("api-abc123"), {
+		message: `${path}: \`ports[0]\` must be { host, guest }`,
+	});
+	await policyWithPorts([{ host: 5000, guest: 4321 }, 22]);
+	await assert.rejects(readPolicy("api-abc123"), {
+		message: `${path}: \`ports[1]\` must be { host, guest }`,
+	});
+});
+
 test("a policy.json with no ports at all is refused rather than read as forwarding nothing", async (t) => {
 	await dataDir(t);
 	await policyWithPorts(undefined);
