@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { z } from "zod";
 
 /**
  * Enough to tell whether a process recorded earlier is still the same one.
@@ -8,11 +9,13 @@ import { readFile } from "node:fs/promises";
  * time, so a reused number does not match; `boot` distinguishes two boots whose
  * tick counters happen to agree.
  */
-export interface Owner {
-	pid: number;
-	start: string;
-	boot: string;
-}
+export const ownerSchema = z.object({
+	pid: z.int(),
+	start: z.string(),
+	boot: z.string(),
+});
+
+export type Owner = z.infer<typeof ownerSchema>;
 
 /** Linux only, like the rest of playpen: /proc is where this lives. */
 async function bootId(): Promise<string> {

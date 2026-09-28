@@ -67,6 +67,13 @@ test("an unreadable lease is discarded rather than throwing", async (t) => {
 	assert.deepEqual(await leases.live(SANDBOX), []);
 });
 
+test("a lease that does not name a process is discarded, and deleted", async (t) => {
+	const dir = await dataHome(t);
+	await writeFile(join(dir, "7"), JSON.stringify({ pid: 7 }), "utf8");
+	assert.deepEqual(await leases.live(SANDBOX), []);
+	assert.deepEqual(await readdir(dir), []);
+});
+
 test("releasing twice is not an error", async (t) => {
 	await dataHome(t);
 	const me = await leases.acquire(SANDBOX);

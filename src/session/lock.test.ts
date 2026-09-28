@@ -77,6 +77,12 @@ test("a lock file that is not readable json is not treated as held", async (t) =
 	assert.equal(await withLock(NAME, async () => "taken"), "taken");
 });
 
+test("a lock file that does not name a process is not treated as held", async (t) => {
+	const path = await dataHome(t);
+	await writeFile(path, JSON.stringify({ pid: "me" }), "utf8");
+	assert.equal(await withLock(NAME, async () => "taken"), "taken");
+});
+
 test("a lock name that would escape the locks directory is rejected", async (t) => {
 	await dataHome(t);
 	await assert.rejects(
