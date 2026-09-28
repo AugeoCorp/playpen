@@ -5,6 +5,12 @@ import { ensureBase, findBase } from "../image/bake.ts";
 import { baseImage } from "../image/base.ts";
 import { maskScript, render, serialize } from "../image/render.ts";
 import * as lima from "../lima/client.ts";
+import { bringUp, fenceStatus, liveHelper } from "../network/fence.ts";
+import {
+	BUILTIN_ALLOW,
+	NO_EGRESS_ADVICE,
+	type Policy,
+} from "../network/policy.ts";
 import { confirm } from "../prompt.ts";
 import * as history from "./history.ts";
 import { instanceName, sandboxName } from "./identity.ts";
@@ -267,6 +273,42 @@ export interface Running {
 	setup: string[];
 }
 
+/**
+ * Starts the VM inside its network fence, so every connection out of the guest
+ * arrives at the gatekeeper. Every start of a sandbox goes through `bringUp`;
+ * the one VM started any other way is the base image while it is baked
+ * (image/bake.ts), which has no project policy to apply and nothing running
+ * in it but the build.
+ */
+async function startFenced(sb: Sandbox, template: Template): Promise<void> {
+	await fenced(sb, {
+		allow: [...BUILTIN_ALLOW, ...template.network.allow],
+		mode: template.network.mode,
+	});
+	await warnWithoutEgress(sb);
+}
+
+function fenced(sb: Sandbox, policy: Policy): Promise<void> {
+	return bringUp({
+		sandbox: sb.sandbox,
+		instance: sb.instance,
+		policy,
+		log: (text) => process.stderr.write(text),
+	});
+}
+
+/**
+ * The fence came up and the guest still cannot reach the gatekeeper, so the
+ * sandbox has no network at all. Said here rather than left in helper.log,
+ * which nobody reads when the command it belongs to succeeded.
+ */
+async function warnWithoutEgress(sb: Sandbox): Promise<void> {
+	const helper = await liveHelper(sb.sandbox);
+	if (helper === null || helper.egress) return;
+	console.error(`warning: ${sb.sandbox} has no network`);
+	for (const line of NO_EGRESS_ADVICE) console.error(`  ${line}`);
+}
+
 export async function ensureRunning(sb: Sandbox): Promise<Running> {
 	const existing = await lima.get(sb.instance);
 
@@ -278,7 +320,23 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 			(await changedTemplate(sb, template)) ?? (await outdatedBase(sb));
 		rebuilding = reason !== null && (await confirmRebuild(reason));
 		if (!rebuilding) {
-			if (!lima.isRunning(existing)) await lima.start(sb.instance);
+			const fence = lima.isRunning(existing)
+				? await fenceStatus(sb.sandbox, sb.instance)
+				: "stopped";
+			// Started by hand with limactl, so its egress is unfiltered. There is no
+			// unfenced mode to attach to; the fix is a restart through playpen.
+			if (fence === "unsealed") {
+				throw new Error(
+					`${sb.instance} is running outside its network fence.\n` +
+						`  stop it and start it again: playpen stop --force && playpen start`,
+				);
+			}
+			// In every other state, including a sandbox that is already up: a
+			// stopped VM is started, one that survived its helper gets another
+			// gatekeeper, and a running one has its policy rewritten, which is
+			// what its helper reads to decide on -- so a list tightened since it
+			// started takes effect without a restart.
+			await startFenced(sb, template);
 			await applyMasks(sb, template.masks);
 			await store.touch(sb.sandbox);
 			return { created: false, setupOk: true, setup: template.setup };
@@ -305,7 +363,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 	await lima.clone(base.instance, sb.instance);
 	try {
 		await giveCloneItsMount(sb);
-		await lima.start(sb.instance);
+		await startFenced(sb, current);
 	} catch (err) {
 		await lima
 			.remove(sb.instance)
@@ -423,8 +481,11 @@ export async function stop(sb: Sandbox): Promise<void> {
 
 /**
  * Archiving needs the guest up, so a stopped sandbox is started for it: ~10s on
- * a delete, worth it because transcripts and memory exist nowhere else. Best
- * effort throughout -- a sandbox too broken to boot must still be deletable.
+ * a delete, worth it because transcripts and memory exist nowhere else. It is
+ * started fenced with nothing allowed: the archive travels over the control
+ * socket, and a guest that is about to be deleted is the last one to hand the
+ * network to. Best effort throughout -- a sandbox too broken to boot must
+ * still be deletable.
  */
 async function saveHistory(sb: Sandbox, running: boolean): Promise<void> {
 	try {
@@ -433,7 +494,7 @@ async function saveHistory(sb: Sandbox, running: boolean): Promise<void> {
 		if (!running && !(await store.load(sb.sandbox))) return;
 		if (!running) {
 			console.error(`starting it briefly to save Claude history`);
-			await lima.start(sb.instance);
+			await fenced(sb, { allow: [], mode: "enforce" });
 		}
 		await history.archive(sb.instance, sb.sandbox);
 	} catch (err) {

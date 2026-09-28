@@ -13,8 +13,11 @@ playpen claude
 
 - Linux host with Lima ≥ 2.0 and QEMU
 - Node ≥ 23.6 with TypeScript support (runs `.ts` directly, no build)
+- [bubblewrap](https://github.com/containers/bubblewrap) and
+  [socat](http://www.dest-unreach.org/socat/), for the network fence
+  (`brew install socat` on a Homebrew host)
 
-`playpen doctor` checks both.
+`playpen doctor` checks all of it.
 
 ## Install
 
@@ -105,6 +108,9 @@ Reasoning in `docs/spec.md`.
 
 ## Scope
 
-Threat model is the host filesystem. Network egress is unfiltered;
-`docs/NETWORK.md` is the design note for containing it. See `docs/PLAN.md` for
-known rough edges and `docs/spec.md` for the design.
+Threat model is the host filesystem. A sandbox VM also runs inside a network
+namespace with no route out of it: every connection the guest opens arrives at a
+gatekeeper on the host, which allows it by name or refuses it. Guest root cannot
+reach around that, but an allowed destination is still a way out --
+`docs/NETWORK.md` says what this does and does not contain. See `docs/PLAN.md`
+for known rough edges and `docs/spec.md` for the design.
