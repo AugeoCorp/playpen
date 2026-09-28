@@ -9,7 +9,7 @@ export default {
 	network: {
 		// Hosts to reach, on top of the ones playpen ships. A name covers its subdomains.
 		allow: [
-			"registry.yarnpkg.com", // any port, public addresses only
+			"kagi.com", // any port, public addresses only
 			"postgres.mycompany.example:5432", // a database on your network: that port only, and it may resolve to a LAN address
 			"localhost:11434", // your machine's port 11434, as host.playpen.internal:11434 in the guest
 		],
