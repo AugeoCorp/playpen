@@ -1,6 +1,6 @@
 # Plan
 
-Updated 2026-09-17. Design and reasoning are in `spec.md`; constraints that must
+Updated 2026-09-28. Design and reasoning are in `spec.md`; constraints that must
 not be inverted are in `AGENTS.md`. The network fence's mechanism is in
 `docs/NETWORK.md`. Update this when status changes.
 

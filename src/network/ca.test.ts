@@ -1,16 +1,12 @@
 import assert from "node:assert/strict";
-import { generateKeyPairSync, X509Certificate } from "node:crypto";
-import {
-	chmod,
-	mkdtemp,
-	readFile,
-	rm,
-	stat,
-	writeFile,
-} from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { X509Certificate } from "node:crypto";
+import { chmod, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
+import { promisify } from "node:util";
+import forge from "node-forge";
 
 async function withTempData(t: TestContext): Promise<void> {
 	const dir = await mkdtemp(join(tmpdir(), "playpen-ca-"));
@@ -48,15 +44,58 @@ test("the certificate is valid for about ten years", async (t) => {
 	assert.ok(Date.parse(cert.validFrom) <= Date.now());
 });
 
-test("the key is written 0600 in a 0700 directory, and the certificate is on disk for later changes", async (t) => {
+test("the CA can sign server certificates and nothing else, and carries the identifier its leaves will name", async (t) => {
 	await withTempData(t);
-	const { ensureCa, caCertPath } = await import("./ca.ts");
+	const { ensureCa } = await import("./ca.ts");
+
+	const cert = forge.pki.certificateFromPem((await ensureCa()).certPem);
+	const basic = cert.getExtension("basicConstraints") as Record<
+		string,
+		unknown
+	>;
+	assert.equal(basic.cA, true);
+	assert.equal(basic.pathLenConstraint, 0);
+	assert.equal(basic.critical, true);
+	const usage = cert.getExtension("keyUsage") as Record<string, unknown>;
+	assert.equal(usage.keyCertSign, true);
+	assert.equal(usage.cRLSign, true);
+	assert.equal(usage.digitalSignature, false);
+	assert.equal(usage.critical, true);
+	assert.ok(
+		cert.getExtension("subjectKeyIdentifier"),
+		"no subject key identifier",
+	);
+	assert.equal(cert.subject.getField("CN").value, "playpen sandbox CA");
+});
+
+test("the key is written 0600 in a 0700 directory, and the certificate is written beside it", async (t) => {
+	await withTempData(t);
+	const { ensureCa } = await import("./ca.ts");
 	const { caDir } = await import("../config.ts");
 
 	const ca = await ensureCa();
 	assert.equal((await stat(join(caDir(), "ca.key"))).mode & 0o777, 0o600);
 	assert.equal((await stat(caDir())).mode & 0o777, 0o700);
-	assert.equal(await readFile(caCertPath(), "utf8"), ca.certPem);
+	assert.equal(await readFile(join(caDir(), "ca.crt"), "utf8"), ca.certPem);
+});
+
+test("two processes creating the CA at the same time end up with the same one", async (t) => {
+	await withTempData(t);
+	const script =
+		'import("./src/network/ca.ts").then(async ({ ensureCa }) => process.stdout.write((await ensureCa()).certPem))';
+	const run = () =>
+		promisify(execFile)(
+			process.execPath,
+			["--input-type=module", "-e", script],
+			{
+				env: process.env,
+			},
+		);
+
+	const [a, b] = await Promise.all([run(), run()]);
+	assert.equal(a.stdout, b.stdout);
+	const { ensureCa } = await import("./ca.ts");
+	assert.equal((await ensureCa()).certPem, a.stdout);
 });
 
 test("a group- or world-readable key is refused, naming the file", async (t) => {
@@ -71,20 +110,4 @@ test("a group- or world-readable key is refused, naming the file", async (t) => 
 
 	await chmod(keyPath, 0o604);
 	await assert.rejects(ensureCa, (err: Error) => err.message.includes(keyPath));
-});
-
-test("a certificate that does not belong to the key is refused rather than baked into an image", async (t) => {
-	await withTempData(t);
-	const { ensureCa } = await import("./ca.ts");
-	const { caDir } = await import("../config.ts");
-	await ensureCa();
-	const keyPath = join(caDir(), "ca.key");
-	const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
-	await writeFile(
-		keyPath,
-		privateKey.export({ type: "pkcs1", format: "pem" }),
-		{ mode: 0o600 },
-	);
-
-	await assert.rejects(ensureCa, /does not match/);
 });

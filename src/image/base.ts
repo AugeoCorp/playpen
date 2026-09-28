@@ -12,11 +12,7 @@ import {
 } from "./layers.ts";
 import { defineImage } from "./types.ts";
 
-/**
- * Scripts run in the order listed, so claudeCode() must follow node(), which
- * supplies npm, and caTrust() must follow buildTools(), which supplies
- * update-ca-certificates.
- */
+/** Scripts run in the order listed, so claudeCode() must follow node(), which supplies npm. */
 export function baseImage(caCertPem: string) {
 	return defineImage({
 		name: "playpen-base",

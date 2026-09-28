@@ -18,6 +18,9 @@ export function buildTools() {
 	});
 }
 
+const CA_CRT = "/usr/local/share/ca-certificates/playpen.crt";
+const SYSTEM_BUNDLE = "/etc/ssl/certs/ca-certificates.crt";
+
 /**
  * Trusts playpen's own certificate authority (src/network/ca.ts) so a later
  * interceptor can terminate TLS for the hosts named in `network.secrets`. The
@@ -25,16 +28,18 @@ export function buildTools() {
  * host. Because the script is part of the image hash, a new CA rebakes the
  * base instead of reusing one that trusts the old.
  *
- * `update-ca-certificates` covers curl and anything else that reads the system
- * store. Node reads no system store and Python's requests carries its own
- * bundle, so both are pointed at a file by the login environment.
+ * `update-ca-certificates` covers curl, git and Go programs such as gh, which
+ * read the system store. Node reads no system store, Python's requests carries
+ * its own bundle, and uv and other tools with their own TLS stack read
+ * `SSL_CERT_FILE`, so those three are pointed at a file through `env`, which
+ * Lima writes to /etc/environment: every session gets it, sudo included, where
+ * a profile.d file reaches login shells only.
  */
-const CA_CRT = "/usr/local/share/ca-certificates/playpen.crt";
-const SYSTEM_BUNDLE = "/etc/ssl/certs/ca-certificates.crt";
-
 export function caTrust(certPem: string) {
-	// The PEM goes into a quoted heredoc; anything else in it could end the
-	// heredoc early and run as root at bake time.
+	// The PEM goes into a quoted heredoc; a body line equal to the delimiter
+	// would end it early and run what follows as root at bake time. The
+	// delimiter has a `_`, which base64 never contains, and the check refuses
+	// anything that is not base64 lines between the two markers.
 	if (
 		!/^-----BEGIN CERTIFICATE-----\n[A-Za-z0-9+/=\n]+-----END CERTIFICATE-----\n?$/.test(
 			certPem,
@@ -45,16 +50,16 @@ export function caTrust(certPem: string) {
 	return defineLayer({
 		name: "ca-trust",
 		script: [
-			`cat > ${CA_CRT} <<'PEM'`,
+			`cat > ${CA_CRT} <<'PLAYPEN_CA_END'`,
 			certPem.trimEnd(),
-			"PEM",
+			"PLAYPEN_CA_END",
 			"update-ca-certificates",
-			"cat > /etc/profile.d/playpen-ca.sh <<'SH'",
-			`export NODE_EXTRA_CA_CERTS=${CA_CRT}`,
-			`export SSL_CERT_FILE=${SYSTEM_BUNDLE}`,
-			`export REQUESTS_CA_BUNDLE=${SYSTEM_BUNDLE}`,
-			"SH",
 		].join("\n"),
+		env: {
+			NODE_EXTRA_CA_CERTS: CA_CRT,
+			SSL_CERT_FILE: SYSTEM_BUNDLE,
+			REQUESTS_CA_BUNDLE: SYSTEM_BUNDLE,
+		},
 	});
 }
 

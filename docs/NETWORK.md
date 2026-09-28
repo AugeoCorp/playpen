@@ -321,11 +321,15 @@ install has one certificate authority (`src/network/ca.ts`) in the `ca/`
 directory under the data directory: its key is mode 0600, is refused if it is
 readable by group or others, and never leaves the host. Its certificate is
 public and is installed into the guest's trust store when the base image is
-baked (the `caTrust()` layer), with `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE` and
-`REQUESTS_CA_BUNDLE` set for login shells, since Node reads no system store and
-Python's requests carries its own bundle. The certificate is part of the image
-hash, so a new CA rebakes the base. The CA has no name constraints: the hosts
-differ per project and change over time, while the CA is one per install.
+baked (the `caTrust()` layer). curl, git and Go programs such as gh read that
+store. Node reads no system store, Python's requests carries its own bundle, and
+uv and other tools with their own TLS stack read `SSL_CERT_FILE`, so
+`NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE` and `SSL_CERT_FILE` are set through
+the image's `env`, which Lima writes to `/etc/environment` for every session,
+sudo included. The certificate is part of the image hash, so a new CA rebakes
+the base. The CA is created in a staging directory and published with one
+rename, so two first runs at once share one CA. It has no name constraints: the
+hosts differ per project and change over time, while the CA is one per install.
 Nothing intercepts yet.
 
 ## What it does not contain
