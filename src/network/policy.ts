@@ -22,6 +22,13 @@ export const HOST_ALIAS = "host.playpen.internal";
 export const PROBE_HOST = "probe.playpen.internal";
 
 /**
+ * The other half of the fence's own check: a name no policy can allow, so a
+ * guest request for it must come back refused. Its `deny` line in the log is
+ * what proves the gatekeeper refuses anything at all.
+ */
+export const DENY_HOST = "deny.playpen.internal";
+
+/**
  * What to say when the fence is up but the guest cannot reach the gatekeeper
  * through it -- printed by both the helper, while it waits for the guest, and
  * `playpen start`, which would otherwise repeat the same advice on its own.
@@ -57,11 +64,10 @@ export interface Policy {
 
 /**
  * What the matched entry permits a resolved name to dial: `"public"` for a
- * port-less entry, `"any"` for one with a port -- which still excludes
- * link-local, 0.0.0.0/8, multicast and the reserved range; see
- * `isReachableIpv4` in names.ts.
+ * port-less entry, `"lan"` (public or a LAN address) for one with a port.
+ * Neither is this machine; see `isPublicOrLanIpv4` in names.ts.
  */
-export type Reach = "public" | "any";
+export type Reach = "public" | "lan";
 
 export type Verdict =
 	| {
@@ -143,6 +149,7 @@ function decideTarget(
 	policy: Policy,
 	hostname: string,
 	port: number,
+	own: ReadonlySet<string>,
 ): {
 	allowed: boolean;
 	target: { host: string; port: number };
@@ -181,6 +188,16 @@ function decideTarget(
 		};
 	}
 
+	if (host === DENY_HOST) {
+		return {
+			allowed: false,
+			final: true,
+			target: { host, port },
+			reach: "public",
+			reason: `${DENY_HOST} is the fence's own refusal check; nothing is dialed`,
+		};
+	}
+
 	if (host === HOST_ALIAS) {
 		const local = entries.find((e) => e.kind === "local" && e.port === port);
 		return local
@@ -213,6 +230,15 @@ function decideTarget(
 	}
 
 	if (isIpv4(host)) {
+		if (own.has(host)) {
+			return {
+				allowed: false,
+				final: true,
+				target: { host, port },
+				reach: "public",
+				reason: `${host} is an address of this machine; only a localhost:PORT entry reaches it`,
+			};
+		}
 		const matched = entries.find(
 			(e) => e.kind === "ip" && e.host === host && e.port === port,
 		);
@@ -251,9 +277,9 @@ function decideTarget(
 		? {
 				allowed: true,
 				target: { host, port },
-				// A port on the entry is what opens loopback and LAN, mirroring an
-				// address entry that names one of them directly with a port.
-				reach: matched.port === null ? "public" : "any",
+				// A port on the entry is what opens the LAN, mirroring an address
+				// entry that names a LAN address directly with a port.
+				reach: matched.port === null ? "public" : "lan",
 				reason: `matches allow entry "${matched.text}"`,
 			}
 		: {
@@ -264,15 +290,23 @@ function decideTarget(
 			};
 }
 
+/**
+ * `own` is every address this machine has on an interface. None of them is
+ * ever dialed by address or reached by a name resolving there: a service on
+ * this machine is opened by `localhost:PORT` alone, so a project cannot reach
+ * it by its LAN or public address instead, and log mode cannot either.
+ */
 export function decide(
 	policy: Policy,
 	hostname: string,
 	port: number,
+	own: ReadonlySet<string> = new Set(),
 ): Verdict {
 	const { allowed, target, reach, reason, final, probe } = decideTarget(
 		policy,
 		hostname,
 		port,
+		own,
 	);
 	if (probe) return { kind: "probe", reason };
 	if (allowed) return { kind: "allow", target, reach, reason };

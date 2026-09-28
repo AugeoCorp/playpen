@@ -1,11 +1,12 @@
 import dns from "node:dns";
 import { appendFile } from "node:fs/promises";
+import { networkInterfaces } from "node:os";
 import type {
 	PrepareRequestFunctionOpts,
 	PrepareRequestFunctionResult,
 } from "proxy-chain";
 import { RequestError, Server } from "proxy-chain";
-import { isIpv4, isPublicIpv4, isReachableIpv4 } from "./names.ts";
+import { isIpv4, isPublicIpv4, isPublicOrLanIpv4 } from "./names.ts";
 import type { Policy, Reach } from "./policy.ts";
 import { decide } from "./policy.ts";
 
@@ -71,12 +72,25 @@ const systemResolver: Resolve = (host) =>
 	dns.promises.lookup(host, { all: true });
 
 /**
+ * Every IPv4 address on one of this machine's interfaces, loopback included.
+ * Read per connection: interfaces come and go, and this is one syscall.
+ */
+function ownAddresses(): Set<string> {
+	const own = new Set<string>();
+	for (const addresses of Object.values(networkInterfaces()))
+		for (const a of addresses ?? [])
+			if (a.family === "IPv4") own.add(a.address);
+	return own;
+}
+
+/**
  * Resolves `host` and hands `net.connect` only the addresses the matched
  * entry's reach permits: a public address for a port-less entry, or
- * additionally this machine's loopback and a LAN/CGNAT address for one
- * matched with a port -- so a name cannot be the way to an address a request
- * for it would have been refused. IPv6 is left out entirely: the fence has no
- * answer for it yet, so a name with only AAAA records fails here.
+ * additionally a LAN/CGNAT address for one matched with a port -- so a name
+ * cannot be the way to an address a request for it would have been refused.
+ * An address of this machine is refused whatever the reach, since only a
+ * `localhost:PORT` entry opens one. IPv6 is left out entirely: the fence has
+ * no answer for it yet, so a name with only AAAA records fails here.
  *
  * Failing the lookup is what refuses the connection -- proxy-chain closes the
  * tunnel rather than answering it -- so the refusal is logged from in here.
@@ -86,10 +100,12 @@ function lookupReachable(
 	host: string,
 	port: number,
 	reach: Reach,
+	own: ReadonlySet<string>,
 	resolve: Resolve,
 	log: (line: LogEntry) => void,
 ): typeof dns.lookup {
-	const isAllowed = reach === "any" ? isReachableIpv4 : isPublicIpv4;
+	const inReach = reach === "lan" ? isPublicOrLanIpv4 : isPublicIpv4;
+	const isAllowed = (address: string) => inReach(address) && !own.has(address);
 	const refuse = (reason: string): Error => {
 		log({
 			time: new Date().toISOString(),
@@ -118,9 +134,10 @@ function lookupReachable(
 				const first = matching[0];
 				if (first === undefined) {
 					const found = addresses.map((a) => a.address).join(", ");
-					const rule =
-						reach === "any"
-							? "not a reachable address"
+					const rule = addresses.some((a) => own.has(a.address))
+						? "an address of this machine"
+						: reach === "lan"
+							? "not a public or LAN address"
 							: "not a public address";
 					callback(
 						refuse(
@@ -162,7 +179,8 @@ export async function startGatekeeper(
 			hostname,
 			port,
 		}: PrepareRequestFunctionOpts): PrepareRequestFunctionResult => {
-			const verdict = decide(policy(), hostname, port);
+			const own = ownAddresses();
+			const verdict = decide(policy(), hostname, port, own);
 			log({
 				time: new Date().toISOString(),
 				host: hostname,
@@ -184,6 +202,7 @@ export async function startGatekeeper(
 					target.host,
 					target.port,
 					reach,
+					own,
 					resolve,
 					log,
 				),
