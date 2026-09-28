@@ -157,12 +157,12 @@ test("approving one filename does not bless another", async (t) => {
 	assert.equal(r.loaded, false);
 });
 
-test("an approval recorded without its per-file hashes is asked for again", async (t) => {
+test("an approval recorded without the date it was approved is asked for again, even though its hash matches", async (t) => {
 	const { dir, sandbox } = await scenario(t, { "playpen.config.js": CONFIG });
 	await approve(dir, sandbox);
 	const record = join(trustDir(), `${sandbox}.json`);
-	const { hash, file, approved } = JSON.parse(await readFile(record, "utf8"));
-	await writeFile(record, JSON.stringify({ hash, file, approved }), "utf8");
+	const { hash, file, files } = JSON.parse(await readFile(record, "utf8"));
+	await writeFile(record, JSON.stringify({ hash, file, files }), "utf8");
 
 	const r = await loadTrustedConfig(dir, sandbox);
 	assert.equal(r.state, "unpinned");

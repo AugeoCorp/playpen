@@ -137,7 +137,10 @@ test("reports a non-array masked instead of throwing", async (t) => {
 		"playpen.config.js": 'export default { masked: "node_modules" };',
 	});
 	const r = await loadProjectConfig(dir);
-	assert.match(r.error ?? "", /must be an array/);
+	assert.equal(
+		r.error,
+		"playpen.config.js: `masked` must be an array of strings",
+	);
 });
 
 test("a config that throws is reported, not propagated", async (t) => {
@@ -427,7 +430,7 @@ test("reports a network key that is not an object", async (t) => {
 		"playpen.config.js": 'export default { network: ["example.com"] };',
 	});
 	const r = await loadProjectConfig(dir);
-	assert.match(r.error ?? "", /`network` must be an object/);
+	assert.equal(r.error, "playpen.config.js: `network` must be an object");
 });
 
 test("a port is a number for the same port on both sides, or { host, guest } to move it", () => {
@@ -468,8 +471,15 @@ test("a ports entry of the wrong shape fails the load rather than being dropped"
 	assert.match(portsError(1234), /`network\.ports` must be an array/);
 });
 
-test("the error names which ports entry is wrong", () => {
-	assert.match(portsError([1234, 0]), /`network\.ports\[1\]`/);
+test("the error names which ports entry is wrong", async (t) => {
+	const dir = await project(t, {
+		"playpen.config.js": "export default { network: { ports: [1234, 0] } };",
+	});
+	const r = await loadProjectConfig(dir);
+	assert.equal(
+		r.error,
+		"playpen.config.js: `network.ports[1]` must be a port number or { host, guest }, each from 1 to 65535",
+	);
 });
 
 test("a bad ports entry forwards nothing and allows nothing", () => {
@@ -478,10 +488,17 @@ test("a bad ports entry forwards nothing and allows nothing", () => {
 	assert.deepEqual(r.allow, []);
 });
 
-test("two entries for the same guest port fail the load, whatever host ports they name", () => {
-	const r = validateNetwork({ ports: [4321, { host: 5000, guest: 4321 }] });
-	assert.match(r.error ?? "", /names guest port 4321 twice/);
-	assert.deepEqual(r.ports, []);
+test("two entries for the same guest port fail the load, whatever host ports they name", async (t) => {
+	const dir = await project(t, {
+		"playpen.config.js":
+			"export default { network: { ports: [4321, { host: 5000, guest: 4321 }] } };",
+	});
+	const r = await loadProjectConfig(dir);
+	assert.equal(
+		r.error,
+		"playpen.config.js: `network.ports` names guest port 4321 twice",
+	);
+	assert.deepEqual(r.network.ports, []);
 });
 
 test("one host port may appear at two guest ports", () => {

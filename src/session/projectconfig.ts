@@ -9,6 +9,7 @@ import {
 	type PortForward,
 	parseEntry,
 	parseSecretHost,
+	type SecretGrant,
 } from "../network/policy.ts";
 
 export const CONFIG_FILE = "playpen.config.ts";
@@ -19,7 +20,7 @@ export const CONFIG_FILES = [CONFIG_FILE, "playpen.config.js"] as const;
 /** The file this replaced. Detected only so we can say it is no longer read. */
 export const LEGACY_IGNORE_FILE = ".playpenignore";
 
-const networkMode = z.enum(["enforce", "log"], {
+export const networkMode = z.enum(["enforce", "log"], {
 	error: 'must be "enforce" or "log"',
 });
 
@@ -112,7 +113,12 @@ export function defineConfig(config: PlaypenConfig): PlaypenConfig {
 	return config;
 }
 
-export type LoadedNetwork = Omit<z.output<typeof network>, "rejected">;
+export interface LoadedNetwork {
+	allow: string[];
+	mode: NetworkMode;
+	ports: PortForward[];
+	secrets: SecretGrant[];
+}
 
 export interface LoadedConfig {
 	masked: string[];
@@ -132,20 +138,6 @@ export interface ConfigResult extends LoadedConfig {
 	legacyIgnore: boolean;
 }
 
-function sift<T>(
-	entries: readonly unknown[],
-	entry: z.ZodType<T>,
-): { kept: T[]; dropped: string[] } {
-	const kept: T[] = [];
-	const dropped: string[] = [];
-	for (const raw of entries) {
-		const result = entry.safeParse(raw);
-		if (result.success) kept.push(result.data);
-		else dropped.push(String(raw));
-	}
-	return { kept, dropped };
-}
-
 /**
  * A list whose bad entries are dropped and kept verbatim for a warning; only a
  * value that is not a list at all fails the load.
@@ -154,7 +146,16 @@ function lenientList<T>(entry: z.ZodType<T>) {
 	return z
 		.array(z.unknown(), { error: "must be an array of strings" })
 		.default([])
-		.transform((entries) => sift(entries, entry));
+		.transform((entries) => {
+			const kept: T[] = [];
+			const dropped: string[] = [];
+			for (const raw of entries) {
+				const result = entry.safeParse(raw);
+				if (result.success) kept.push(result.data);
+				else dropped.push(String(raw));
+			}
+			return { kept, dropped };
+		});
 }
 
 /**
@@ -191,12 +192,10 @@ const setupEntry = z.string().trim().min(1);
  * network/policy.ts decides all of that, because it is also what matches a
  * request: an entry that passes here cannot mean something else there.
  */
-const allowEntry = z.string().transform((raw, ctx) => {
-	const entry = parseEntry(raw);
-	if (entry !== null) return entry.text;
-	ctx.addIssue({ code: "custom", message: "is not a name to allow" });
-	return z.NEVER;
-});
+const allowEntry = z
+	.string()
+	.transform((raw) => parseEntry(raw)?.text)
+	.pipe(z.string());
 
 const PORT_ENTRY =
 	"must be a port number or { host, guest }, each from 1 to 65535";
@@ -206,7 +205,7 @@ const portEntry = z.union(
 	[
 		z
 			.number()
-			.refine(isPort)
+			.refine(isPort, { error: PORT_ENTRY })
 			.transform((port) => ({ host: port, guest: port })),
 		z
 			.object({ host: z.number(), guest: z.number() })
@@ -300,7 +299,7 @@ const secrets = z
  * guest talking to whatever else holds that port, and a dropped secret would
  * send the placeholder to the real host.
  */
-const network = z
+const networkSchema = z
 	.object(
 		{
 			allow: lenientList(allowEntry),
@@ -310,21 +309,14 @@ const network = z
 		},
 		{ error: "must be an object" },
 	)
-	.prefault({})
-	.transform(({ allow, mode, ports, secrets }) => ({
-		allow: [...new Set(allow.kept)],
-		mode,
-		ports,
-		secrets,
-		rejected: allow.dropped,
-	}));
+	.prefault({});
 
-const config = z
+const configSchema = z
 	.object(
 		{
 			masked: lenientList(maskEntry),
 			setup: lenientList(setupEntry),
-			network,
+			network: networkSchema,
 		},
 		{
 			error: (issue) =>
@@ -334,36 +326,34 @@ const config = z
 		},
 	)
 	.transform(
-		({ masked, setup, network: { rejected, ...loaded } }): LoadedConfig => ({
+		({
+			masked,
+			setup,
+			network: { allow, mode, ports, secrets },
+		}): LoadedConfig => ({
 			masked: masked.kept,
 			setup: setup.kept,
-			network: loaded,
+			network: { allow: [...new Set(allow.kept)], mode, ports, secrets },
 			rejected: masked.dropped,
 			rejectedSetup: setup.dropped,
-			rejectedNetwork: rejected,
+			rejectedNetwork: allow.dropped,
 		}),
 	);
 
-export function validateMasks(entries: readonly unknown[]): {
-	masked: string[];
-	rejected: string[];
-} {
-	const { kept, dropped } = sift(entries, maskEntry);
-	return { masked: kept, rejected: dropped };
+export function validateMasks(entries: readonly unknown[]) {
+	const { masked, rejected } = configSchema.parse({ masked: entries });
+	return { masked, rejected };
 }
 
-export function validateSetup(entries: readonly unknown[]): {
-	setup: string[];
-	rejected: string[];
-} {
-	const { kept, dropped } = sift(entries, setupEntry);
-	return { setup: kept, rejected: dropped };
+export function validateSetup(entries: readonly unknown[]) {
+	const { setup, rejectedSetup } = configSchema.parse({ setup: entries });
+	return { setup, rejected: rejectedSetup };
 }
 
 export function validateNetwork(
 	raw: unknown,
 ): LoadedNetwork & { rejected: string[]; error?: string } {
-	const result = config.safeParse({ network: raw });
+	const result = configSchema.safeParse({ network: raw });
 	if (!result.success) {
 		return {
 			allow: [],
@@ -425,7 +415,9 @@ export async function importConfig(file: string): Promise<LoadedConfig> {
 		return { ...empty, error: explain(err) };
 	}
 
-	const result = config.safeParse((loaded as { default?: unknown }).default);
+	const result = configSchema.safeParse(
+		(loaded as { default?: unknown }).default,
+	);
 	if (result.success) return result.data;
 	return { ...empty, error: describeIssue(result.error, name) };
 }

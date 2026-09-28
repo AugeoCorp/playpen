@@ -16,6 +16,7 @@ import { readAppended, sizeOf, writeAtomic } from "../fs.ts";
 import { describeIssue } from "../issue.ts";
 import { assertSandboxName } from "../session/identity.ts";
 import { isLive, ownerSchema } from "../session/proc.ts";
+import { networkMode } from "../session/projectconfig.ts";
 import { capture } from "../sh.ts";
 import { sleep } from "../time.ts";
 import { isPort } from "./names.ts";
@@ -84,10 +85,6 @@ async function ensureFenceDir(sandbox: string): Promise<void> {
 
 const PORT_RANGE = "must be a port from 1 to 65535";
 
-/**
- * The guest numbers are printed into a root script in the guest, so a
- * hand-edited file must not get anything else in.
- */
 const port = z
 	.number({ error: PORT_RANGE })
 	.refine(isPort, { error: PORT_RANGE });
@@ -112,7 +109,7 @@ const helperRecord = ownerSchema.extend({
 	 * `bringUp` can tell a rewritten policy has been applied rather than
 	 * assume it. Empty until the first policy is loaded.
 	 */
-	policy: z.string(),
+	policy: z.string().default(""),
 	/**
 	 * Entries of the policy's `ports` with nothing listening at the guest's end,
 	 * so `playpen start` can name them. Absent from a helper older than
@@ -201,7 +198,11 @@ const policyFile = z.object(
 		allow: z.array(z.string({ error: "must be a string" }), {
 			error: "must be an array of strings",
 		}),
-		mode: z.enum(["enforce", "log"], { error: 'must be "enforce" or "log"' }),
+		mode: networkMode,
+		/**
+		 * Both numbers are printed into a root script in the guest, so a
+		 * hand-edited policy.json must not get anything else in.
+		 */
 		ports: z.array(portForward, {
 			error: "must be an array of { host, guest }",
 		}),
