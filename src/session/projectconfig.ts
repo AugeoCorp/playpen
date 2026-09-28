@@ -188,7 +188,7 @@ const portEntry = z.union(
 	[
 		z
 			.number()
-			.refine(isPort)
+			.refine(isPort, { error: PORT_ENTRY })
 			.transform((port) => ({ host: port, guest: port })),
 		z
 			.object({ host: z.number(), guest: z.number() })
