@@ -142,19 +142,62 @@ helper.log and in its record, and `playpen start` warns that the host port is
 not at that guest port -- without failing the start. A stdio MCP server is a
 process the guest runs, not a port, so nothing here applies to it.
 
+**Secrets.** A `network.secrets` entry names a variable in the environment of
+the `playpen start` that reads it, and the hosts it may be used on. The value
+goes one way only, and nothing injects it yet. `playpen start` reads it, refuses
+to start if any named variable is unset or empty (listing every one, before the
+VM is touched), and mints a placeholder for each --
+`playpen-secret-gh-token-3f9a0c1d5e7b2468`, fresh on every start. It then spawns
+the helper with a stdin pipe and writes one JSON document to it,
+`{ "secrets": [{ "env", "placeholder", "value", "hosts" }] }`, followed by
+end-of-stream; a project with no secrets sends `{ "secrets": [] }`, so the
+helper never waits on a stdin that is not coming. The helper reads it to the end
+before it serves anything and keeps the result in memory. It logs a count and
+names (`holding 2 secrets: GH_TOKEN, NPM_TOKEN`) and never a value. The value is
+not in argv, not in a file, and not in the helper's environment, which is the
+parent's with the granted variables removed. policy.json carries `env` and
+`hosts`; helper.json carries `env` and `placeholder`, so a later `start` can see
+what the running helper holds.
+
+What the guest sees is the placeholder: `playpen start` writes
+`/etc/profile.d/playpen-secrets.sh` in the guest, one `export GH_TOKEN='…'` line
+per secret, after the masks are applied, so a login shell has the variable set
+to it. With no secrets the file is removed, so one dropped from the config
+disappears from the guest.
+
+The helper takes its values at spawn and can take no more: once it is running
+its stdin is closed. So a change to `secrets` on a sandbox that is already up
+does what it can:
+
+- A secret dropped from the config leaves policy.json on the next `start`, and
+  its line leaves the guest's profile. The helper keeps the value in memory
+  until it exits.
+- A secret added to the config is named in policy.json but not held.
+  `playpen start` says
+  `secret GH_TOKEN added to the config takes effect after: playpen stop && playpen start`
+  and leaves it out of the guest's profile.
+- A secret already held keeps the value it was started with, and the placeholder
+  it was given: `start` writes the helper's placeholder into the profile again,
+  not a fresh one that the helper would not recognise. A changed value in your
+  environment waits for the same stop and start.
+
+A helper that died while the VM kept running is a fresh spawn, so a reattach
+after that reads the values again.
+
 ## Lifecycle
 
 `playpen start` writes the merged policy (the built-in list plus the project's
 `network.allow`, a `localhost:<host>` for each of its `network.ports`, every
 host named by `network.secrets`, and the ports and secrets themselves) to disk,
 then spawns the helper process detached so it outlives the command that started
-it. The helper starts the gatekeeper and the two relays, brings the VM up inside
-a fresh `bwrap` namespace, and waits for the guest to answer before returning --
-streaming its own log to the terminal in the meantime. If a VM is already
-running and fenced with a live helper, `start` leaves the VM alone but still
-writes the policy, and says so when the file changed. If the VM is up but its
-helper died, `start` reattaches: a new gatekeeper and relay, no new namespace,
-since qemu and the inside relays were never the helper's children to lose.
+it, handing it any secrets over stdin (see "Secrets" above). The helper starts
+the gatekeeper and the two relays, brings the VM up inside a fresh `bwrap`
+namespace, and waits for the guest to answer before returning -- streaming its
+own log to the terminal in the meantime. If a VM is already running and fenced
+with a live helper, `start` leaves the VM alone but still writes the policy, and
+says so when the file changed. If the VM is up but its helper died, `start`
+reattaches: a new gatekeeper and relay, no new namespace, since qemu and the
+inside relays were never the helper's children to lose.
 
 **policy.json is what the gatekeeper decides on**, not the copy the helper
 started with. The helper stats the file on the same few-second pass that watches
@@ -414,10 +457,10 @@ machine.
 
 ## Later
 
-- **Header injection for named hosts** -- putting a short-lived credential into
-  a request without it ever reaching the guest -- sitting behind the gatekeeper,
-  likely with mockttp doing the injection once a connection is already known to
-  be allowed.
+- **Header injection for named hosts** -- swapping the placeholder for the real
+  value, which the helper already holds, in the headers of a request the
+  gatekeeper has allowed, likely with mockttp doing the injection once a
+  connection is already known to be allowed.
 - **Publishing chosen guest ports to the host.** Lima still forwards every guest
   loopback port, but inside the fence, where nothing on the host can reach them;
   a dev server in the guest no longer shows up on the host's `localhost`.

@@ -5,7 +5,12 @@ import { ensureBase, findBase } from "../image/bake.ts";
 import { baseImage } from "../image/base.ts";
 import { maskScript, render, serialize } from "../image/render.ts";
 import * as lima from "../lima/client.ts";
-import { bringUp, fenceStatus, liveHelper } from "../network/fence.ts";
+import {
+	bringUp,
+	fenceStatus,
+	type HeldSecret,
+	liveHelper,
+} from "../network/fence.ts";
 import {
 	BUILTIN_ALLOW,
 	NO_EGRESS_ADVICE,
@@ -22,6 +27,7 @@ import {
 	LEGACY_IGNORE_FILE,
 	type LoadedNetwork,
 } from "./projectconfig.ts";
+import { profileCommand, readSecretValues } from "./secrets.ts";
 import * as store from "./store.ts";
 import { loadTrustedConfig } from "./trust.ts";
 
@@ -108,7 +114,9 @@ async function loadConfig(sb: Sandbox): Promise<{
 		);
 	}
 	for (const { env, hosts } of network.secrets) {
-		console.error(`naming ${env} for ${hosts.join(", ")} (not injected yet)`);
+		console.error(
+			`holding ${env} for ${hosts.join(", ")} (placeholder in the guest; not injected yet)`,
+		);
 	}
 	return { masked, setup, network };
 }
@@ -151,11 +159,14 @@ interface Template {
 	masks: string[];
 	setup: string[];
 	network: LoadedNetwork;
+	/** Read while the template is, so a missing variable refuses the start before anything is built or torn down. */
+	secrets: HeldSecret[];
 }
 
 /** Loads the project config, so it is read once per command and reused. */
 async function renderTemplate(sb: Sandbox): Promise<Template> {
 	const { masked, setup, network } = await loadConfig(sb);
+	const secrets = readSecretValues(network.secrets, process.env);
 	const rendered = renderFor(sb);
 	return {
 		yaml: `${serialize(rendered)}\n`,
@@ -163,6 +174,7 @@ async function renderTemplate(sb: Sandbox): Promise<Template> {
 		masks: masked,
 		setup,
 		network,
+		secrets,
 	};
 }
 
@@ -220,6 +232,31 @@ async function applyMasks(
 		return false;
 	}
 	return true;
+}
+
+/**
+ * Written from what the running helper holds rather than from what this start
+ * generated: a helper that was already up keeps its own placeholders, and one
+ * the guest carries that the helper does not know would never be swapped. A
+ * secret the helper lacks is left out; `bringUp` has already said so.
+ */
+async function applySecrets(
+	sb: Sandbox,
+	secrets: readonly HeldSecret[],
+): Promise<void> {
+	const held = (await liveHelper(sb.sandbox))?.secrets ?? [];
+	const { script, input } = profileCommand(
+		secrets.flatMap(({ env }) => held.filter((h) => h.env === env)),
+	);
+	const result = await lima.runScript(sb.instance, script, {
+		root: true,
+		...(input === undefined ? {} : { input }),
+	});
+	if (result.code !== 0) {
+		console.error(
+			`warning: could not set the secret placeholders in the guest (${result.stderr.trim()})`,
+		);
+	}
 }
 
 /**
@@ -290,27 +327,36 @@ export interface Running {
  */
 async function startFenced(sb: Sandbox, template: Template): Promise<void> {
 	const { allow, mode, ports, secrets } = template.network;
-	await fenced(sb, {
-		// A port or a secret's host is a grant, so writing it once is enough.
-		allow: [
-			...BUILTIN_ALLOW,
-			...allow,
-			...ports.map(({ host }) => `localhost:${host}`),
-			...secrets.flatMap(({ hosts }) => hosts),
-		],
-		mode,
-		ports,
-		secrets,
-	});
+	await fenced(
+		sb,
+		{
+			// A port or a secret's host is a grant, so writing it once is enough.
+			allow: [
+				...BUILTIN_ALLOW,
+				...allow,
+				...ports.map(({ host }) => `localhost:${host}`),
+				...secrets.flatMap(({ hosts }) => hosts),
+			],
+			mode,
+			ports,
+			secrets,
+		},
+		template.secrets,
+	);
 	await warnWithoutEgress(sb);
 	await warnUnboundPorts(sb);
 }
 
-function fenced(sb: Sandbox, policy: Policy): Promise<void> {
+function fenced(
+	sb: Sandbox,
+	policy: Policy,
+	secrets: readonly HeldSecret[] = [],
+): Promise<void> {
 	return bringUp({
 		sandbox: sb.sandbox,
 		instance: sb.instance,
 		policy,
+		secrets,
 		log: (text) => process.stderr.write(text),
 	});
 }
@@ -375,6 +421,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 			// started takes effect without a restart.
 			await startFenced(sb, template);
 			await applyMasks(sb, template.masks);
+			await applySecrets(sb, template.secrets);
 			await store.touch(sb.sandbox);
 			return { created: false, setupOk: true, setup: template.setup };
 		}
@@ -412,6 +459,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 		throw err;
 	}
 	const masked = await applyMasks(sb, current.masks);
+	await applySecrets(sb, current.secrets);
 	if (await history.restore(sb.instance, sb.sandbox)) {
 		console.error(`restored Claude history from the previous sandbox`);
 	}
