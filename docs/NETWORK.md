@@ -100,18 +100,18 @@ tun2proxy      --------> qemu (slirp): 192.168.5.2 is the
 **`limactl shell` in.** Lima normally multiplexes shells over its own ssh master
 connection, `ssh.sock`, which is a plain file -- a unix socket crosses a network
 namespace freely, since it is looked up by filesystem path, not by address, and
-`bwrap` here isolates the network and hides nothing but the masked paths (see
-"Masks are the one thing" under Lifecycle), not the rest of the filesystem. So
-an ordinary `limactl shell` keeps working for as long as that master connection
-lives. When it does not -- the master died, or a shell is opened fresh -- a new
-connection would have to reach the guest's forwarded ssh port over TCP, and that
-port is bound inside the fence's own loopback, unreachable from outside. The
-fallback is `control.sock`: the fence's inside half runs a `socat` that listens
-on that path and forwards to the guest's ssh port, and every shell playpen opens
-sets `$SSH` (`sshThroughControl` in `src/lima/client.ts`) to an `ssh` whose
-`ProxyCommand` is `socat - UNIX-CONNECT:control.sock`. Lima runs `$SSH` in place
-of `ssh` when it is set, so this reaches the guest without anything outside ever
-joining the namespace.
+`bwrap` here isolates the network and hides only the host's resolver sockets and
+the masked paths (below), not the rest of the filesystem. So an ordinary
+`limactl shell` keeps working for as long as that master connection lives. When
+it does not -- the master died, or a shell is opened fresh -- a new connection
+would have to reach the guest's forwarded ssh port over TCP, and that port is
+bound inside the fence's own loopback, unreachable from outside. The fallback is
+`control.sock`: the fence's inside half runs a `socat` that listens on that path
+and forwards to the guest's ssh port, and every shell playpen opens sets `$SSH`
+(`sshThroughControl` in `src/lima/client.ts`) to an `ssh` whose `ProxyCommand`
+is `socat - UNIX-CONNECT:control.sock`. Lima runs `$SSH` in place of `ssh` when
+it is set, so this reaches the guest without anything outside ever joining the
+namespace.
 
 **Host ports at the guest's own `localhost`.** Some clients in the guest cannot
 be pointed at `host.playpen.internal` -- an MCP server configured as
@@ -167,22 +167,48 @@ file rather than a half-written one -- it is written by rename -- so the helper
 swaps in an empty enforcing policy and says so: the sandbox loses its network
 until the next `playpen start` rather than keeping a list nobody can read.
 
-**Masks are the one thing `bwrap` does to the filesystem.** qemu is the 9p
-server for the project share, and `bwrap` gives it its own mount table, so the
-helper lays a read-only bind of an empty file or directory (both kept in the
-fence directory) over each `masked` entry that is on the host, after
-`--dev-bind / /`. qemu then serves an empty placeholder at that path and the
-real bytes never reach the share. Read-only, because the one source is shared by
-every entry. The list is `mounts.json`, written by `bringUp` just before it
-spawns a helper and read once, when the helper starts: a mount table under a
-running qemu cannot be rewritten, so unlike policy.json it is never reloaded. An
-entry missing on the host is skipped, since the bind would create it on the
-host's disk, and so is a symlink or a path under one; the helper logs each. The
-guest binds its own VM-disk copy on top after it boots. The entries the helper
-bound are in helper.json as `masked`; `bringUp` on a running sandbox tells the
-user to `playpen stop && playpen start` for any entry that is on the host and
-not in that list. A helper that reattaches to a qemu it did not start records
-none, since it cannot know.
+**Masks are laid over qemu's view of the project.** qemu is the 9p server for
+the project share, and `bwrap` gives it its own mount table, so the helper lays
+a read-only bind of an empty file or directory (both kept in the fence
+directory) over each `masked` entry that is on the host, after `--dev-bind / /`.
+qemu then serves an empty placeholder at that path and the host's bytes stay off
+the share. Read-only, because the one source is shared by every entry. The list
+is `mounts.json`, written by `bringUp` just before it spawns a helper and read
+once, when the helper starts: a mount table under a running qemu cannot be
+rewritten, so unlike policy.json it is never reloaded. The guest binds its own
+VM-disk copy on top after it boots.
+
+The host's bytes stay out only while the host path is not replaced under the
+running VM. A write in place leaves the placeholder alone. Replacing the path
+(an editor that saves by rename, `sed -i`, `git checkout`, `rm` and a fresh
+copy) makes the kernel detach the bind in qemu's namespace, where it is a mount
+point, instead of refusing, and qemu then serves the new contents. The helper
+looks on every poll: `boundMasks` stats
+`/proc/<qemu pid>/root/<project>/<entry>` and compares device and inode with the
+placeholder's. An entry that no longer matches is logged, and the helper stops
+the VM with `limactl stop -f`, killing qemu itself if that fails. That is fail
+closed, not never: the guest has up to one poll (a few seconds) in which it can
+read the new contents.
+
+Three more facts about the entries:
+
+- What the helper bound is what `boundMasks` finds in qemu's namespace, not what
+  it asked bwrap for. It runs right after the VM is up, so a reattach to a qemu
+  that helper did not start reports the entries that qemu has, and helper.json's
+  `masked` is as of the last poll. `bringUp` tells the user to
+  `playpen stop && playpen start` for any entry that is on the host and not in
+  that list.
+- A symlink, or a path under one, refuses the start, and so does a nested entry
+  that is missing while its top-level directory is there. A guest can arrange
+  both: only the bound path itself is protected from a rename, so it can rename
+  the parent of a nested entry and leave a symlink or nothing behind, and the
+  host's file would then sit unmasked under the new name.
+- An entry under another masked entry is not bound, since that placeholder
+  already hides it, and bwrap cannot create a bind target inside the read-only
+  placeholder directory. A top-level entry missing on the host is skipped, since
+  the bind would create it on the host's disk; the guest's mask script then
+  creates it there as an empty directory, so a masked file should exist on the
+  host first. The helper logs each skip, and `start` shows the log.
 
 **helper.json carries a `policy` field**, alongside `ready` and `egress`: the
 stamp (`mtime:size` of policy.json) of the policy the gatekeeper is deciding

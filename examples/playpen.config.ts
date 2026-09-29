@@ -1,6 +1,7 @@
 // Every key, with one line each. The rules are in README.md under Config.
 export default {
 	// Guest-local copies of dirs or files: slow or platform-specific paths, and a .env kept out of the VM.
+	// Create a masked file on the host first (`touch .env`); a missing entry is created as a directory.
 	masked: ["node_modules", ".venv", ".env"],
 
 	// Run in the guest on create and after a rebuild. `playpen setup` re-runs them.

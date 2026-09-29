@@ -77,7 +77,7 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
 
 | Key       | Type                                                                                                     | Effect                                                                                                        |
 | --------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `masked`  | `string[]`                                                                                               | Project-relative dirs or files: the guest gets its own copy, and the host's contents never reach it           |
+| `masked`  | `string[]`                                                                                               | Project-relative dirs or files: the guest gets its own copy, and the host's contents stay out of it           |
 | `setup`   | `string[]`                                                                                               | Shell commands run in the guest, after masks, in order                                                        |
 | `network` | `{ allow?: string[]; mode?: "enforce" \| "log"; ports?: (number \| { host: number; guest: number })[] }` | Hosts this project may reach, on top of the ones playpen ships, and host ports it sees at its own `localhost` |
 
@@ -85,13 +85,22 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
   the 9p share is slow, and the two often need different contents there — native
   modules and toolchain builds are per-platform, and the environments drift. The
   guest's copy starts empty, is writable, and survives stop and start.
-- The host's contents never reach the guest, so `masked: [".env"]` keeps a
-  secret in the project out of the VM, even from a guest that unmounts its own
-  mask. The fence's helper binds an empty read-only placeholder over the path
-  where qemu serves the share. That is fixed when the VM starts: an entry added
-  to a running sandbox is masked in the guest at once, and keeps the host's
-  contents out after `playpen stop && playpen start`, which `start` says. A path
-  missing on the host, or a symlink, is masked in the guest only.
+- The host's contents stay out of the VM while the host path is not replaced
+  under a running VM, so `masked: [".env"]` keeps a secret in the project out of
+  the VM, even from a guest that unmounts its own mask. The fence's helper binds
+  an empty read-only placeholder over the path where qemu serves the share. That
+  is fixed when the VM starts: an entry added to a running sandbox is masked in
+  the guest at once, and keeps the host's contents out after
+  `playpen stop && playpen start`, which `start` says.
+- Editing a masked path on the host in place is safe. Replacing it (an editor
+  that saves by rename, `sed -i`, `git checkout`,
+  `rm -rf node_modules && npm ci`) detaches the placeholder, so the helper
+  checks for that every few seconds and stops the sandbox when it happens; the
+  guest can see the new contents until it does. Start it again afterwards.
+- A masked path that is missing on the host is created by the guest, as an empty
+  directory on the host. For a file such as `.env`, create it on the host first
+  (`touch .env`). `start` refuses a masked path that is a symlink or under one,
+  and a nested one that is missing while its top-level directory is there.
 - `setup` runs on create and after a rebuild, never on start. Nothing is
   inferred from a lockfile. `playpen setup` re-runs it.
 - `network.allow` is a list of names, not addresses: an entry is a hostname,

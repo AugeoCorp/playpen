@@ -57,12 +57,18 @@ export interface PlaypenConfig {
 	 * the host's contents, such as a `.env`, stay out of the guest.
 	 *
 	 * The guest gets its own writable, persistent copy, empty at first. The
-	 * host's contents never reach the share, even to a guest that unmounts its
-	 * own mask: the fence's helper binds an empty read-only placeholder over the
-	 * path where qemu serves it. That takes effect when the VM starts, so an
-	 * entry added to a running sandbox keeps the host's contents out only after
-	 * `playpen stop && playpen start`. A path missing on the host, or a
-	 * symlink, is masked in the guest only.
+	 * host's contents stay out of the share, even from a guest that unmounts its
+	 * own mask, while the host path is not replaced under a running VM: the
+	 * fence's helper binds an empty read-only placeholder over the path where
+	 * qemu serves it. Editing it in place is safe; replacing it (rename-over
+	 * save, `sed -i`, `git checkout`) is detected by the helper, which stops the
+	 * sandbox. The bind is made when the VM starts, so an entry added to a
+	 * running sandbox keeps the host's contents out only after
+	 * `playpen stop && playpen start`.
+	 *
+	 * A path missing on the host is created by the guest as an empty directory:
+	 * create a masked file on the host first (`touch .env`). A symlink, or a
+	 * path under one, refuses the start.
 	 *
 	 * One concrete relative path per entry; a bind mount needs a single target,
 	 * so globs are unsupported.
