@@ -26,6 +26,8 @@ const calls: string[] = [];
 let maskExit = 0;
 /** The exit code of the per-boot history step in the guest. */
 let settleExit = 0;
+/** Whether an earlier move still holds the guest's history lock. */
+let lockHeld = false;
 /** What each step of it reports: moving the guest's own history, and the import. */
 let takeoverExit = 0;
 let importExit = 0;
@@ -131,6 +133,8 @@ mock.module("../lima/client.ts", {
 		) {
 			const step = guestStep(script);
 			calls.push(step);
+			if (step === "check the history lock")
+				return { code: lockHeld ? 75 : 0, stdout: "", stderr: "" };
 			if (step === "settle history") {
 				settleInput = opts.input ?? null;
 				settleArgs = opts.args ?? [];
@@ -165,6 +169,7 @@ mock.module("../lima/client.ts", {
 function guestStep(script: string): string {
 	if (script.includes('mountpoint -q "$claude/projects"'))
 		return "settle history";
+	if (script.includes("flock -n")) return "check the history lock";
 	if (script.includes("mount --bind")) return "apply masks";
 	return "other";
 }
@@ -201,6 +206,7 @@ async function sandboxFor(
 		process.env.LIMA_HOME = before.lima;
 		maskExit = 0;
 		settleExit = 0;
+		lockHeld = false;
 		takeoverExit = 0;
 		importExit = 0;
 		settleInput = null;
@@ -305,9 +311,27 @@ test("a stopped sandbox made before history was mounted is asked, once it boots,
 	assert.deepEqual(calls, [
 		"start behind the gatekeeper",
 		"apply masks",
+		"check the history lock",
 		"settle history",
 	]);
 	assert.equal(settleArgs[0], "takeover");
+});
+
+test("a start that finds an earlier move still running in the guest says it is waiting for it", async (t) => {
+	const { run } = await sandboxFor(t, BOTH);
+	lockHeld = true;
+	const said = t.mock.method(console, "error", () => {});
+	await run();
+	const lines = said.mock.calls.map((c) => String(c.arguments[0])).join("\n");
+	assert.match(lines, /waiting for an earlier move of Claude history/);
+});
+
+test("a start that finds the guest's lock free says nothing about waiting", async (t) => {
+	const { run } = await sandboxFor(t, BOTH);
+	const said = t.mock.method(console, "error", () => {});
+	await run();
+	const lines = said.mock.calls.map((c) => String(c.arguments[0])).join("\n");
+	assert.doesNotMatch(lines, /waiting for an earlier move/);
 });
 
 test("once the history is on the host, a boot no longer asks the guest to move it", async (t) => {
@@ -594,6 +618,7 @@ test("masks are applied before setup runs", async (t) => {
 	assert.deepEqual(calls, [
 		"start behind the gatekeeper",
 		"apply masks",
+		"check the history lock",
 		"settle history",
 		"run exec </dev/null; npm ci",
 	]);
@@ -607,6 +632,7 @@ test("setup is skipped when the masks it would install under failed", async (t) 
 	assert.deepEqual(calls, [
 		"start behind the gatekeeper",
 		"apply masks",
+		"check the history lock",
 		"settle history",
 	]);
 });

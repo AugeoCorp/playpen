@@ -110,13 +110,15 @@ export function onHost(instance: string): Promise<boolean> {
  * Never call it as a condition (`if`, `||`): bash ignores `set -e` for the
  * whole of a function run that way, even inside it.
  */
+const LOCK = "$HOME/.playpen-history.lock";
+
 export const MOVE_HISTORY = [
 	"move_history() (",
 	"	set -euo pipefail",
 	"	shopt -s nullglob dotglob",
 	'	src="$1"',
 	'	dst="$2"',
-	'	exec 9>"$HOME/.playpen-history.lock"',
+	`	exec 9>"${LOCK}"`,
 	"	if ! flock -w 600 9; then",
 	'		echo "an earlier move of Claude history is still running in the guest" >&2',
 	"		exit 1",
@@ -266,6 +268,7 @@ export async function settle(
 	const archive = await readFile(archivePath(sandbox)).catch(() => null);
 	const takeover = !(await onHost(instance));
 	if (!booted && !takeover && archive === null) return;
+	if (takeover || archive !== null) await sayIfWaiting(instance);
 
 	let result: Awaited<ReturnType<typeof lima.runScript>>;
 	try {
@@ -310,6 +313,25 @@ export async function settle(
 			`warning: imported Claude history, but could not rename ${archivePath(sandbox)} (${errorText(err)})`,
 		);
 	}
+}
+
+/** Exit code of `LOCK_PROBE` while another move holds the guest's lock. */
+const LOCK_HELD = 75;
+
+const LOCK_PROBE = [`exec 9>"${LOCK}"`, `flock -n 9 || exit ${LOCK_HELD}`].join(
+	"\n",
+);
+
+/**
+ * The guest's own output arrives only when its script ends, so a wait of up
+ * to ten minutes for an earlier move would pass in silence.
+ */
+async function sayIfWaiting(instance: string): Promise<void> {
+	const probe = await lima.runScript(instance, LOCK_PROBE).catch(() => null);
+	if (probe?.code === LOCK_HELD)
+		console.error(
+			"waiting for an earlier move of Claude history still running in the guest (up to 10 minutes)",
+		);
 }
 
 function errorText(err: unknown): string {
