@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import {
+	type FileHandle,
 	mkdir,
 	mkdtemp,
+	open,
+	readdir,
 	readFile,
 	rm,
 	stat,
@@ -22,6 +25,8 @@ const calls: string[] = [];
  * varies per test has to live here rather than in the fake. */
 let maskExit = 0;
 let historyMounted = true;
+/** The clone's lima.yaml as a reader opened it before playpen filled it in. */
+let heldLimaYaml: FileHandle | null = null;
 let limaHome = "";
 /** Whether the fake has been cloned into existence yet, so `stop` has something to stop. */
 let exists = false;
@@ -105,11 +110,9 @@ mock.module("../lima/client.ts", {
 		async clone(_source: string, target: string) {
 			exists = true;
 			await mkdir(join(limaHome, target), { recursive: true });
-			await writeFile(
-				join(limaHome, target, "lima.yaml"),
-				'{"mounts": []}\n',
-				"utf8",
-			);
+			const path = join(limaHome, target, "lima.yaml");
+			await writeFile(path, '{"mounts": []}\n', "utf8");
+			heldLimaYaml = await open(path, "r");
 		},
 		async runScript(_instance: string, script: string) {
 			const step = guestStep(script);
@@ -164,11 +167,13 @@ async function sandboxFor(
 	status = "Running";
 	asked.length = 0;
 	answer = false;
-	t.after(() => {
+	t.after(async () => {
 		process.env.XDG_DATA_HOME = before.xdg;
 		process.env.LIMA_HOME = before.lima;
 		maskExit = 0;
 		historyMounted = true;
+		await heldLimaYaml?.close();
+		heldLimaYaml = null;
 	});
 
 	const { ensureRunning, identify } = await import("./lifecycle.ts");
@@ -226,6 +231,22 @@ test("a new sandbox mounts its own host directory, writable, over the guest's ~/
 			"9p": { securityModel: "mapped-xattr" },
 		},
 	]);
+});
+
+test("a clone's lima.yaml is replaced whole, so a reader holding it never sees it half-written", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await run();
+	assert.equal(
+		await heldLimaYaml?.readFile("utf8"),
+		'{"mounts": []}\n',
+		"the file was rewritten where it stood",
+	);
+	assert.deepEqual(
+		(await readdir(join(limaHome, sb.instance))).filter((f) =>
+			f.endsWith(".tmp"),
+		),
+		[],
+	);
 });
 
 test("a new sandbox whose guest lacks the history mount still starts, with a warning naming it", async (t) => {

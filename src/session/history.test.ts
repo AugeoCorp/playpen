@@ -124,6 +124,18 @@ test("a new history directory is readable by its owner only, under a umask that 
 	assert.equal(await modeOf(await makeHostDir("playpen-90957d")), "700");
 });
 
+test("an existing history directory keeps what is already in it", async (t) => {
+	await dataHome(t);
+	const dir = hostDir("playpen-90957d");
+	await mkdir(join(dir, "-home-me-project"), { recursive: true });
+	await writeFile(join(dir, "-home-me-project", "one.jsonl"), "first session");
+	await makeHostDir("playpen-90957d");
+	assert.equal(
+		await readFile(join(dir, "-home-me-project", "one.jsonl"), "utf8"),
+		"first session",
+	);
+});
+
 test("an existing history directory left open to others is closed to them again", async (t) => {
 	await dataHome(t);
 	const dir = hostDir("playpen-90957d");
