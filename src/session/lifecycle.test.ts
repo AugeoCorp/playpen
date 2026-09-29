@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { mock, type TestContext, test } from "node:test";
 import { baseImage } from "../image/base.ts";
 import { imageHash } from "../image/render.ts";
@@ -33,6 +33,8 @@ let helperEgress = true;
 let helperUnbound: PortForward[] = [];
 /** Whether the fake fence has been brought up already in this test. */
 let fenced = false;
+/** What restoring Claude history into the guest throws; a test sets it. */
+let restoreThrows: Error | null = null;
 
 mock.module("../network/fence.ts", {
 	// @ts-expect-error @types/node still types this as `namedExports`, which the
@@ -88,6 +90,7 @@ mock.module("../lima/client.ts", {
 			);
 		},
 		async runScript(_instance: string, script: string) {
+			if (restoreThrows && script.includes("tar -xf -")) throw restoreThrows;
 			calls.push(script.includes("mount --bind") ? "apply masks" : "other");
 			return { code: maskExit, stdout: "", stderr: "mask script failed" };
 		},
@@ -127,6 +130,7 @@ async function sandboxFor(
 		process.env.XDG_DATA_HOME = before.xdg;
 		process.env.LIMA_HOME = before.lima;
 		maskExit = 0;
+		restoreThrows = null;
 	});
 
 	const { ensureRunning, identify } = await import("./lifecycle.ts");
@@ -217,6 +221,33 @@ test("destroying a stopped sandbox boots it inside the fence with nothing allowe
 		secrets: [],
 	});
 	assert.equal(calls[0], "start behind the gatekeeper");
+});
+
+test("a new sandbox still starts when the history saved from the old one cannot be put back, and the archive is kept with a way to restore it", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	const { archivePath } = await import("./history.ts");
+	const archive = archivePath(sb.sandbox);
+	await mkdir(dirname(archive), { recursive: true });
+	await writeFile(archive, "saved transcripts");
+	restoreThrows = new Error("write EPIPE");
+	const warnings = t.mock.method(console, "error", () => {});
+
+	const result = (await run()) as { created: boolean };
+
+	assert.equal(result.created, true);
+	assert.ok(
+		calls.includes("run exec </dev/null; npm ci"),
+		`expected setup to run after the failed restore, got ${calls.join(", ")}`,
+	);
+	assert.equal(await readFile(archive, "utf8"), "saved transcripts");
+	const said = warnings.mock.calls
+		.map((c) => String(c.arguments[0]))
+		.join("\n");
+	assert.match(said, /could not restore Claude history \(write EPIPE\)/);
+	assert.ok(
+		said.includes(`tar -xf -' < '${archive}'`),
+		`expected a restore command reading ${archive}, got:\n${said}`,
+	);
 });
 
 test("a sandbox running with no gatekeeper gets one back", async (t) => {

@@ -53,25 +53,41 @@ export async function archive(
 	}
 }
 
-/** Kept after restoring, so it stays the last known history if this one is lost. */
+/**
+ * Kept after restoring, so it stays the last known history if this one is lost.
+ *
+ * Never throws: by now the old sandbox is gone and the new one is built, so a
+ * failure here must not fail the start. The warning says how to finish by hand.
+ */
 export async function restore(
 	instance: string,
 	sandbox: string,
 ): Promise<boolean> {
+	const path = archivePath(sandbox);
 	let tar: Buffer;
 	try {
-		tar = await readFile(archivePath(sandbox));
+		tar = await readFile(path);
 	} catch {
 		return false;
 	}
 
 	const script = ["set -eu", "umask 077", 'cd "$HOME"', "tar -xf -"].join("\n");
-	const result = await lima.runScript(instance, script, { input: tar });
-	if (result.code !== 0) {
-		console.error(
-			`warning: could not restore Claude history (${result.stderr.trim()})`,
-		);
-		return false;
+	let failure: string;
+	try {
+		const result = await lima.runScript(instance, script, { input: tar });
+		if (result.code === 0) return true;
+		failure = result.stderr.trim() || `exit ${result.code}`;
+	} catch (err) {
+		failure = err instanceof Error ? err.message : String(err);
 	}
-	return true;
+	console.error(`warning: could not restore Claude history (${failure})`);
+	console.error(`  it is kept in ${path}; restore it with:`);
+	console.error(
+		`  playpen run -- sh -c 'cd && umask 077 && tar -xf -' < ${shQuote(path)}`,
+	);
+	return false;
+}
+
+function shQuote(value: string): string {
+	return `'${value.replaceAll("'", `'\\''`)}'`;
 }
