@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+	mkdir,
+	mkdtemp,
+	readFile,
+	rm,
+	stat,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { mock, type TestContext, test } from "node:test";
 import { baseImage } from "../image/base.ts";
 import { imageHash } from "../image/render.ts";
@@ -427,6 +434,22 @@ test("stopping a sandbox that got its history back replaces the host's copy, and
 
 	assert.equal(await readFile(hostCopy(sb), "utf8"), "old.jsonl today.jsonl");
 	assert.equal(await readFile(hostCopy(sb, ".prev.tar"), "utf8"), "old.jsonl");
+});
+
+test("the host's copy of history, and the directory it is in, are readable only by their owner", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await hostHolds(sb, "old.jsonl");
+	await run();
+	guestFiles.add("today.jsonl");
+	const { stop } = await import("./lifecycle.ts");
+
+	await stop(sb);
+
+	assert.equal(((await stat(hostCopy(sb))).mode & 0o777).toString(8), "600");
+	assert.equal(
+		((await stat(dirname(hostCopy(sb)))).mode & 0o777).toString(8),
+		"700",
+	);
 });
 
 test("history is saved at the first stop of a sandbox the host has none for, and the next start does not put it back", async (t) => {

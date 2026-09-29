@@ -1,4 +1,12 @@
-import { link, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import {
+	chmod,
+	link,
+	mkdir,
+	readFile,
+	rename,
+	rm,
+	writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { historyDir, limaHome } from "../config.ts";
 import { exists } from "../fs.ts";
@@ -74,11 +82,20 @@ export function wasSaved(instance: string): Promise<boolean> {
 	return exists(savedMarker(instance));
 }
 
+/**
+ * Transcripts are private. `mkdir`'s own `mode` applies only on creation, so a
+ * directory from before this needs the `chmod` too.
+ */
+async function ensureHistoryDir(): Promise<void> {
+	await mkdir(historyDir(), { recursive: true, mode: 0o700 });
+	await chmod(historyDir(), 0o700);
+}
+
 /** Written beside `path` and renamed over it, so a failure part way leaves the old file whole. */
 async function writeBeside(path: string, tar: Buffer): Promise<void> {
 	const temp = `${path}.${process.pid}.tmp`;
-	await mkdir(historyDir(), { recursive: true });
-	await writeFile(temp, tar);
+	await ensureHistoryDir();
+	await writeFile(temp, tar, { mode: 0o600 });
 	await rename(temp, path);
 }
 
