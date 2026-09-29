@@ -77,8 +77,9 @@ function swapInBasic(
 /**
  * Replaces each secret's placeholder with its value in the `Authorization`
  * headers of `rawHeaders` (the flat `[name, value, name, value, …]` list Node
- * reads a request into): verbatim anywhere in the value, and inside decoded
- * `Basic` credentials. Every other header, and every name, goes out as sent.
+ * reads a request into): inside decoded `Basic` credentials, or failing that
+ * verbatim anywhere in the value, each tried on the header as sent. Every other
+ * header, and every name, goes out as sent.
  *
  * `secrets` is only what may be sent to this request's host; a placeholder for
  * any other secret is left as it is. Each header a value went into is listed
@@ -100,7 +101,8 @@ export function rewriteHeaders(
 			continue;
 		}
 		const used = new Set<string>();
-		headers.push(header, swapInBasic(swap(sent, used), swap, used));
+		const basic = swapInBasic(sent, swap, used);
+		headers.push(header, basic !== sent ? basic : swap(sent, used));
 		for (const env of used) injected.push({ header, env });
 	}
 	return { headers, injected };
