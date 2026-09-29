@@ -17,6 +17,7 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
 | `image build`, base image + clone                                  | done, verified on host |
 | `completion bash\|zsh`, generated from the citty command tree      | done; zsh unverified   |
 | network fence (mechanism in `docs/NETWORK.md`)                     | done, see below        |
+| `network.secrets` values held by the helper, placeholders in guest | unit-tested; no VM run |
 
 ## Known problems
 
@@ -70,6 +71,14 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
   `cloud-init-output.log`, so a broken bake reports a timeout rather than its
   cause. A probe that also fails when a provisioning marker is missing would fix
   that.
+
+- `network.secrets` values and placeholders (`docs/NETWORK.md`, "Secrets") are
+  unit-tested, and the profile script is run under `bash` and sourced by `sh`
+  against a temp path, but none of it has run on a VM. Not run: the profile
+  write through `limactl shell` with `sudo`, a guest login shell sourcing
+  `/etc/profile.d/playpen-secrets.sh`, and the real detached spawn round trip
+  (`playpen start` piping the document to a helper that outlives it, with the
+  granted variables gone from its environment). Nothing injects yet.
 
 ## Next
 
