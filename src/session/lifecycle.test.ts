@@ -18,6 +18,10 @@ let maskExit = 0;
 let limaHome = "";
 /** Whether the fake has been cloned into existence yet, so `stop` has something to stop. */
 let exists = false;
+/** The instances the Lima fake was asked to delete. */
+const removed: string[] = [];
+/** What the user answers when `start` offers a rebuild. */
+let rebuildAnswer = false;
 /** What the fake reports for an instance that exists; a test stops it. */
 let status: "Running" | "Stopped" = "Running";
 /** The policy the sandbox was brought up behind, as the fence was handed it. */
@@ -83,6 +87,12 @@ mock.module("../network/fence.ts", {
 	},
 });
 
+mock.module("../prompt.ts", {
+	// @ts-expect-error @types/node still types this as `namedExports`, which the
+	// runtime has deprecated. Delete this line once the types catch up.
+	exports: { confirm: async () => rebuildAnswer },
+});
+
 mock.module("../lima/client.ts", {
 	// @ts-expect-error @types/node still types this as `namedExports`, which the
 	// runtime has deprecated. Delete this line once the types catch up.
@@ -97,7 +107,9 @@ mock.module("../lima/client.ts", {
 		stop: async () => {
 			calls.push("stop");
 		},
-		remove: async () => {},
+		async remove(name: string) {
+			removed.push(name);
+		},
 		async clone(_source: string, target: string) {
 			exists = true;
 			await mkdir(join(limaHome, target), { recursive: true });
@@ -136,6 +148,8 @@ async function sandboxFor(
 	limaHome = join(root, "lima");
 	process.env.LIMA_HOME = limaHome;
 	calls.length = 0;
+	removed.length = 0;
+	rebuildAnswer = false;
 	exists = false;
 	fencedWith = null;
 	policyFile = null;
@@ -505,6 +519,23 @@ test("a running sandbox whose helper is gone needs the variables again, and is l
 	assert.deepEqual(calls, []);
 });
 
+test("a rebuild the user confirmed is refused when a variable is unset, and the old sandbox is kept", async (t) => {
+	setEnv(t, { PLAYPEN_TEST_TOKEN: TOKEN });
+	const { sb, run } = await sandboxFor(t, ONE_SECRET);
+	await run();
+	calls.length = 0;
+	const { templatesDir } = await import("../config.ts");
+	await writeFile(join(templatesDir(), `${sb.sandbox}.yaml`), "older\n");
+	rebuildAnswer = true;
+	delete process.env.PLAYPEN_TEST_TOKEN;
+	const { missingMessage } = await import("./secrets.ts");
+	await assert.rejects(run(), {
+		message: missingMessage(["PLAYPEN_TEST_TOKEN"]),
+	});
+	assert.deepEqual(removed, [], "the old sandbox was deleted");
+	assert.deepEqual(calls, []);
+});
+
 test("a running sandbox with a live helper does not need the variable again", async (t) => {
 	setEnv(t, { PLAYPEN_TEST_TOKEN: TOKEN });
 	const { run } = await sandboxFor(t, ONE_SECRET);
@@ -515,7 +546,7 @@ test("a running sandbox with a live helper does not need the variable again", as
 	assert.deepEqual(calls, ["leave the fence alone"]);
 });
 
-test("the helper is handed each secret's name and value, and no placeholder or hosts", async (t) => {
+test("the helper is handed each secret's name and value, and not its hosts", async (t) => {
 	setEnv(t, { PLAYPEN_TEST_TOKEN: TOKEN });
 	const { run } = await sandboxFor(t, ONE_SECRET);
 	await run();

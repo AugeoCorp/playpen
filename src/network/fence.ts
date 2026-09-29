@@ -272,6 +272,18 @@ export function restartNotices(
 		);
 }
 
+export async function restartNoticesFor(
+	sandbox: string,
+	policy: Pick<Policy, "secrets">,
+): Promise<string[]> {
+	const running = await liveHelper(sandbox);
+	if (running === null) return [];
+	return restartNotices(
+		running,
+		policy.secrets.map(({ env }) => env),
+	);
+}
+
 /**
  * The environment the helper is spawned with: this process's own, without any
  * variable a grant names or a secret came from. Granted names go even when no
@@ -516,12 +528,8 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 			await applied(sandbox, stamp);
 			opts.log(`network policy updated for new connections\n`);
 		}
-		const running = await liveHelper(sandbox);
-		if (running !== null) {
-			const configured = opts.policy.secrets.map(({ env }) => env);
-			for (const notice of restartNotices(running, configured)) {
-				opts.log(notice);
-			}
+		for (const notice of await restartNoticesFor(sandbox, opts.policy)) {
+			opts.log(notice);
 		}
 		return;
 	}
