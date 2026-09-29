@@ -370,7 +370,7 @@ common package managers need, not a measurement. It stays a guess until a
 
 The guest holds a placeholder for each secret (see "Secrets" under "The shape"
 for how it gets there); the helper puts the real value in on the host side, in
-the headers of HTTPS requests to the hosts the secret names.
+the `Authorization` header of HTTPS requests to the hosts the secret names.
 
 **What is intercepted.** A `CONNECT` the policy allows, to port 443 of a host a
 `network.secrets` entry names, for a variable the helper holds. The host must be
@@ -389,15 +389,20 @@ hands the tunnel to a server made for that one host
 (`src/network/intercept.ts`), which terminates TLS, offering HTTP/1.1 only. A
 TLS server name other than the host the `CONNECT` named is refused. So, with a
 421 and a `deny` line, is a request whose `Host` header names another site, and
-one whose request line is anything but a path (or `*` for `OPTIONS`): behind a
-shared front end, `Host` or a full URL in the request line
-(`GET https://other.example/`, which overrides `Host`) can decide which site
-gets the request, and with it the value. The upstream sees exactly one `Host`,
-the approved host, whatever the guest sent, and never the guest's
-`X-Forwarded-Host`, `Forwarded` or `X-Original-URL`, which some front ends route
-by; hop-by-hop headers (`Connection`, `Keep-Alive`, `Proxy-*`, `TE`, `Trailer`,
-and `Upgrade` outside an upgrade) are dropped too. Every other header goes on as
-sent. Each request's headers are read, the placeholder is replaced
+one whose request line is anything but a path (or `*` for `OPTIONS`), or a path
+starting `//`, which a URL parser reads as naming a host: behind a shared front
+end, `Host` or a full URL in the request line (`GET https://other.example/`,
+which overrides `Host`) can decide which site gets the request, and with it the
+value. A `TRACE` request is refused with a 405 and a `deny` line naming the
+method, before the host is dialed: a TRACE answer echoes the request back, the
+value in `Authorization` included. The upstream sees exactly one `Host`, the
+approved host, whatever the guest sent, and never the guest's
+`X-Forwarded-Host`, `Forwarded`, `X-Original-URL`, `X-Rewrite-URL`, `X-Host`,
+`X-HTTP-Host-Override` or `X-Forwarded-Server`, which some front ends route by;
+hop-by-hop headers (`Connection`, `Keep-Alive`, `Proxy-Authorization`,
+`Proxy-Connection`, `TE`, `Trailer`, and `Upgrade` outside an upgrade) are
+dropped too, from the request and from the host's answer. Every other header
+goes on as sent. Each request's headers are read, the placeholder is replaced
 (`rewriteHeaders` in `src/network/inject.ts`), and the request goes on over a
 new TLS connection to the host the `CONNECT` named, at port 443, verified
 against the certificates Node carries. That connection is resolved and dialed
@@ -406,8 +411,8 @@ holds for it: a secret's host whose name resolves onto this machine is refused
 the same way. Bodies, both ways, are streamed through unread; a host that hangs
 up partway through its answer cuts the guest's response off the same way, with
 an `error` line. One tunnel carries as many kept-alive requests as the client
-sends on it, and a WebSocket upgrade gets the same header rewrite before the two
-connections are joined.
+sends on it, and a WebSocket upgrade gets the same refusals and header rewrite
+before the two connections are joined.
 
 **Where the placeholder is replaced.** In the `Authorization` request header and
 nowhere else: wherever it appears verbatim (`token X`, `Bearer X`), and inside
@@ -416,10 +421,10 @@ how git sends a token. gh, git, curl `-u` and npm all send a token there. Any
 other header goes out as the guest sent it, placeholder included: a host that
 echoes a request header back (api.github.com quotes `X-GitHub-Api-Version` in an
 error) would otherwise hand the value to the guest. The same holds for
-`Authorization` itself, which this cannot close: a host that echoes it returns
-the value to the guest, so grant a secret only to hosts you would send it to
-anyway. Only the secrets whose entry names this host are swapped; a placeholder
-for any other goes out as it is.
+`Authorization` itself, which this cannot close beyond refusing `TRACE`: a host
+that echoes it returns the value to the guest, so grant a secret only to hosts
+you would send it to anyway. Only the secrets whose entry names this host are
+swapped; a placeholder for any other goes out as it is.
 
 **The certificates.** A helper holding at least one secret reads the CA once at
 start (`readCa()`), and fails to start if there is none: a new CA made then
@@ -436,13 +441,13 @@ and variable a value went into, written once the connection to the host is up,
 so a request whose dial is refused or whose host fails verification logs none.
 It names the host, the port, the header and the variable:
 `{"verdict":"inject","host":"api.github.com","port":443,"header":"authorization","env":"GH_TOKEN",…}`.
-A wrong server name, `Host` or request target is a `deny` line saying what was
-asked for. A client that sends no server name is refused in the handshake too,
-but that shows up as an `error` line (OpenSSL's "no suitable signature
-algorithm"), since there was no name to check. Any other TLS or upstream failure
-is an `error` line with the message alone. A `CONNECT` to port 443 of a host
-that names a secret the helper does not hold gets a `note` line, so an audit
-shows why a request went out with the placeholder:
+A wrong server name, `Host`, request target or method is a `deny` line saying
+what was asked for. A client that sends no server name is refused in the
+handshake too, but that shows up as an `error` line (OpenSSL's "no suitable
+signature algorithm"), since there was no name to check. Any other TLS or
+upstream failure is an `error` line with the message alone. A `CONNECT` to port
+443 of a host that names a secret the helper does not hold gets a `note` line,
+so an audit shows why a request went out with the placeholder:
 `secret GH_TOKEN is named for this host but this helper does not hold it; piped`.
 No line carries a value, and nothing logs a body.
 
@@ -491,8 +496,9 @@ and change over time, while the CA is one per install.
   host.** The gatekeeper decides on the `CONNECT` target and then pipes the
   connection through untouched; it never terminates TLS for any other host, so
   it cannot see or alter what travels inside those connections. For a secret's
-  host it reads request headers and rewrites `Authorization`, and nothing else
-  (see "Secrets").
+  host it reads the request line and headers: it rewrites `Authorization`,
+  replaces `Host`, drops the headers listed there, and refuses the requests
+  listed there (see "Secrets").
 - **An allowed name can front for a different one.** Many names sit behind the
   same shared CDN, so a client can open a tunnel to a name the policy allows and
   then, inside it, ask for a different site -- in the TLS handshake's SNI or the
@@ -503,10 +509,10 @@ and change over time, while the CA is one per install.
   but it means "allow `github.com`" is wider than it looks: names like
   `objects.githubusercontent.com` sit behind shared front ends too. A secret's
   host is the exception: there the server name and `Host` must both be the host
-  the `CONNECT` named, the request line must be a path, and the upstream gets
-  one `Host` naming that host and none of the headers front ends are known to
-  route by. That closes the ways of naming another site that this code knows of;
-  a front end that routes on something else still could.
+  the `CONNECT` named, the request line must be a path not starting `//`, and
+  the upstream gets one `Host` naming that host and none of the routing headers
+  listed under "Secrets". That closes the ways of naming another site that this
+  code knows of; a front end that routes on something else still could.
 
 ## What was measured, and where
 
@@ -553,7 +559,10 @@ machine.
 The interceptor was driven by hand with curl 8.5 (token, `-u` Basic, a 3 MB
 chunked upload, two URLs over one connection, a mismatched server name),
 `openssl s_client`, and Python 3.11's `ssl` with `VERIFY_X509_STRICT`, through
-the real gatekeeper to a local upstream.
+the real gatekeeper to a local upstream. That run predates the request guards:
+the `Host`, request target and method refusals and the routing headers dropped
+under "Secrets" were not driven by hand, only by
+`src/network/intercept.test.ts`.
 
 ## Rejected on the way
 

@@ -124,17 +124,18 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
   `GH_TOKEN`), and the gatekeeper swaps the real value in wherever the
   placeholder appears in the `Authorization` header of an HTTPS request to one
   of the hosts, `Basic` credentials included, so a tool that reads the variable,
-  such as `gh`, works unchanged. No other header is touched. A host that echoes
-  `Authorization` back would return the value to the guest, so grant a secret
-  only to hosts you would send it to anyway. The host is matched exactly, port
-  443 only, HTTP/1.1 only; the allow entry it implies covers subdomains, like
-  any entry in `allow`, but nothing is injected there. `gatekeeper.log` gets an
-  `inject` line naming the host, header and variable, never the value. A later
-  `shell` or `run` into a sandbox that is already running does not need the
-  variable, and a changed value needs `playpen stop && playpen start`. Every
-  sandbox trusts a certificate authority made for this install, whose key stays
-  on the host (`docs/NETWORK.md`, "Secrets"); the first `start` after upgrading
-  rebakes the base and offers each sandbox a rebuild.
+  such as `gh`, works unchanged. No other header gets the value. A host that
+  echoes `Authorization` back would return the value to the guest, so grant a
+  secret only to hosts you would send it to anyway; a `TRACE` request, whose
+  answer is that echo, is refused. The host is matched exactly, port 443 only,
+  HTTP/1.1 only; the allow entry it implies covers subdomains, like any entry in
+  `allow`, but nothing is injected there. `gatekeeper.log` gets an `inject` line
+  naming the host, header and variable, never the value. A later `shell` or
+  `run` into a sandbox that is already running does not need the variable, and a
+  changed value needs `playpen stop && playpen start`. Every sandbox trusts a
+  certificate authority made for this install, whose key stays on the host
+  (`docs/NETWORK.md`, "Secrets"); the first `start` after upgrading rebakes the
+  base and offers each sandbox a rebuild.
 - `mode: "log"` records what the sandbox reaches and blocks nothing on the
   internet side; your own machine's localhost stays closed in every mode. Use it
   to find the hosts a project needs, then list them; the default is `enforce`.

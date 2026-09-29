@@ -55,11 +55,11 @@ export type NetworkMode = z.infer<typeof networkMode>;
  * sandbox may use on given hosts: `{ env: "GH_TOKEN", hosts: ["github.com"] }`.
  * Names only, never a value: this file sits in the project directory, which
  * the sandbox mounts. The guest holds a placeholder, which the gatekeeper
- * replaces with the value in the headers of HTTPS requests to these hosts.
- * Each host is a plain hostname, not an address and without a port; injection
- * matches it exactly, and it is allowed as if it were in `allow`, which covers
- * its subdomains. A mistake in `secrets` fails the load rather than being
- * dropped.
+ * replaces with the value in the `Authorization` header of HTTPS requests to
+ * these hosts. Each host is a plain hostname, not an address and without a
+ * port; injection matches it exactly, and it is allowed as if it were in
+ * `allow`, which covers its subdomains. A mistake in `secrets` fails the load
+ * rather than being dropped.
  *
  * `mode: "log"` records verdicts and refuses nothing, for finding out what a
  * project reaches. It is never the default.
