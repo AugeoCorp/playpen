@@ -9,7 +9,7 @@ import {
 	writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { type TestContext, test } from "node:test";
 import { exists } from "../fs.ts";
 import { bwrapArgv, maskBinds, portsScript, unboundIn } from "./helper.ts";
@@ -163,16 +163,18 @@ test("each masked entry on the host gets a read-only bind of the placeholder of 
 	]);
 });
 
-test("the placeholders are made empty, and only when something is bound", async (t) => {
+test("the placeholders are made only when something is bound, and a file left over is emptied", async (t) => {
 	const { project, paths } = await maskedProject(t);
 	await maskBinds(paths, { project, masked: ["absent"] }, () => {});
 	assert.equal(await exists(paths.emptyFile), false);
+	await mkdir(dirname(paths.emptyFile), { recursive: true });
+	await writeFile(paths.emptyFile, "left over\n");
 	await maskBinds(
 		paths,
 		{ project, masked: [".env", "node_modules"] },
 		() => {},
 	);
-	assert.equal((await readFile(paths.emptyFile)).length, 0);
+	assert.equal(await readFile(paths.emptyFile, "utf8"), "");
 	assert.deepEqual(await readdir(paths.emptyDir), []);
 });
 
@@ -213,6 +215,17 @@ test("a nested entry whose parent is gone refuses the start, since a guest can r
 		{
 			message:
 				"masked: packages/app is not on the host, so packages/app/node_modules cannot be masked; restore it before starting",
+		},
+	);
+});
+
+test("an entry under a file refuses the start, naming the entry and the file", async (t) => {
+	const { project, paths } = await maskedProject(t);
+	await assert.rejects(
+		maskBinds(paths, { project, masked: [".env/inside"] }, () => {}),
+		{
+			message:
+				"masked: .env is a file on the host, so .env/inside cannot be masked; mask .env itself or remove the entry before starting",
 		},
 	);
 });

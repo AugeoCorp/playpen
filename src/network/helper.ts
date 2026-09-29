@@ -188,7 +188,8 @@ function jsonLineAppender(path: string): (entry: LogEntry) => void {
  * which is what `node_modules` on a fresh clone needs. Refused, with an error
  * that stops the start, is what a guest could have arranged by renaming the
  * parent of a nested entry: a symlink, a path through one, or a parent that is
- * gone.
+ * gone. So is an entry under a file, which the guest's mask script would fail
+ * to create, stopping it before the entries after it are masked.
  */
 export async function maskBinds(
 	paths: Pick<FencePaths, "emptyFile" | "emptyDir">,
@@ -207,6 +208,11 @@ export async function maskBinds(
 		if (kind === "parent-missing") {
 			throw new Error(
 				`masked: ${dirname(entry)} is not on the host, so ${entry} cannot be masked; restore it before starting`,
+			);
+		}
+		if (kind === "under-file") {
+			throw new Error(
+				`masked: ${dirname(entry)} is a file on the host, so ${entry} cannot be masked; mask ${dirname(entry)} itself or remove the entry before starting`,
 			);
 		}
 		if (kind === "missing") {

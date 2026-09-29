@@ -226,10 +226,20 @@ export interface Mounts {
 	masked: string[];
 }
 
-const mountsFile = z.strictObject({
-	project: z.string().min(1),
-	masked: z.array(z.string().min(1)),
-});
+const mountsFile = z.strictObject(
+	{
+		project: z
+			.string({ error: "must be a path" })
+			.min(1, { error: "must be a path" }),
+		masked: z.array(
+			z
+				.string({ error: "must be a string" })
+				.min(1, { error: "must not be empty" }),
+			{ error: "must be an array of strings" },
+		),
+	},
+	{ error: "must hold a JSON object with only `project` and `masked`" },
+);
 
 export async function writeMounts(
 	sandbox: string,
@@ -256,7 +266,8 @@ export type MaskKind =
 	| "missing"
 	| "parent-missing"
 	| "symlink"
-	| "under-symlink";
+	| "under-symlink"
+	| "under-file";
 
 /**
  * What is on the host at a masked entry, without following it. Only a `dir` or
@@ -264,8 +275,9 @@ export type MaskKind =
  * path on the host's disk, and a symlink, or a path through one, may lead
  * outside the project. A guest can leave a nested entry symlinked, or without
  * a parent, by renaming that parent: only the bound path itself is protected
- * from a rename. A missing leaf under a parent that is there is what a fresh
- * clone looks like before the guest creates it.
+ * from a rename. A missing leaf under a parent directory that is there is what
+ * a fresh clone looks like before the guest creates it; under a parent that is
+ * a file, the guest cannot create it at all.
  */
 export async function maskKind(
 	project: string,
@@ -289,7 +301,8 @@ export async function maskKind(
 		return info.isDirectory() ? "dir" : "file";
 	} catch (err) {
 		const code = (err as NodeJS.ErrnoException).code;
-		if (code === "ENOENT" || code === "ENOTDIR") return "missing";
+		if (code === "ENOENT") return "missing";
+		if (code === "ENOTDIR") return "under-file";
 		throw err;
 	}
 }
@@ -311,9 +324,11 @@ export function underMaskedDir(
  * namespace, which `/proc/<pid>/root` resolves into. A bound entry is the
  * placeholder's own inode; a host-side replace (rename over, `sed -i`,
  * `git checkout`) detaches the bind in qemu's namespace and leaves the new
- * file's inode there. An entry that cannot be read is not bound: what cannot be
- * shown to be hidden is not claimed to be. `procDir` is a parameter so a test
- * can lay out a fake one.
+ * file's inode there. The entry is not followed: a bind is never a symlink,
+ * and a guest that renames away the parent of a nested entry can plant one
+ * pointing at the placeholder, whose path it can work out. An entry that cannot
+ * be read is not bound: what cannot be shown to be hidden is not claimed to be.
+ * `procDir` is a parameter so a test can lay out a fake one.
  */
 export async function boundMasks(
 	qemu: number,
@@ -334,7 +349,7 @@ export async function boundMasks(
 	const bound: string[] = [];
 	for (const entry of entries) {
 		try {
-			const seen = await stat(
+			const seen = await lstat(
 				join(procDir, String(qemu), "root", project, entry),
 			);
 			if (sources.some((s) => s.dev === seen.dev && s.ino === seen.ino)) {
