@@ -201,6 +201,7 @@ export async function runScript(
 		input?: string | Uint8Array;
 		/** Positional parameters for the script, so values never become syntax. */
 		args?: readonly string[];
+		timeoutMs?: number;
 	} = {},
 ): Promise<Collected> {
 	const params = opts.args === undefined ? [] : ["bash", ...opts.args];
@@ -210,7 +211,10 @@ export async function runScript(
 	return captureBuffer(
 		LIMACTL,
 		["shell", name, ...shell],
-		{ env: await shellEnv(name) },
+		{
+			env: await shellEnv(name),
+			...(opts.timeoutMs === undefined ? {} : { timeoutMs: opts.timeoutMs }),
+		},
 		opts.input,
 	);
 }

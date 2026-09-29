@@ -3,7 +3,16 @@ import { spawn } from "node:child_process";
 export interface RunOptions {
 	cwd?: string;
 	env?: NodeJS.ProcessEnv;
+	/**
+	 * Kill the command after this long and resolve with `TIMED_OUT`, without
+	 * waiting for its output to close: a child it left behind can hold the pipe
+	 * open long after it is gone.
+	 */
+	timeoutMs?: number;
 }
+
+/** The exit code a command killed by `timeoutMs` resolves with, as timeout(1) uses. */
+export const TIMED_OUT = 124;
 
 export interface CaptureResult {
 	code: number;
@@ -40,8 +49,24 @@ function collect(
 		child.stderr.setEncoding("utf8");
 		child.stderr.on("data", (chunk: string) => (stderr += chunk));
 
+		const limit = opts.timeoutMs;
+		const timer =
+			limit === undefined
+				? undefined
+				: setTimeout(() => {
+						child.kill("SIGKILL");
+						child.stdout?.destroy();
+						child.stderr?.destroy();
+						resolve({
+							code: TIMED_OUT,
+							stdout: Buffer.alloc(0),
+							stderr: `${cmd} timed out after ${limit / 1000}s`,
+						});
+					}, limit);
+
 		child.on("error", reject);
 		child.on("close", (code) => {
+			clearTimeout(timer);
 			resolve({ code: code ?? 1, stdout: Buffer.concat(chunks), stderr });
 		});
 

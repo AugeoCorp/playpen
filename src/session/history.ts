@@ -21,6 +21,9 @@ import { assertSandboxName } from "./identity.ts";
  */
 const GUEST_REL = ".claude/projects";
 
+/** A wedged guest must not hold a stop forever; the stop goes ahead without a save. */
+const ARCHIVE_TIMEOUT_MS = 120_000;
+
 /** Joined into a path that is written and read, so it is checked like `store`'s. */
 export function archivePath(sandbox: string): string {
 	assertSandboxName(sandbox);
@@ -84,7 +87,9 @@ export async function archive(
 			);
 			return;
 		}
-		const result = await lima.runScript(instance, script);
+		const result = await lima.runScript(instance, script, {
+			timeoutMs: ARCHIVE_TIMEOUT_MS,
+		});
 		if (result.code === 0 && result.stdout.length === 0) return;
 		if (result.code !== 0) {
 			console.error(
