@@ -259,7 +259,8 @@ async function outdatedBase(sb: Sandbox): Promise<string | null> {
 /**
  * Offered rather than done: a reclone is ~10s, but the guest disk goes with it
  * -- installed packages and masked directories. Claude transcripts and memory
- * are archived across it. `start` is routine, so it asks.
+ * are saved from the old VM and restored into the new one. `start` is
+ * routine, so it asks.
  */
 async function confirmRebuild(reason: string): Promise<boolean> {
 	console.error(reason);
@@ -290,6 +291,7 @@ export interface Running {
  */
 async function startFenced(sb: Sandbox, template: Template): Promise<void> {
 	const { allow, mode, ports, secrets } = template.network;
+	await history.clearSaved(sb.instance);
 	await fenced(sb, {
 		// A port or a secret's host is a grant, so writing it once is enough.
 		allow: [
@@ -512,8 +514,9 @@ async function release(
 
 /** The one way playpen stops a running sandbox, so its history is saved first. */
 async function saveHistoryAndStop(sb: Sandbox, force: boolean): Promise<void> {
-	await history.archive(sb.instance, sb.sandbox);
+	const saved = await history.archive(sb.instance, sb.sandbox);
 	await lima.stop(sb.instance, force);
+	if (saved) await history.markSaved(sb.instance);
 }
 
 export async function stop(sb: Sandbox): Promise<void> {
@@ -522,14 +525,32 @@ export async function stop(sb: Sandbox): Promise<void> {
 }
 
 /**
- * A stopped sandbox is deleted without booting it: `stop` saved its history.
- * One stopped some other way, by limactl or a host shutdown, loses what it
- * wrote after its last stop through playpen.
+ * A stopped sandbox that may hold history the host has not got is started for
+ * it: ~10s on a delete, worth it because transcripts and memory exist nowhere
+ * else. It is started fenced with nothing allowed: the history travels over
+ * the control socket, and a guest that is about to be deleted is the last one
+ * to hand the network to. Best effort throughout -- a sandbox too broken to
+ * boot must still be deletable.
  */
+async function bootToSaveHistory(sb: Sandbox): Promise<void> {
+	try {
+		console.error(`starting it briefly to save Claude history`);
+		await fenced(sb, { allow: [], mode: "enforce", ports: [], secrets: [] });
+		await saveHistoryAndStop(sb, true);
+	} catch (err) {
+		console.error(
+			`warning: could not save Claude history (${err instanceof Error ? err.message : err})`,
+		);
+	}
+}
+
+/** One that playpen stopped is deleted without a boot: it saved on the way down. */
 export async function destroy(sb: Sandbox): Promise<void> {
 	const existing = await lima.get(sb.instance);
 	if (existing) {
 		if (lima.isRunning(existing)) await saveHistoryAndStop(sb, true);
+		else if (!(await history.wasSaved(sb.instance)))
+			await bootToSaveHistory(sb);
 		await lima.remove(sb.instance);
 	}
 	await store.remove(sb.sandbox);

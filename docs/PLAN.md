@@ -28,7 +28,8 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
 - Nothing collects old sandboxes, old bases, or history archives. A clone costs
   almost nothing, but every `image build --force` and every image change leaves
   a ~2GB base behind. Unscheduled. Claude history is saved at every stop, so
-  deleting a stopped sandbox boots nothing.
+  deleting a sandbox playpen stopped boots nothing; one stopped any other way is
+  booted to save it first.
 - Node 26 from nodejs.org and mise are both in the base, verified in a booted
   guest from wiped mise state: `npm test` runs natively (80 pass, nothing
   skipped, no compile-out); a project pinning `.node-version` installs and
@@ -128,9 +129,9 @@ yet vary per sandbox. They are global defaults today.
       the copy, or one with no copy on the host, may replace it; a stop first
       restores into a VM that does not, so a sandbox from before this saves a
       superset. A failed restore warns and is retried by the next start; a stop
-      in between saves to `.unrestored.tar` instead. A stopped sandbox is
-      deleted without booting it; one stopped outside playpen loses what it
-      wrote since its last `playpen stop`
+      in between saves to `.unrestored.tar` instead. A sandbox playpen stopped
+      is deleted without booting it; one stopped any other way (limactl, a host
+      shutdown) is booted fenced with nothing allowed and saved first
 - [x] verified on the host: a fresh sandbox clones and boots in 10s, with no
       package installs and no image download
 

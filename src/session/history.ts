@@ -52,6 +52,28 @@ function holdsCopyMarker(instance: string): string {
 	return join(limaHome(), instance, "playpen-holds-history");
 }
 
+/**
+ * Present while a VM is stopped with its history saved: written when playpen
+ * stops it after a save, removed at every start. A stopped VM without it was
+ * stopped some other way, by limactl, a host shutdown, or a playpen from before
+ * stops saved, and may hold history the host has not got.
+ */
+function savedMarker(instance: string): string {
+	return join(limaHome(), instance, "playpen-history-saved");
+}
+
+export async function markSaved(instance: string): Promise<void> {
+	await writeFile(savedMarker(instance), "");
+}
+
+export async function clearSaved(instance: string): Promise<void> {
+	await rm(savedMarker(instance), { force: true });
+}
+
+export function wasSaved(instance: string): Promise<boolean> {
+	return exists(savedMarker(instance));
+}
+
 /** Written beside `path` and renamed over it, so a failure part way leaves the old file whole. */
 async function writeBeside(path: string, tar: Buffer): Promise<void> {
 	const temp = `${path}.${process.pid}.tmp`;

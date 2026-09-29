@@ -260,10 +260,11 @@ function said(warnings: { mock: { calls: { arguments: unknown[] }[] } }) {
 	return warnings.mock.calls.map((c) => String(c.arguments[0]));
 }
 
-test("destroying a stopped sandbox deletes it without booting it", async (t) => {
+test("a sandbox playpen stopped is deleted without booting it", async (t) => {
 	const { sb, run } = await sandboxFor(t, BOTH);
 	await run();
-	const { destroy } = await import("./lifecycle.ts");
+	const { destroy, stop } = await import("./lifecycle.ts");
+	await stop(sb);
 	status = "Stopped";
 	fenced = false;
 	calls.length = 0;
@@ -272,6 +273,49 @@ test("destroying a stopped sandbox deletes it without booting it", async (t) => 
 
 	assert.deepEqual(calls, []);
 	assert.equal(exists, false);
+});
+
+test("a sandbox stopped some other way is booted inside the fence with nothing allowed, and its history saved, before it is deleted", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await run();
+	guestFiles.add("today.jsonl");
+	const { destroy } = await import("./lifecycle.ts");
+	status = "Stopped";
+	fenced = false;
+	fencedWith = null;
+	t.mock.method(console, "error", () => {});
+
+	await destroy(sb);
+
+	assert.deepEqual(fencedWith, {
+		allow: [],
+		mode: "enforce",
+		ports: [],
+		secrets: [],
+	});
+	assert.equal(await readFile(hostCopy(sb), "utf8"), "today.jsonl");
+	assert.equal(exists, false);
+});
+
+test("a sandbox started again after playpen stopped it, then stopped some other way, is booted to save before it is deleted", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await run();
+	const { destroy, stop } = await import("./lifecycle.ts");
+	await stop(sb);
+	status = "Stopped";
+	fenced = false;
+	await run();
+	status = "Stopped";
+	fenced = false;
+	calls.length = 0;
+	t.mock.method(console, "error", () => {});
+
+	await destroy(sb);
+
+	assert.ok(
+		calls.includes("start behind the gatekeeper"),
+		`expected a boot to save history, got ${calls.join(", ")}`,
+	);
 });
 
 test("a new sandbox still starts when its history cannot be put back, and the warning says where it is and that the next start tries again", async (t) => {
