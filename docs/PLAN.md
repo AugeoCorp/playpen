@@ -39,6 +39,9 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
   history directory may hold `.playpen-kept/` and `.playpen-staging-*/`, and a
   `<sandbox>.tar` from before the mount is never imported. Delete them, or
   extract what you want, by hand.
+- The history mount needs user xattrs on the data directory's filesystem (ext4
+  and btrfs have them). Without them, creating anything in the mount fails, and
+  nothing on the host checks for them yet.
 - A sandbox made with the history mount before it became `mapped-xattr` keeps
   Lima's default model, under which the guest's modes and symlinks are real on
   the host. `playpen remove --yes && playpen start` gives it the new one and
