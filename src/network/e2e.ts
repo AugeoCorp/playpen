@@ -149,6 +149,7 @@ async function up(
 			],
 			mode: "enforce",
 			ports,
+			secrets: [],
 		},
 		log: (text) => process.stderr.write(text),
 	});

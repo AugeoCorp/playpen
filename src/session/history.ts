@@ -1,77 +1,88 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { historyDir } from "../config.ts";
 import * as lima from "../lima/client.ts";
 import { assertSandboxName } from "./identity.ts";
 
 /**
- * Claude Code keeps session transcripts and the persistent memory directory in
- * the guest, and nothing syncs them back to the host, so recloning a sandbox
- * would drop both. They are archived out before a sandbox is destroyed and
- * restored into its replacement.
+ * Claude Code keeps session transcripts and the persistent memory directory
+ * under `~/.claude/projects` in the guest. That whole directory is a host
+ * directory mounted writable, so history is on the host as it is written and
+ * outlives the VM: rebuild, remove, a crash.
  *
- * The whole directory travels rather than one project's slug: a sandbox serves
- * a single project, so that is already the scope, and it avoids depending on
+ * The whole directory rather than one project's slug: a sandbox serves a
+ * single project, so that is already the scope, and it avoids depending on
  * how Claude Code names these directories.
  */
 const GUEST_REL = ".claude/projects";
 
-/** Joined into a path that is written and read, so it is checked like `store`'s. */
-export function archivePath(sandbox: string): string {
+/**
+ * Where Lima mounts the host's history directory. Lima expands `{{.Home}}` to
+ * the guest user's home when it loads the instance (`executeGuestTemplate` in
+ * its limayaml package), so the guest's user name and home layout -- which
+ * Lima derives from the host user and has changed between releases -- are
+ * never worked out here.
+ */
+export const GUEST_MOUNT_POINT = `{{.Home}}/${GUEST_REL}`;
+
+/**
+ * Under Lima's default, `none`, a guest `chmod`, setuid bit or `ln -s` is made
+ * for real on the host. Mapped, QEMU keeps modes and owners in `user.virtfs.*`
+ * xattrs and creates only regular 0600 files and 0700 directories, a guest
+ * symlink being a regular file holding its target (`hw/9pfs/9p-local.c`), so
+ * nothing the guest writes here is a live link, setuid or executable on the
+ * host. The project mount keeps `none`: sharing it with the host is its
+ * purpose.
+ */
+export const SECURITY_MODEL = "mapped-xattr";
+
+/**
+ * The guest writes here freely, so nothing on the host reads what is inside:
+ * only Lima's mount and the guest touch it.
+ */
+export function hostDir(sandbox: string): string {
 	assertSandboxName(sandbox);
-	return join(historyDir(), `${sandbox}.tar`);
+	return join(historyDir(), sandbox);
 }
 
-/** Never throws: losing history is bad, but blocking a delete over it is worse. */
-export async function archive(
-	instance: string,
-	sandbox: string,
-): Promise<void> {
-	// Succeeds with no output when there is nothing to archive, rather than
-	// signalling it through an exit code limactl may not pass back.
-	const script = [
-		"set -eu",
-		'cd "$HOME"',
-		`if [ -d ${GUEST_REL} ]; then exec tar -cf - ${GUEST_REL}; fi`,
-	].join("\n");
-
-	try {
-		const result = await lima.runScript(instance, script);
-		if (result.code === 0 && result.stdout.length === 0) return;
-		if (result.code !== 0) {
-			console.error(
-				`warning: could not save Claude history (${result.stderr.trim() || `exit ${result.code}`})`,
-			);
-			return;
-		}
-		await mkdir(historyDir(), { recursive: true });
-		await writeFile(archivePath(sandbox), result.stdout);
-	} catch (err) {
-		console.error(
-			`warning: could not save Claude history (${err instanceof Error ? err.message : err})`,
-		);
-	}
+/**
+ * Called before every boot: Lima creates a missing mount location itself, 0755
+ * (`os.MkdirAll` in its qemu driver), and serves wherever a link leads.
+ */
+export async function makeHostDir(sandbox: string): Promise<string> {
+	const dir = hostDir(sandbox);
+	await mkdir(dir, { recursive: true, mode: 0o700 });
+	const info = await lstat(dir);
+	if (!info.isDirectory())
+		throw new Error(`${dir} is not a directory; move it aside and start again`);
+	if (info.uid !== process.getuid?.())
+		throw new Error(`${dir} is owned by uid ${info.uid}, not by you`);
+	await chmod(dir, 0o700);
+	return dir;
 }
 
-/** Kept after restoring, so it stays the last known history if this one is lost. */
-export async function restore(
-	instance: string,
-	sandbox: string,
-): Promise<boolean> {
-	let tar: Buffer;
-	try {
-		tar = await readFile(archivePath(sandbox));
-	} catch {
-		return false;
-	}
+/**
+ * cloud-init creates a mount point's missing parents as root (`util.ensure_dir`
+ * in its cc_mounts module), so the guest user would not own `~/.claude`, and
+ * Claude Code could write nothing there but history. Run on every start, not
+ * only a clone's first, so a first boot cut short is mended by the next.
+ */
+export const PREPARE_GUEST = [
+	"set -eu",
+	'claude="$HOME/.claude"',
+	'if ! mountpoint -q "$claude/projects"; then',
+	'  echo "$claude/projects is not mounted from the host" >&2',
+	"  exit 1",
+	"fi",
+	'[ "$(stat -c %u "$claude")" = "$(id -u)" ] || sudo chown "$(id -u):$(id -g)" "$claude"',
+].join("\n");
 
-	const script = ["set -eu", "umask 077", 'cd "$HOME"', "tar -xf -"].join("\n");
-	const result = await lima.runScript(instance, script, { input: tar });
-	if (result.code !== 0) {
-		console.error(
-			`warning: could not restore Claude history (${result.stderr.trim()})`,
-		);
-		return false;
-	}
-	return true;
+export async function prepareGuest(instance: string): Promise<void> {
+	const why = await lima.runScript(instance, PREPARE_GUEST).then(
+		(result) =>
+			result.code === 0 ? null : result.stderr.trim() || `exit ${result.code}`,
+		(err: unknown) => (err instanceof Error ? err.message : String(err)),
+	);
+	if (why !== null)
+		console.error(`warning: the guest's ~/.claude is not ready (${why})`);
 }
