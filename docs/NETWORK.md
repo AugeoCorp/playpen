@@ -574,6 +574,13 @@ guards: the `Host`, request target and method refusals and the routing headers
 dropped under "Secrets" were not driven by hand, only by
 `src/network/intercept.test.ts`.
 
+On a VM (no KVM), with every guard in place, a sandbox holding a made-up value
+for `api.github.com`: from the guest, curl with `Authorization: token`, curl
+`-u` and Node `fetch` each reached GitHub and got its `401 Bad credentials`,
+with one `inject` line each; `TRACE` got a 405 and a `deny` line; the value was
+in neither log and nowhere under the data directory. GitHub accepting a real
+token has not been shown.
+
 ## Rejected on the way
 
 - **mitmproxy's eBPF local-capture mode.** Redirects one host process's traffic
