@@ -9,6 +9,7 @@ import {
 	unlink,
 } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
+import type { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { dataDir, limaHome } from "../config.ts";
@@ -271,17 +272,33 @@ export function restartNotices(
 		);
 }
 
+export async function restartNoticesFor(
+	sandbox: string,
+	policy: Pick<Policy, "secrets">,
+): Promise<string[]> {
+	const running = await liveHelper(sandbox);
+	if (running === null) return [];
+	return restartNotices(
+		running,
+		policy.secrets.map(({ env }) => env),
+	);
+}
+
 /**
- * The environment the helper is spawned with: this process's own, without the
- * variables the secrets came from, so a value has no route into the helper or
- * its children except the pipe.
+ * The environment the helper is spawned with: this process's own, without any
+ * variable a grant names or a secret came from. Granted names go even when no
+ * value is handed over, so a value has no route into the helper or its
+ * children except the pipe.
  */
 export function helperEnv(
 	env: NodeJS.ProcessEnv,
+	policy: Pick<Policy, "secrets">,
 	secrets: readonly HeldSecret[],
 ): NodeJS.ProcessEnv {
 	const scrubbed = { ...env };
-	for (const { env: name } of secrets) delete scrubbed[name];
+	for (const { env: name } of [...policy.secrets, ...secrets]) {
+		delete scrubbed[name];
+	}
 	return scrubbed;
 }
 
@@ -404,25 +421,40 @@ export function cliPath(): string {
 
 export function helperSpawnOptions(
 	logFd: number,
+	policy: Pick<Policy, "secrets">,
 	secrets: readonly HeldSecret[],
 	env: NodeJS.ProcessEnv = process.env,
 ): { detached: true; stdio: ["pipe", number, number]; env: NodeJS.ProcessEnv } {
 	return {
 		detached: true,
 		stdio: ["pipe", logFd, logFd],
-		env: helperEnv(env, secrets),
+		env: helperEnv(env, policy, secrets),
 	};
+}
+
+/**
+ * Writes the document and ends the stream, so the helper, which reads its
+ * stdin to the end, knows when it has them all.
+ */
+export function handOver(
+	stdin: Writable,
+	secrets: readonly HeldSecret[],
+): void {
+	// A helper that dies before reading closes the pipe under this write; its
+	// exit is what `bringUp` reports, so the write's own error is not.
+	stdin.on("error", () => {});
+	stdin.end(serializeHeldSecrets(secrets));
 }
 
 /**
  * Detached with its output in helper.log, because it has to outlive the
  * `playpen start` that asked for it: the sandbox stays up after the command
- * that created it returns. The secrets go in over stdin and the stream is
- * ended, so the helper knows when it has them all.
+ * that created it returns.
  */
 async function spawnHelper(
 	sandbox: string,
 	instance: string,
+	policy: Policy,
 	secrets: readonly HeldSecret[],
 ): Promise<ChildProcess> {
 	const paths = fencePaths(sandbox);
@@ -432,12 +464,9 @@ async function spawnHelper(
 		const child = spawn(
 			process.execPath,
 			[cliPath(), "__net-helper", sandbox, instance],
-			helperSpawnOptions(log.fd, secrets),
+			helperSpawnOptions(log.fd, policy, secrets),
 		);
-		// A helper that dies before reading closes the pipe under this write; its
-		// exit is what `bringUp` reports, so the write's own error is not.
-		child.stdin?.on("error", () => {});
-		child.stdin?.end(serializeHeldSecrets(secrets));
+		if (child.stdin) handOver(child.stdin, secrets);
 		child.unref();
 		return child;
 	} finally {
@@ -499,19 +528,15 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 			await applied(sandbox, stamp);
 			opts.log(`network policy updated for new connections\n`);
 		}
-		const running = await liveHelper(sandbox);
-		if (running !== null) {
-			const configured = opts.policy.secrets.map(({ env }) => env);
-			for (const notice of restartNotices(running, configured)) {
-				opts.log(notice);
-			}
+		for (const notice of await restartNoticesFor(sandbox, opts.policy)) {
+			opts.log(notice);
 		}
 		return;
 	}
 
 	const paths = fencePaths(sandbox);
 	let offset = await sizeOf(paths.helperLog);
-	const child = await spawnHelper(sandbox, instance, secrets);
+	const child = await spawnHelper(sandbox, instance, opts.policy, secrets);
 
 	let exit: number | null = null;
 	child.on("exit", (code) => {
