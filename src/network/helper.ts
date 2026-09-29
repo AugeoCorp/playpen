@@ -1,12 +1,13 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { unlink } from "node:fs/promises";
 import { text as readText } from "node:stream/consumers";
+import { caDir } from "../config.ts";
 import { exists, readAppended, sizeOf, writeAtomic } from "../fs.ts";
 import * as lima from "../lima/client.ts";
 import { self } from "../session/proc.ts";
 import { attach, capture } from "../sh.ts";
 import { sleep } from "../time.ts";
-import { ensureCa } from "./ca.ts";
+import { readCa } from "./ca.ts";
 import {
 	cliPath,
 	type FencePaths,
@@ -29,7 +30,7 @@ import {
 	type Resolve,
 	startGatekeeper,
 } from "./gatekeeper.ts";
-import { interceptor } from "./intercept.ts";
+import { type Interceptor, interceptor } from "./intercept.ts";
 import { leafMinter } from "./leaf.ts";
 import {
 	DENY_HOST,
@@ -175,6 +176,9 @@ export function describeHeld(secrets: readonly HeldSecret[]): string {
  * The gatekeeper, and with any secret held, the interceptor that puts it into
  * requests for its hosts. The values stay in this process: the interceptor
  * closes over them, and the CA key is read from the data directory here.
+ *
+ * The CA is only read, never made: the guest trusts the one its image was
+ * baked with, and a new one would fail every handshake it was used for.
  */
 export async function startFenceGatekeeper(opts: {
 	held: readonly HeldSecret[];
@@ -183,10 +187,16 @@ export async function startFenceGatekeeper(opts: {
 	resolve?: Resolve;
 }): Promise<Gatekeeper> {
 	const { held, log } = opts;
-	const intercept =
-		held.length === 0
-			? null
-			: interceptor({ held, contextFor: leafMinter(await ensureCa()), log });
+	let intercept: Interceptor | null = null;
+	if (held.length > 0) {
+		const ca = await readCa();
+		if (ca === null) {
+			throw new Error(
+				`no playpen CA in ${caDir()} to sign certificates for the secrets' hosts; playpen start makes a new one, which the sandbox trusts only once rebuilt`,
+			);
+		}
+		intercept = interceptor({ held, contextFor: leafMinter(ca), log });
+	}
 	return startGatekeeper({
 		policy: opts.policy,
 		log,

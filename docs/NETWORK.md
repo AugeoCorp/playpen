@@ -413,27 +413,31 @@ anyway. Only the secrets whose entry names this host are swapped; a placeholder
 for any other goes out as it is.
 
 **The certificates.** A helper holding at least one secret reads the CA once at
-start (`ensureCa()`, which only reads a CA that exists). It makes one RSA key
-for its life and, for each host on first use, a certificate signed by the CA
-(`src/network/leaf.ts`): the host as its common name and its one DNS name, not a
-CA, server authentication only, valid for seven days, and naming the CA's key
-identifier, which Python's strict verification requires. One within a day of its
-end is minted again, since a helper lives as long as its VM. The guest accepts
-it because it trusts the CA (below).
+start (`readCa()`), and fails to start if there is none: a new CA made then
+would be one the running guest does not trust, and every intercepted handshake
+would fail. It makes one RSA key for its life and, for each host on first use, a
+certificate signed by the CA (`src/network/leaf.ts`): the host as its common
+name and its one DNS name, not a CA, server authentication only, valid for seven
+days, and naming the CA's key identifier, which Python's strict verification
+requires. One within a day of its end is minted again, since a helper lives as
+long as its VM. The guest accepts it because it trusts the CA (below).
 
 **What the log shows.** One `inject` line in `gatekeeper.log` per header a value
 went into, naming the host, the port, the header and the variable:
 `{"verdict":"inject","host":"api.github.com","port":443,"header":"authorization","env":"GH_TOKEN",…}`.
-A refused server name or `Host` is a `deny` line saying what was asked for; a
-TLS or upstream failure is an `error` line with the message alone. No line
-carries a value, and nothing logs a body.
+A wrong server name, `Host` or request target is a `deny` line saying what was
+asked for. A client that sends no server name is refused in the handshake too,
+but that shows up as an `error` line (OpenSSL's "no suitable signature
+algorithm"), since there was no name to check. Any other TLS or upstream failure
+is an `error` line with the message alone. No line carries a value, and nothing
+logs a body.
 
 **What it does not do.** HTTP/2: only `http/1.1` is offered, which gh, git, curl
-and Node fall back to. A client that sends no server name is refused. Plain HTTP
-to a secret's host is piped, placeholder and all, since there is no TLS to
-terminate. Nothing in a body, a URL or a query string is replaced, so a client
-that sends its token that way sends the placeholder. A value changed in your
-environment reaches the helper only on `playpen stop && playpen start`. The
+and Node fall back to. A client that sends no server name is refused, as above.
+Plain HTTP to a secret's host is piped, placeholder and all, since there is no
+TLS to terminate. Nothing in a body, a URL or a query string is replaced, so a
+client that sends its token that way sends the placeholder. A value changed in
+your environment reaches the helper only on `playpen stop && playpen start`. The
 upstream is checked against Node's own certificate list, plus any
 `NODE_EXTRA_CA_CERTS` in the environment `playpen start` ran with, not the
 host's system store.

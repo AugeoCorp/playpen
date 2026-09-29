@@ -69,7 +69,7 @@ function createCa(): Ca {
  * Both files, or null when the directory is not there yet. A key another user
  * could read is refused rather than used.
  */
-async function readCa(): Promise<Ca | null> {
+export async function readCa(): Promise<Ca | null> {
 	const keyPath = join(caDir(), KEY_FILE);
 	let keyPem: string;
 	try {

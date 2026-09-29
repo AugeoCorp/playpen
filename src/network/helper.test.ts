@@ -262,6 +262,7 @@ const secretPolicy: Policy = {
 
 test("the helper's gatekeeper terminates TLS for a secret's host with the install's CA", async (t) => {
 	await withTempData(t);
+	const ca = await ensureCa();
 	const gatekeeper = await startFenceGatekeeper({
 		held: [{ env: "GH_TOKEN", value: TOKEN }],
 		policy: () => secretPolicy,
@@ -274,9 +275,23 @@ test("the helper's gatekeeper terminates TLS for a secret's host with the instal
 		t,
 		gatekeeper.port,
 		"api.example",
-		(await ensureCa()).certPem,
+		ca.certPem,
 	);
 	assert.equal(cert.subjectAltName, "DNS:api.example");
+});
+
+test("the helper's gatekeeper holding a secret with no CA on disk fails to start, and makes none the guest would not trust", async (t) => {
+	const dataHome = await withTempData(t);
+
+	await assert.rejects(
+		startFenceGatekeeper({
+			held: [{ env: "GH_TOKEN", value: TOKEN }],
+			policy: () => secretPolicy,
+			log: () => {},
+		}),
+		/no playpen CA in .*playpen\/ca to sign certificates/,
+	);
+	assert.equal(existsSync(join(dataHome, "playpen", "ca")), false);
 });
 
 test("the helper's gatekeeper holding no secret pipes the same host, and never makes a CA", async (t) => {
