@@ -13,6 +13,9 @@ import {
  */
 export const HOST_ALIAS = "host.playpen.internal";
 
+/** The fence's own names all end here; none of them is a host on the internet. */
+export const FENCE_DOMAIN = ".playpen.internal";
+
 /**
  * The name the fence's own liveness check asks for. A request for it proves
  * the guest's route to the gatekeeper is carrying traffic and nothing else:
@@ -62,10 +65,20 @@ export interface PortForward {
 	guest: number;
 }
 
+/**
+ * A credential from this machine's environment that the sandbox may use on
+ * `hosts`. Names only: the value is read where it is used, never written to
+ * the policy.
+ */
+export interface SecretGrant {
+	env: string;
+	hosts: readonly string[];
+}
+
 export interface Policy {
 	/**
-	 * Built-in entries plus the project's `network.allow`, already merged, and
-	 * a `localhost:<host>` for each of `ports`.
+	 * Built-in entries plus the project's `network.allow`, already merged, a
+	 * `localhost:<host>` for each of `ports`, and every host of `secrets`.
 	 */
 	allow: readonly string[];
 	mode: "enforce" | "log";
@@ -76,6 +89,11 @@ export interface Policy {
 	 * in `allow` like any other, so a port is never a second way through.
 	 */
 	ports: readonly PortForward[];
+	/**
+	 * For whatever injects the values. `decide` never reads it: a secret's host
+	 * is reachable only because `allow` names it too.
+	 */
+	secrets: readonly SecretGrant[];
 }
 
 /**
@@ -155,6 +173,20 @@ export function parseEntry(raw: string): Entry | null {
 		return { kind: "host", host: hostPart, port, text };
 	}
 	return null;
+}
+
+/**
+ * The name a secret is injected for: a plain hostname, never an address or a
+ * port, and never one of the fence's own names, which stand for this machine.
+ */
+export function parseSecretHost(raw: string): string | null {
+	const entry = parseEntry(raw);
+	if (entry?.kind !== "host" || entry.port !== null) return null;
+	return entry.host.endsWith(FENCE_DOMAIN) ? null : entry.host;
+}
+
+export function isEnvName(name: string): boolean {
+	return /^[A-Z_][A-Z0-9_]*$/.test(name);
 }
 
 function matchesHost(entry: Extract<Entry, { kind: "host" }>, host: string) {

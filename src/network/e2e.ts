@@ -160,6 +160,7 @@ async function up(
 			],
 			mode: "enforce",
 			ports,
+			secrets: [],
 		},
 		// mounts.json needs some project even when the masked-file step is skipped.
 		mounts: { project: project === "" ? "/" : project, masked },

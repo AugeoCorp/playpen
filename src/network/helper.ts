@@ -1,7 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { exists, readAppended, sizeOf, writeAtomic } from "../fs.ts";
+import { exists, readAppended, sizeOrZero, writeAtomic } from "../fs.ts";
 import * as lima from "../lima/client.ts";
 import { isPlaypenInstance } from "../session/identity.ts";
 import { self } from "../session/proc.ts";
@@ -104,7 +104,7 @@ async function reloadPolicy(sandbox: string): Promise<Policy> {
 		say(
 			`policy.json is unreadable (${err}); denying everything until the next start`,
 		);
-		return { allow: [], mode: "enforce", ports: [] };
+		return { allow: [], mode: "enforce", ports: [], secrets: [] };
 	}
 }
 
@@ -344,7 +344,7 @@ export async function runHelper(
 		return 1;
 	}
 
-	const logFrom = await sizeOf(paths.gatekeeperLog);
+	const logFrom = await sizeOrZero(paths.gatekeeperLog);
 	const gatekeeper = await startGatekeeper({
 		policy: () => policy,
 		log: jsonLineAppender(paths.gatekeeperLog),

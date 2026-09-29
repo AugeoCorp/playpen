@@ -2,7 +2,8 @@
 
 Per-project [Lima](https://lima-vm.io) VMs for running coding agents without
 handing them your host filesystem. The project directory is mounted read-write
-at the same path inside the guest; nothing else of yours is.
+at the same path inside the guest, and the sandbox's own Claude history
+directory at `~/.claude/projects`; nothing else of yours is.
 
 ```
 cd ~/projects/api
@@ -65,6 +66,11 @@ fence -- stop it and start it again), or `-` (stopped).
 skills, plugins, OAuth token). `--no-auth` withholds the token, API-key settings
 and account identity. `--no-sync` skips the rest.
 
+Claude's transcripts and memory are written straight to the host, to
+`$XDG_DATA_HOME/playpen/history/<sandbox>/` (`~/.local/share` by default),
+mounted at the guest's `~/.claude/projects`. A rebuild, `remove` or a crashed VM
+leaves them there for the next `start`.
+
 ## Config
 
 Optional `playpen.config.ts` in the project root:
@@ -75,11 +81,11 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
 
 `examples/playpen.config.ts` shows every key, with a note on each.
 
-| Key       | Type                                                                                                     | Effect                                                                                                        |
-| --------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `masked`  | `string[]`                                                                                               | Project-relative dirs or files: the guest gets its own copy, and the host's contents stay out of it           |
-| `setup`   | `string[]`                                                                                               | Shell commands run in the guest, after masks, in order                                                        |
-| `network` | `{ allow?: string[]; mode?: "enforce" \| "log"; ports?: (number \| { host: number; guest: number })[] }` | Hosts this project may reach, on top of the ones playpen ships, and host ports it sees at its own `localhost` |
+| Key       | Type                                                                                                                                                   | Effect                                                                                                                              |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `masked`  | `string[]`                                                                                                                                             | Project-relative dirs or files: the guest gets its own copy, and the host's contents stay out of it                                 |
+| `setup`   | `string[]`                                                                                                                                             | Shell commands run in the guest, after masks, in order                                                                              |
+| `network` | `{ allow?: string[]; mode?: "enforce" \| "log"; ports?: (number \| { host: number; guest: number })[]; secrets?: { env: string; hosts: string[] }[] }` | Hosts this project may reach, on top of the ones playpen ships, host ports it sees at its own `localhost`, and credentials it names |
 
 - `masked` gives host and guest their own copy of a path, a directory or a file:
   the 9p share is slow, and the two often need different contents there — native
@@ -130,6 +136,14 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
   the guest: `playpen start` warns and carries on if something there already
   holds it. A stdio MCP server is a process, not a port, and this does not cover
   it.
+- `network.secrets` names credentials from your environment that the sandbox may
+  use on given hosts: `{ env: "GH_TOKEN", hosts: ["github.com"] }`. Names only,
+  never a value — the file sits in the project directory, which the sandbox
+  mounts. `env` is an upper-case variable name; each host is a plain hostname,
+  with no port and not an address. Injection will match the host exactly; the
+  allow entry it implies covers subdomains, like any entry in `allow`. A mistake
+  here stops the config loading rather than being skipped. Nothing is injected
+  yet: in this version an entry is checked and reported and does nothing else.
 - `mode: "log"` records what the sandbox reaches and blocks nothing on the
   internet side; your own machine's localhost stays closed in every mode. Use it
   to find the hosts a project needs, then list them; the default is `enforce`.

@@ -146,16 +146,16 @@ process the guest runs, not a port, so nothing here applies to it.
 ## Lifecycle
 
 `playpen start` writes the merged policy (the built-in list plus the project's
-`network.allow`, a `localhost:<host>` for each of its `network.ports`, and the
-ports themselves) to disk, then spawns the helper process detached so it
-outlives the command that started it. The helper starts the gatekeeper and the
-two relays, brings the VM up inside a fresh `bwrap` namespace, and waits for the
-guest to answer before returning -- streaming its own log to the terminal in the
-meantime. If a VM is already running and fenced with a live helper, `start`
-leaves the VM alone but still writes the policy, and says so when the file
-changed. If the VM is up but its helper died, `start` reattaches: a new
-gatekeeper and relay, no new namespace, since qemu and the inside relays were
-never the helper's children to lose.
+`network.allow`, a `localhost:<host>` for each of its `network.ports`, every
+host named by `network.secrets`, and the ports and secrets themselves) to disk,
+then spawns the helper process detached so it outlives the command that started
+it. The helper starts the gatekeeper and the two relays, brings the VM up inside
+a fresh `bwrap` namespace, and waits for the guest to answer before returning --
+streaming its own log to the terminal in the meantime. If a VM is already
+running and fenced with a live helper, `start` leaves the VM alone but still
+writes the policy, and says so when the file changed. If the VM is up but its
+helper died, `start` reattaches: a new gatekeeper and relay, no new namespace,
+since qemu and the inside relays were never the helper's children to lose.
 
 **policy.json is what the gatekeeper decides on**, not the copy the helper
 started with. The helper stats the file on the same few-second pass that watches
@@ -342,7 +342,9 @@ already merged -- and a mode, and applies these rules to every `CONNECT`:
   is rejected when the config is read. A `network.ports` entry brings its own
   `localhost:<host>` entry (see "Host ports at the guest's own `localhost`"
   above), and its connections arrive as `host.playpen.internal:<host>` like any
-  other, so this rule is the only one they meet.
+  other, so this rule is the only one they meet. A `network.secrets` host brings
+  its own bare entry the same way, and the fence's own names are refused there,
+  so no secret can be named for this machine.
 - **The guest's own idea of loopback never reaches the gatekeeper** -- that
   traffic stays inside the guest. A `CONNECT` that literally names `localhost`
   or `127.0.0.1` is therefore read as an attempt to reach the _host's_ loopback
@@ -369,8 +371,28 @@ common package managers need, not a measurement. It stays a guess until a
   can push a branch full of secrets to a repo it controls. The fence stops
   unknown destinations; it says nothing about what an agent does with the ones
   it is allowed to reach.
-- **The project mount is the sharing channel, by design.** It was never part of
-  what the fence closes.
+- **The project mount is the sharing channel, by design,** and so is the
+  sandbox's Claude history directory, mounted at the guest's
+  `~/.claude/projects`. Neither was ever part of what the fence closes.
+- **The guest writes both mounts as you,** since qemu creates every file with
+  your uid on the host. What else it can make there differs by mount:
+  - The project mount is 9p with Lima's default `securityModel`, `none`, so a
+    guest `chmod`, setuid bit or `ln -s` is real on the host. The guest can make
+    setuid files owned by you, executables, and symlinks that lead anywhere.
+    That is the price of sharing the project; anything you run over it on the
+    host is trusting the guest.
+  - The history directory is `mapped-xattr`. QEMU keeps the guest's modes and
+    owners in `user.virtfs.*` xattrs, and creates only regular `0600` files and
+    `0700` directories: a guest symlink is a regular file holding its target, a
+    fifo or device node is an empty file, and setuid or execute bits never reach
+    the host's mode. The guest still sees them as it made them. So nothing the
+    guest writes there is a live link, setuid or executable on the host. It
+    needs a host filesystem with user xattrs (ext4, btrfs and xfs have them).
+    playpen never reads inside it, and refuses one that is a link or not yours.
+  - Lima calls mapped modes "incompatible with symlinks". In practice that is
+    about real symlinks already on the host, made there or by a guest before the
+    model changed: the guest lists them as links but cannot read or follow them
+    (`ELOOP`), so they lead nowhere from inside.
 - **DNS lookups happen at the gatekeeper**, not in the guest, for every program
   that uses the guest's own resolver: `--dns virtual` makes tun2proxy answer
   those itself, so a hostname is not a side channel around the policy. A root

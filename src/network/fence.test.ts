@@ -129,18 +129,29 @@ async function dataDir(t: TestContext): Promise<void> {
 test("a policy that has not been written yet stamps differently from one that has", async (t) => {
 	await dataDir(t);
 	assert.equal(await policyStamp("api-abc123"), "");
-	await writePolicy("api-abc123", { allow: [], mode: "enforce", ports: [] });
+	await writePolicy("api-abc123", {
+		allow: [],
+		mode: "enforce",
+		ports: [],
+		secrets: [],
+	});
 	assert.notEqual(await policyStamp("api-abc123"), "");
 });
 
 test("rewriting a policy with different hosts changes its stamp", async (t) => {
 	await dataDir(t);
-	await writePolicy("api-abc123", { allow: [], mode: "enforce", ports: [] });
+	await writePolicy("api-abc123", {
+		allow: [],
+		mode: "enforce",
+		ports: [],
+		secrets: [],
+	});
 	const before = await policyStamp("api-abc123");
 	await writePolicy("api-abc123", {
 		allow: ["example.com:443"],
 		mode: "enforce",
 		ports: [],
+		secrets: [],
 	});
 	assert.notEqual(await policyStamp("api-abc123"), before);
 });
@@ -151,11 +162,17 @@ test("writing a policy says whether it changed what was already on disk", async 
 		allow: ["example.com:443"],
 		mode: "enforce",
 		ports: [],
+		secrets: [],
 	} as const;
 	assert.equal(await writePolicy("api-abc123", policy), true);
 	assert.equal(await writePolicy("api-abc123", policy), false);
 	assert.equal(
-		await writePolicy("api-abc123", { allow: [], mode: "enforce", ports: [] }),
+		await writePolicy("api-abc123", {
+			allow: [],
+			mode: "enforce",
+			ports: [],
+			secrets: [],
+		}),
 		true,
 	);
 });
@@ -166,19 +183,49 @@ test("the ports a policy forwards come back from policy.json as they were writte
 		allow: ["localhost:5000"],
 		mode: "enforce",
 		ports: [{ host: 5000, guest: 4321 }],
+		secrets: [],
+	} as const;
+	await writePolicy("api-abc123", policy);
+	assert.deepEqual(await readPolicy("api-abc123"), policy);
+});
+
+test("the secrets a policy carries come back from policy.json as they were written", async (t) => {
+	await dataDir(t);
+	const policy = {
+		allow: ["api.github.com", "github.com"],
+		mode: "enforce",
+		ports: [],
+		secrets: [{ env: "GH_TOKEN", hosts: ["api.github.com", "github.com"] }],
 	} as const;
 	await writePolicy("api-abc123", policy);
 	assert.deepEqual(await readPolicy("api-abc123"), policy);
 });
 
 /** A policy.json written by hand rather than by `writePolicy`. */
-async function policyWithPorts(ports: unknown): Promise<void> {
-	await writePolicy("api-abc123", { allow: [], mode: "enforce", ports: [] });
+async function policyWith(fields: {
+	ports?: unknown;
+	secrets?: unknown;
+}): Promise<void> {
+	await writePolicy("api-abc123", {
+		allow: [],
+		mode: "enforce",
+		ports: [],
+		secrets: [],
+	});
 	await writeFile(
 		fencePaths("api-abc123").policy,
-		JSON.stringify({ allow: [], mode: "enforce", ports }),
+		JSON.stringify({
+			allow: [],
+			mode: "enforce",
+			ports: [],
+			secrets: [],
+			...fields,
+		}),
 	);
 }
+
+const policyWithPorts = (ports: unknown) => policyWith({ ports });
+const policyWithSecrets = (secrets: unknown) => policyWith({ secrets });
 
 test("a policy.json whose ports are not all port numbers is refused, since the guest runs them as root", async (t) => {
 	await dataDir(t);
@@ -233,6 +280,44 @@ test("a policy.json with no ports at all is refused rather than read as forwardi
 	);
 });
 
+test("a policy.json whose secrets are malformed is refused", async (t) => {
+	await dataDir(t);
+	await policyWithSecrets([{ env: "gh token", hosts: ["github.com"] }]);
+	await assert.rejects(
+		readPolicy("api-abc123"),
+		/`secrets\[0\]\.env` must be an environment variable name/,
+	);
+	await policyWithSecrets([{ env: "GH_TOKEN", hosts: [] }]);
+	await assert.rejects(
+		readPolicy("api-abc123"),
+		/`secrets\[0\]\.hosts` must name at least one host/,
+	);
+	await policyWithSecrets([{ env: "GH_TOKEN", hosts: ["github.com:443"] }]);
+	await assert.rejects(
+		readPolicy("api-abc123"),
+		/`secrets\[0\]\.hosts\[0\]` must be a hostname without a port/,
+	);
+	await policyWithSecrets([{ env: "GH_TOKEN", hosts: ["10.0.0.5"] }]);
+	await assert.rejects(
+		readPolicy("api-abc123"),
+		/`secrets\[0\]\.hosts\[0\]` must be a hostname without a port/,
+	);
+	await policyWithSecrets("GH_TOKEN");
+	await assert.rejects(
+		readPolicy("api-abc123"),
+		/`secrets` must be an array of \{ env, hosts \}/,
+	);
+});
+
+test("a policy.json with no secrets at all is refused rather than read as injecting nothing", async (t) => {
+	await dataDir(t);
+	await policyWithSecrets(undefined);
+	await assert.rejects(
+		readPolicy("api-abc123"),
+		/`secrets` must be an array of \{ env, hosts \}/,
+	);
+});
+
 test("a running helper is found by the record it wrote", async (t) => {
 	await dataDir(t);
 	await mkdir(fencePaths("api-abc123").dir, { recursive: true });
@@ -265,7 +350,12 @@ async function dirMode(path: string): Promise<number> {
 
 test("writePolicy leaves the fence directory readable only by its owner", async (t) => {
 	await dataDir(t);
-	await writePolicy("api-abc123", { allow: [], mode: "enforce", ports: [] });
+	await writePolicy("api-abc123", {
+		allow: [],
+		mode: "enforce",
+		ports: [],
+		secrets: [],
+	});
 	assert.equal(await dirMode(fencePaths("api-abc123").dir), 0o700);
 });
 
@@ -274,7 +364,12 @@ test("writePolicy tightens a fence directory a previous version left world-reada
 	const { dir } = fencePaths("api-abc123");
 	await mkdir(dir, { recursive: true, mode: 0o755 });
 	assert.equal(await dirMode(dir), 0o755);
-	await writePolicy("api-abc123", { allow: [], mode: "enforce", ports: [] });
+	await writePolicy("api-abc123", {
+		allow: [],
+		mode: "enforce",
+		ports: [],
+		secrets: [],
+	});
 	assert.equal(await dirMode(dir), 0o700);
 });
 
