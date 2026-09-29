@@ -372,6 +372,7 @@ export async function runHelper(
 			: boundMasks(qemu, mounts.project, entries, paths);
 	};
 	let bound = await liveMasks(mounts.masked);
+	await report({ masked: bound });
 
 	const egress = await guestReachesGatekeeper(instance, paths, logFrom);
 	// Before `ready`, so the `playpen start` waiting on it can already name a
@@ -415,6 +416,7 @@ export async function runHelper(
 			// A VM that stopped between the two checks is not a replace.
 			if (!(await vmRunning(instance))) return;
 			bound = still;
+			await report({ masked: bound });
 			for (const entry of lost) {
 				say(
 					`masked: ${entry} was replaced on the host while the sandbox ran; stopping it so the new contents never reach the guest`,

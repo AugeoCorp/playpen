@@ -190,8 +190,14 @@ the VM with `limactl stop -f`, killing qemu itself if that fails. That is fail
 closed, not never: the guest has up to one poll (a few seconds) in which it can
 read the new contents.
 
-Two more facts about the entries:
+Three more facts about the entries:
 
+- What the helper bound is what `boundMasks` finds in qemu's namespace, not what
+  it asked bwrap for. It runs right after the VM is up, so a reattach to a qemu
+  that helper did not start reports the entries that qemu has, and helper.json's
+  `masked` is as of the last poll. `bringUp` tells the user to
+  `playpen stop && playpen start` for any entry that is on the host and not in
+  that list.
 - A symlink, a path under one, and a nested entry whose parent is gone all
   refuse the start. A guest can arrange each: only the bound path itself is
   protected from a rename, so it can rename the parent of a nested entry and

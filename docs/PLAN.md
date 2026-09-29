@@ -115,8 +115,8 @@ mask. The host half is the helper binding an empty read-only placeholder over
 each masked path in qemu's mount table (`docs/NETWORK.md`, Lifecycle), which is
 what keeps the host's contents out of the VM while the host path is not replaced
 under it; the helper detects a replace and stops the sandbox. It needs a fresh
-VM start. Changing `masked` now takes effect on the next `start` without a
-rebuild.
+VM start, and `start` says so for an entry added to a running sandbox. Changing
+`masked` now takes effect on the next `start` without a rebuild.
 
 Consequence: cpus, memory, disk and mountType come from the base, so they cannot
 yet vary per sandbox. They are global defaults today.
