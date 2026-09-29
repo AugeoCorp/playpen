@@ -66,7 +66,8 @@ interface Received {
 /**
  * The real host, as far as these tests go: an HTTPS server with a certificate
  * from `publicCa`, which answers every request with a fixed body and a header
- * of its own, or as `answer` says, and echoes a WebSocket-style upgrade.
+ * of its own, or as `answer` says, and echoes a WebSocket-style upgrade unless
+ * `upgrades` is false, when it answers an upgrade request as `answer` says.
  */
 async function upstreamHost(
 	t: TestContext,
@@ -74,6 +75,7 @@ async function upstreamHost(
 		res.setHeader("x-upstream", "yes");
 		res.end("hello from upstream");
 	},
+	{ upgrades = true }: { upgrades?: boolean } = {},
 ): Promise<{ port: number; received: Received[] }> {
 	const contextFor = leafMinter(publicCa);
 	const received: Received[] = [];
@@ -94,7 +96,8 @@ async function upstreamHost(
 			});
 		},
 	);
-	server.on("upgrade", (req, socket: Duplex) => {
+	// With no listener, Node hands an upgrade request to the request handler.
+	const upgrade = (req: http.IncomingMessage, socket: Duplex) => {
 		received.push({
 			authorization: req.headers.authorization,
 			rawHeaders: req.rawHeaders,
@@ -106,7 +109,8 @@ async function upstreamHost(
 			"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: echo\r\n\r\n",
 		);
 		socket.on("data", (chunk) => socket.write(`echo:${chunk}`));
-	});
+	};
+	if (upgrades) server.on("upgrade", upgrade);
 	// Closed here rather than left to the client's cleanup, which runs after
 	// this; `closeAllConnections` misses a connection that never sent a
 	// request, or that was upgraded.
@@ -137,28 +141,41 @@ function headersNamed(received: Received | undefined, name: string): string[] {
 /**
  * The host a test's upstream really is: the interceptor is told the approved
  * host and port, and this sends it to the test's own loopback server instead,
- * trusting `publicCa` there. The server name is left as the interceptor set it.
+ * trusting `ca` there. The server name is left as the interceptor set it.
  */
 function toUpstream(
 	port: number,
+	ca: Ca,
 ): (options: tls.ConnectionOptions) => tls.TLSSocket {
 	return (options) =>
-		tls.connect({ ...options, host: "127.0.0.1", port, ca: publicCa.certPem });
+		tls.connect({ ...options, host: "127.0.0.1", port, ca: ca.certPem });
 }
 
-/** The gatekeeper with the interceptor, holding GH_TOKEN, with every line it
- * logs collected. */
+/**
+ * The gatekeeper with the interceptor, holding GH_TOKEN, with every line it
+ * logs collected. With `upstreamPort`, `dials` gets the server name of each
+ * connection the interceptor opens to the host, so a test can tell a request
+ * that was never sent on from one that was cut off on its way.
+ */
 async function gatekeeperWith(
 	t: TestContext,
 	opts: {
 		policy: () => Policy;
 		held?: readonly HeldSecret[];
 		upstreamPort?: number;
+		/** What the host's certificate is verified against; `publicCa`, which
+		 * signed it, unless a test needs the check to fail. */
+		upstreamCa?: Ca;
 		resolveTo?: string;
 	},
-): Promise<{ port: number; log: LogEntry[] }> {
+): Promise<{ port: number; log: LogEntry[]; dials: string[] }> {
 	const log: LogEntry[] = [];
 	const record = (line: LogEntry) => log.push(line);
+	const dials: string[] = [];
+	const toHost =
+		opts.upstreamPort === undefined
+			? undefined
+			: toUpstream(opts.upstreamPort, opts.upstreamCa ?? publicCa);
 	const gatekeeper = await startGatekeeper({
 		policy: opts.policy,
 		log: record,
@@ -169,13 +186,18 @@ async function gatekeeperWith(
 			held: opts.held ?? [GH_TOKEN],
 			contextFor: leafMinter(playpenCa),
 			log: record,
-			...(opts.upstreamPort === undefined
+			...(toHost === undefined
 				? {}
-				: { connect: toUpstream(opts.upstreamPort) }),
+				: {
+						connect: (options: tls.ConnectionOptions) => {
+							dials.push(options.servername ?? "");
+							return toHost(options);
+						},
+					}),
 		}),
 	});
 	t.after(() => gatekeeper.close());
-	return { port: gatekeeper.port, log };
+	return { port: gatekeeper.port, log, dials };
 }
 
 /**
@@ -331,7 +353,7 @@ test("the host is dialed by the name the CONNECT approved", async (t) => {
 
 test("a request whose Host header names another site is refused, and nothing is sent on", async (t) => {
 	const upstream = await upstreamHost(t);
-	const { port, log } = await gatekeeperWith(t, {
+	const { port, log, dials } = await gatekeeperWith(t, {
 		policy: () => secretPolicy(),
 		upstreamPort: upstream.port,
 	});
@@ -344,7 +366,7 @@ test("a request whose Host header names another site is refused, and nothing is 
 	});
 
 	assert.equal(answer.status, 421);
-	assert.deepEqual(upstream.received, []);
+	assert.deepEqual(dials, [], "the host was dialed");
 	const denied = log.find((e) => e.verdict === "deny");
 	assert.match(
 		denied?.reason ?? "",
@@ -354,7 +376,7 @@ test("a request whose Host header names another site is refused, and nothing is 
 
 test("a request line naming another site in full is refused, and nothing is sent on", async (t) => {
 	const upstream = await upstreamHost(t);
-	const { port, log } = await gatekeeperWith(t, {
+	const { port, log, dials } = await gatekeeperWith(t, {
 		policy: () => secretPolicy(),
 		upstreamPort: upstream.port,
 	});
@@ -365,12 +387,71 @@ test("a request line naming another site in full is refused, and nothing is sent
 	});
 
 	assert.equal(answer.status, 421);
-	assert.deepEqual(upstream.received, []);
+	assert.deepEqual(dials, [], "the host was dialed");
 	const denied = log.find((e) => e.verdict === "deny");
 	assert.match(
 		denied?.reason ?? "",
 		/request target https:\/\/evil\.example\/steal is not a path on api\.example/,
 	);
+});
+
+test("a request target starting with // is refused, since a URL parser reads it as naming another host", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port, log, dials } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+
+	const answer = await send(clientThrough(t, port, "api.example:443"), {
+		path: "//evil.example/steal",
+		headers: { authorization: `token ${PLACEHOLDER}` },
+	});
+
+	assert.equal(answer.status, 421);
+	assert.deepEqual(dials, [], "the host was dialed");
+	const denied = log.find((e) => e.verdict === "deny");
+	assert.match(
+		denied?.reason ?? "",
+		/request target \/\/evil\.example\/steal starts with \/\//,
+	);
+});
+
+test("a request target of * is refused for any method but OPTIONS", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port, dials } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+
+	const answer = await send(clientThrough(t, port, "api.example:443"), {
+		method: "GET",
+		path: "*",
+		headers: { authorization: `token ${PLACEHOLDER}` },
+	});
+
+	assert.equal(answer.status, 421);
+	assert.deepEqual(dials, [], "the host was dialed");
+});
+
+test("a TRACE request is refused with a 405 before the host is dialed, since the host would echo the value back", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port, log, dials } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+
+	const answer = await send(clientThrough(t, port, "api.example:443"), {
+		method: "TRACE",
+		headers: { authorization: `token ${PLACEHOLDER}` },
+	});
+
+	assert.deepEqual(
+		{ status: answer.status, connection: answer.headers.connection },
+		{ status: 405, connection: "close" },
+	);
+	assert.deepEqual(dials, [], "the host was dialed");
+	const denied = log.find((e) => e.verdict === "deny");
+	assert.match(denied?.reason ?? "", /method TRACE echoes the request back/);
 });
 
 test("the host sees exactly one Host header, the approved host, when the guest sends two", async (t) => {
@@ -406,6 +487,10 @@ test("headers a front end could route by instead of Host never reach the host", 
 			"x-forwarded-host": "evil.example",
 			forwarded: "host=evil.example",
 			"x-original-url": "https://evil.example/",
+			"x-rewrite-url": "https://evil.example/",
+			"x-host": "evil.example",
+			"x-http-host-override": "evil.example",
+			"x-forwarded-server": "evil.example",
 		},
 	});
 
@@ -416,8 +501,20 @@ test("headers a front end could route by instead of Host never reach the host", 
 			xForwardedHost: headersNamed(received, "x-forwarded-host"),
 			forwarded: headersNamed(received, "forwarded"),
 			xOriginalUrl: headersNamed(received, "x-original-url"),
+			xRewriteUrl: headersNamed(received, "x-rewrite-url"),
+			xHost: headersNamed(received, "x-host"),
+			xHttpHostOverride: headersNamed(received, "x-http-host-override"),
+			xForwardedServer: headersNamed(received, "x-forwarded-server"),
 		},
-		{ xForwardedHost: [], forwarded: [], xOriginalUrl: [] },
+		{
+			xForwardedHost: [],
+			forwarded: [],
+			xOriginalUrl: [],
+			xRewriteUrl: [],
+			xHost: [],
+			xHttpHostOverride: [],
+			xForwardedServer: [],
+		},
 	);
 });
 
@@ -623,6 +720,148 @@ test("an upgrade request gets the real value too, and the upgraded connection ca
 	assert.equal(upstream.received[0]?.authorization, "token ghp_real_value");
 });
 
+test("an upgrade request whose Host names another site is refused with a 421, and nothing is sent on", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port, log, dials } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+	const secure = await tlsOver(
+		t,
+		await tunnel(port, "api.example:443"),
+		"api.example",
+	);
+
+	secure.write(
+		`GET /socket HTTP/1.1\r\nHost: evil.example\r\nConnection: Upgrade\r\nUpgrade: echo\r\nAuthorization: token ${PLACEHOLDER}\r\n\r\n`,
+	);
+	const answer = await readUntil(secure, "\r\n\r\n");
+
+	assert.match(answer, /^HTTP\/1\.1 421 /);
+	assert.deepEqual(dials, [], "the host was dialed");
+	const denied = log.find((e) => e.verdict === "deny");
+	assert.match(
+		denied?.reason ?? "",
+		/Host header evil\.example is not api\.example/,
+	);
+});
+
+test("an upgrade request with the TRACE method is refused with a 405, and nothing is sent on", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port, log, dials } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+	const secure = await tlsOver(
+		t,
+		await tunnel(port, "api.example:443"),
+		"api.example",
+	);
+
+	secure.write(
+		`TRACE /socket HTTP/1.1\r\nHost: api.example\r\nConnection: Upgrade\r\nUpgrade: echo\r\nAuthorization: token ${PLACEHOLDER}\r\n\r\n`,
+	);
+	const answer = await readUntil(secure, "\r\n\r\n");
+
+	assert.match(answer, /^HTTP\/1\.1 405 /);
+	assert.deepEqual(dials, [], "the host was dialed");
+	const denied = log.find((e) => e.verdict === "deny");
+	assert.match(denied?.reason ?? "", /method TRACE echoes the request back/);
+});
+
+test("an upgrade request reaches the host with one Host, the approved one, and no routing headers", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+	const secure = await tlsOver(
+		t,
+		await tunnel(port, "api.example:443"),
+		"api.example",
+	);
+
+	secure.write(
+		[
+			"GET /socket HTTP/1.1",
+			"Host: api.example",
+			"Host: evil.example",
+			"X-Forwarded-Host: evil.example",
+			"Forwarded: host=evil.example",
+			"X-Original-URL: https://evil.example/",
+			"X-Host: evil.example",
+			"Connection: Upgrade",
+			"Upgrade: echo",
+			"",
+			"",
+		].join("\r\n"),
+	);
+	await readUntil(secure, "\r\n\r\n");
+
+	const received = upstream.received[0];
+	assert.ok(received, "the upgrade request never arrived");
+	assert.deepEqual(
+		{
+			host: headersNamed(received, "host"),
+			xForwardedHost: headersNamed(received, "x-forwarded-host"),
+			forwarded: headersNamed(received, "forwarded"),
+			xOriginalUrl: headersNamed(received, "x-original-url"),
+			xHost: headersNamed(received, "x-host"),
+		},
+		{
+			host: ["api.example"],
+			xForwardedHost: [],
+			forwarded: [],
+			xOriginalUrl: [],
+			xHost: [],
+		},
+	);
+});
+
+test("a host declining an upgrade has its answer passed back as a plain response, unchunked, and the tunnel closed after it", async (t) => {
+	const upstream = await upstreamHost(
+		t,
+		(res) => {
+			// No length, so the host sends it chunked.
+			res.write("no ");
+			res.end("upgrade");
+		},
+		{ upgrades: false },
+	);
+	const { port } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+	const secure = await tlsOver(
+		t,
+		await tunnel(port, "api.example:443"),
+		"api.example",
+	);
+
+	secure.write(
+		"GET /socket HTTP/1.1\r\nHost: api.example\r\nConnection: Upgrade\r\nUpgrade: echo\r\n\r\n",
+	);
+	const answer = await Promise.race([
+		readToClose(secure),
+		setTimeout(1000, "still open after a second", { ref: false }),
+	]);
+
+	assert.match(answer, /^HTTP\/1\.1 200 /);
+	assert.doesNotMatch(answer, /transfer-encoding/i);
+	assert.match(answer, /\r\n\r\nno upgrade$/);
+});
+
+/** Everything `socket` sends from now until it closes. */
+function readToClose(socket: tls.TLSSocket): Promise<string> {
+	return new Promise((resolve) => {
+		let seen = "";
+		socket.on("data", (chunk: Buffer) => {
+			seen += chunk.toString();
+		});
+		socket.on("close", () => resolve(seen));
+	});
+}
+
 /** What `socket` sends from now until `end` has arrived, `end` included. */
 function readUntil(socket: tls.TLSSocket, end: string): Promise<string> {
 	return new Promise((resolve) => {
@@ -637,7 +876,7 @@ function readUntil(socket: tls.TLSSocket, end: string): Promise<string> {
 	});
 }
 
-test("a host no secret names is piped untouched: the guest sees the host's own certificate, and the host the placeholder", async (t) => {
+test("a tunnel the interceptor declines is piped untouched: the guest sees the host's own certificate, and the host the placeholder", async (t) => {
 	const upstream = await upstreamHost(t);
 	const { port } = await gatekeeperWith(t, {
 		policy: () => secretPolicy([`localhost:${upstream.port}`]),
@@ -774,6 +1013,24 @@ test("the guest's hop-by-hop headers do not reach the host", async (t) => {
 	);
 });
 
+test("the host's hop-by-hop headers do not reach the guest", async (t) => {
+	const upstream = await upstreamHost(t, (res) => {
+		res.setHeader("keep-alive", "timeout=1");
+		res.end("hello from upstream");
+	});
+	const { port } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+
+	const answer = await send(clientThrough(t, port, "api.example:443"), {
+		headers: {},
+	});
+
+	// The interceptor's own keep-alive to the guest is Node's default, 5 s.
+	assert.equal(answer.headers["keep-alive"], "timeout=5");
+});
+
 test("the host is dialed only at an address the gatekeeper's own rules allow", async (t) => {
 	const { port, log } = await gatekeeperWith(t, {
 		policy: () => secretPolicy(),
@@ -822,6 +1079,26 @@ test("a request whose dial is refused logs no injection, since the value never l
 	assert.deepEqual(
 		log.filter((e) => e.verdict === "inject"),
 		[],
+	);
+});
+
+test("a request to a host whose certificate fails verification gets a 502 and an error line, and logs no injection", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port, log } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+		// The host's certificate is from publicCa, so this check fails.
+		upstreamCa: playpenCa,
+	});
+
+	const answer = await send(clientThrough(t, port, "api.example:443"), {
+		headers: { authorization: `token ${PLACEHOLDER}` },
+	});
+
+	assert.equal(answer.status, 502);
+	assert.deepEqual(
+		log.map((e) => e.verdict),
+		["allow", "error"],
 	);
 });
 

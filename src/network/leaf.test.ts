@@ -111,7 +111,7 @@ test("the certificate names the CA's key as its issuer's, which strict clients r
 	);
 });
 
-test("the certificate is valid for seven days", async (t) => {
+test("the certificate is valid for seven days, from a minute before it was minted, so a guest clock running a little slow accepts it", async (t) => {
 	const minted = Date.parse("2026-09-01T00:00:00Z");
 	const cert = await served(
 		t,
@@ -119,7 +119,13 @@ test("the certificate is valid for seven days", async (t) => {
 		"api.github.com",
 		{ verify: false },
 	);
-	assert.equal(Date.parse(cert.validTo), Date.parse("2026-09-08T00:00:00Z"));
+	assert.deepEqual(
+		{ validFrom: new Date(cert.validFrom), validTo: new Date(cert.validTo) },
+		{
+			validFrom: new Date("2026-08-31T23:59:00Z"),
+			validTo: new Date("2026-09-08T00:00:00Z"),
+		},
+	);
 });
 
 test("the same host is served the same certificate on every connection", async (t) => {
