@@ -125,10 +125,12 @@ yet vary per sandbox. They are global defaults today.
       that does not hold it yet, with `--keep-newer-files`; round-trip verified
       on the host 2026-09-15. Which VM holds the copy is a marker in the Lima
       instance's directory, so a reclone never inherits it. Only a VM that holds
-      the copy, or one with no copy on the host, may replace it: a failed
-      restore warns, is retried by the next start, and until then a stop saves
-      nothing. A stopped sandbox is deleted without booting it; one stopped
-      outside playpen loses what it wrote since its last `playpen stop`
+      the copy, or one with no copy on the host, may replace it; a stop first
+      restores into a VM that does not, so a sandbox from before this saves a
+      superset. A failed restore warns and is retried by the next start; a stop
+      in between saves to `.unrestored.tar` instead. A stopped sandbox is
+      deleted without booting it; one stopped outside playpen loses what it
+      wrote since its last `playpen stop`
 - [x] verified on the host: a fresh sandbox clones and boots in 10s, with no
       package installs and no image download
 
