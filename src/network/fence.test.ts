@@ -1,10 +1,19 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
+import {
+	link,
+	mkdir,
+	mkdtemp,
+	rm,
+	stat,
+	symlink,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
 import { self } from "../session/proc.ts";
 import {
+	boundMasks,
 	classifyFence,
 	fencePaths,
 	liveHelper,
@@ -13,6 +22,7 @@ import {
 	policyStamp,
 	readMounts,
 	readPolicy,
+	underMaskedDir,
 	warnUnboundMasks,
 	writeHelper,
 	writeMounts,
@@ -30,7 +40,6 @@ const helper = {
 	ready: true,
 	egress: true,
 	policy: "1:2",
-	masked: [],
 };
 
 test("a sandbox's sockets and logs live together under the data directory", () => {
@@ -274,17 +283,16 @@ test("a helper record carries the entries it bound", async (t) => {
 	assert.deepEqual((await liveHelper("api-abc123"))?.masked, ["node_modules"]);
 });
 
-test("a helper record from before host-side masks still reads as live, binding nothing", async (t) => {
+test("a helper record from before host-side masks still reads as live, with no masked list", async (t) => {
 	await dataDir(t);
 	await mkdir(fencePaths("api-abc123").dir, { recursive: true });
-	const { masked: _, ...older } = helper;
 	await writeFile(
 		fencePaths("api-abc123").helper,
-		JSON.stringify({ ...older, ...(await self()) }),
+		JSON.stringify({ ...helper, ...(await self()) }),
 	);
 	const record = await liveHelper("api-abc123");
 	assert.notEqual(record, null);
-	assert.deepEqual(record?.masked, []);
+	assert.equal(record?.masked, undefined);
 });
 
 /** A project with a file, a directory and a symlink in it. */
@@ -330,4 +338,147 @@ test("an entry with nothing on the host, or a symlink, is not asked to be restar
 		(text) => said.push(text),
 	);
 	assert.deepEqual(said, []);
+});
+
+test("an entry under a listed directory is under it, whichever is listed first", () => {
+	assert.equal(
+		underMaskedDir("config/secrets.json", ["config"]),
+		true,
+		"config/secrets.json, with config listed",
+	);
+	assert.equal(
+		underMaskedDir("config/secrets.json", ["config/secrets.json", "config"]),
+		true,
+		"config/secrets.json, with itself listed before config",
+	);
+});
+
+test("an entry beside a listed one, or the listed one itself, is not under it", () => {
+	assert.equal(
+		underMaskedDir("config", ["config/secrets.json"]),
+		false,
+		"config, with only a path inside it listed",
+	);
+	assert.equal(
+		underMaskedDir("config-old/x", ["config"]),
+		false,
+		"config-old/x, with config listed",
+	);
+	assert.equal(
+		underMaskedDir("config", ["config"]),
+		false,
+		"config, with config listed",
+	);
+});
+
+test("an entry under a masked directory is not asked to be restarted for", async (t) => {
+	const dir = await projectDir(t);
+	await mkdir(join(dir, "config"));
+	await writeFile(join(dir, "config", "secrets.json"), "{}\n");
+	const said: string[] = [];
+	await warnUnboundMasks(
+		{ project: dir, masked: ["config/secrets.json", "config"] },
+		["config"],
+		(text) => said.push(text),
+	);
+	assert.deepEqual(said, []);
+});
+
+const QEMU = 4242;
+const PROJECT = "/work/api";
+
+/**
+ * A stand-in for /proc: `<proc>/4242/root/work/api` is qemu's view of the
+ * project, and the placeholders sit on the same filesystem, as they do for
+ * a real bind, so a bound entry is the placeholder's own inode.
+ */
+async function fakeProc(t: TestContext): Promise<{
+	proc: string;
+	view: string;
+	placeholders: { emptyFile: string; emptyDir: string };
+}> {
+	const root = await mkdtemp(join(tmpdir(), "playpen-proc-"));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const proc = join(root, "proc");
+	const view = join(proc, String(QEMU), "root", PROJECT);
+	await mkdir(view, { recursive: true });
+	const placeholders = {
+		emptyFile: join(root, "fence", "empty-file"),
+		emptyDir: join(root, "fence", "empty-dir"),
+	};
+	await mkdir(placeholders.emptyDir, { recursive: true });
+	await writeFile(placeholders.emptyFile, "");
+	return { proc, view, placeholders };
+}
+
+test("a masked file showing the placeholder's own inode is bound", async (t) => {
+	const { proc, view, placeholders } = await fakeProc(t);
+	await link(placeholders.emptyFile, join(view, ".env"));
+	assert.deepEqual(
+		await boundMasks(QEMU, PROJECT, [".env"], placeholders, proc),
+		[".env"],
+	);
+});
+
+test("a masked directory showing the placeholder's own inode is bound", async (t) => {
+	const { proc, view, placeholders } = await fakeProc(t);
+	await symlink(placeholders.emptyDir, join(view, "node_modules"));
+	assert.deepEqual(
+		await boundMasks(QEMU, PROJECT, ["node_modules"], placeholders, proc),
+		["node_modules"],
+	);
+});
+
+test("a masked file replaced on the host, so qemu now sees another inode there, is not bound", async (t) => {
+	const { proc, view, placeholders } = await fakeProc(t);
+	await link(placeholders.emptyFile, join(view, ".env"));
+	await writeFile(join(view, ".env.local"), "SECRET=2\n");
+	assert.deepEqual(
+		await boundMasks(QEMU, PROJECT, [".env", ".env.local"], placeholders, proc),
+		[".env"],
+	);
+});
+
+test("a masked directory replaced by a real one is not bound", async (t) => {
+	const { proc, view, placeholders } = await fakeProc(t);
+	await mkdir(join(view, "node_modules"));
+	assert.deepEqual(
+		await boundMasks(QEMU, PROJECT, ["node_modules"], placeholders, proc),
+		[],
+	);
+});
+
+test("a masked entry gone from qemu's view is not bound", async (t) => {
+	const { proc, placeholders } = await fakeProc(t);
+	assert.deepEqual(
+		await boundMasks(QEMU, PROJECT, [".env"], placeholders, proc),
+		[],
+	);
+});
+
+test("nothing is bound for a qemu whose /proc entry is gone", async (t) => {
+	const { proc, view, placeholders } = await fakeProc(t);
+	await link(placeholders.emptyFile, join(view, ".env"));
+	assert.deepEqual(
+		await boundMasks(9999, PROJECT, [".env"], placeholders, proc),
+		[],
+	);
+});
+
+test("nothing is bound when the placeholders themselves are missing", async (t) => {
+	const { proc, view, placeholders } = await fakeProc(t);
+	await link(placeholders.emptyFile, join(view, ".env"));
+	assert.deepEqual(
+		await boundMasks(
+			QEMU,
+			PROJECT,
+			[".env"],
+			{
+				emptyFile: join(proc, "no-such-file"),
+				emptyDir: placeholders.emptyDir,
+			},
+			proc,
+		),
+		[],
+	);
 });

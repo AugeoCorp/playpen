@@ -1,4 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import type { Stats } from "node:fs";
 import {
 	chmod,
 	lstat,
@@ -53,9 +54,9 @@ export interface FencePaths {
 	policy: string;
 	/** Which project paths the next fresh helper hides from qemu's 9p share. */
 	mounts: string;
-	/** Read-only source bound over a masked file; never written to. */
+	/** Bound read-only over a masked file; nothing reaches it through the bind. */
 	emptyFile: string;
-	/** Read-only source bound over a masked directory; never written to. */
+	/** Bound read-only over a masked directory; nothing reaches it through the bind. */
 	emptyDir: string;
 	gatekeeperLog: string;
 	helperLog: string;
@@ -115,14 +116,15 @@ export interface HelperRecord extends Owner {
 	 */
 	unboundPorts?: PortForward[];
 	/**
-	 * The `masked` entries (project-relative) this helper's qemu had a
-	 * placeholder bound over, so `bringUp` can tell a mask added since the
-	 * sandbox started from one the running qemu already has: a mount table
-	 * cannot be rewritten under a running process. Empty for a helper older
-	 * than host-side masks, and for one that reattached to a qemu it did not
-	 * start, which cannot know.
+	 * The `masked` entries (project-relative) that have a placeholder bound
+	 * over them in qemu's mount table right now, read from qemu's own namespace
+	 * by `boundMasks` rather than remembered: so `bringUp` can tell a mask added
+	 * since the sandbox started from one the running qemu already has, a
+	 * reattached qemu counts the same as one this helper started, and an entry
+	 * replaced on the host drops out. Absent for a helper older than host-side
+	 * masks.
 	 */
-	masked: string[];
+	masked?: string[];
 }
 
 export async function writeHelper(
@@ -135,9 +137,7 @@ export async function writeHelper(
 async function readHelper(sandbox: string): Promise<HelperRecord | null> {
 	try {
 		const raw = await readFile(fencePaths(sandbox).helper, "utf8");
-		const parsed = JSON.parse(raw) as Omit<HelperRecord, "masked"> &
-			Partial<Pick<HelperRecord, "masked">>;
-		return { ...parsed, masked: parsed.masked ?? [] };
+		return JSON.parse(raw) as HelperRecord;
 	} catch {
 		return null;
 	}
@@ -255,7 +255,9 @@ export type MaskKind = "dir" | "file" | "missing" | "symlink" | "under-symlink";
  * What is on the host at a masked entry, without following it. Only a `dir` or
  * a `file` can have a placeholder bound over it: bwrap would create a missing
  * path on the host's disk, and a symlink, or a path through one, may lead
- * outside the project.
+ * outside the project. A guest can leave a nested entry symlinked or missing
+ * by renaming its parent, since only the bound path itself is protected from a
+ * rename.
  */
 export async function maskKind(
 	project: string,
@@ -275,6 +277,59 @@ export async function maskKind(
 		if (code === "ENOENT" || code === "ENOTDIR") return "missing";
 		throw err;
 	}
+}
+
+/**
+ * Whether `entry` lies under another entry of `masked`. That entry's
+ * placeholder already hides it, and bwrap cannot create a bind target inside
+ * the read-only placeholder directory, whichever order the two are bound in.
+ */
+export function underMaskedDir(
+	entry: string,
+	masked: readonly string[],
+): boolean {
+	return masked.some((other) => entry.startsWith(`${other}/`));
+}
+
+/**
+ * The entries that have a placeholder bound over them in qemu's own mount
+ * namespace, which `/proc/<pid>/root` resolves into. A bound entry is the
+ * placeholder's own inode; a host-side replace (rename over, `sed -i`,
+ * `git checkout`) detaches the bind in qemu's namespace and leaves the new
+ * file's inode there. An entry that cannot be read is not bound: what cannot be
+ * shown to be hidden is not claimed to be. `procDir` is a parameter so a test
+ * can lay out a fake one.
+ */
+export async function boundMasks(
+	qemu: number,
+	project: string,
+	entries: readonly string[],
+	placeholders: Pick<FencePaths, "emptyFile" | "emptyDir">,
+	procDir = "/proc",
+): Promise<string[]> {
+	let sources: Stats[];
+	try {
+		sources = [
+			await stat(placeholders.emptyFile),
+			await stat(placeholders.emptyDir),
+		];
+	} catch {
+		return [];
+	}
+	const bound: string[] = [];
+	for (const entry of entries) {
+		try {
+			const seen = await stat(
+				join(procDir, String(qemu), "root", project, entry),
+			);
+			if (sources.some((s) => s.dev === seen.dev && s.ino === seen.ino)) {
+				bound.push(entry);
+			}
+		} catch {
+			// Gone from qemu's view, or not readable: not bound.
+		}
+	}
+	return bound;
 }
 
 export type FenceState =
@@ -325,7 +380,7 @@ export function looksLikeQemu(cmdline: string): boolean {
 
 /** Lima's own file, and it outlives the process it names, so nothing here
  * trusts the number beyond asking /proc whether it is still qemu. */
-async function qemuPid(instance: string): Promise<number | null> {
+export async function qemuPid(instance: string): Promise<number | null> {
 	let raw: string;
 	try {
 		raw = await readFile(join(limaHome(), instance, "qemu.pid"), "utf8");
@@ -427,9 +482,10 @@ const APPLY_WINDOW_MS = 15_000;
  * not yet deciding anything. Connections already open stay open either way;
  * the policy decides new ones.
  *
- * Masks are the opposite: fixed when qemu starts. A running helper is only
- * asked which entries it bound, and told to restart for the rest; mounts.json
- * is written only for a helper about to be spawned.
+ * Masks are the opposite: fixed when qemu starts. Whichever way the helper
+ * came up, the entries it reports bound are the ones qemu's own namespace shows
+ * bound, and the user is told to restart for the rest. mounts.json is written
+ * only for a helper about to be spawned.
  */
 export async function bringUp(opts: BringUpOptions): Promise<void> {
 	const { sandbox, instance } = opts;
@@ -463,7 +519,11 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 	const deadline = Date.now() + (opts.timeoutMs ?? 10 * 60_000);
 	for (;;) {
 		offset = await drain(paths.helperLog, offset, opts.log);
-		if ((await liveHelper(sandbox))?.ready === true) return;
+		const helper = await liveHelper(sandbox);
+		if (helper?.ready === true) {
+			await warnUnboundMasks(opts.mounts, helper.masked ?? [], opts.log);
+			return;
+		}
 		if (exit !== null) {
 			throw new Error(
 				`the network helper for ${sandbox} exited ${exit}; see ${paths.helperLog}`,
@@ -490,7 +550,7 @@ export async function warnUnboundMasks(
 	log: (text: string) => void,
 ): Promise<void> {
 	for (const entry of mounts.masked) {
-		if (bound.includes(entry)) continue;
+		if (bound.includes(entry) || underMaskedDir(entry, mounts.masked)) continue;
 		const kind = await maskKind(mounts.project, entry);
 		if (kind !== "dir" && kind !== "file") continue;
 		log(

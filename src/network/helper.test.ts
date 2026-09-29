@@ -132,8 +132,11 @@ async function maskedProject(t: TestContext): Promise<{
 	t.after(() => rm(root, { recursive: true, force: true }));
 	const project = join(root, "project");
 	await mkdir(join(project, "node_modules"), { recursive: true });
+	await mkdir(join(project, "config"));
 	await writeFile(join(project, ".env"), "SECRET=1\n");
+	await writeFile(join(project, "config", "secrets.json"), "{}\n");
 	await symlink(".env", join(project, "linked"));
+	await symlink("node_modules", join(project, "via"));
 	return {
 		project,
 		paths: {
@@ -145,7 +148,7 @@ async function maskedProject(t: TestContext): Promise<{
 
 test("each masked entry on the host gets a read-only bind of the placeholder of its kind", async (t) => {
 	const { project, paths } = await maskedProject(t);
-	const { args, bound } = await maskBinds(
+	const args = await maskBinds(
 		paths,
 		{ project, masked: ["node_modules", ".env"] },
 		() => {},
@@ -158,7 +161,6 @@ test("each masked entry on the host gets a read-only bind of the placeholder of 
 		paths.emptyFile,
 		join(project, ".env"),
 	]);
-	assert.deepEqual(bound, ["node_modules", ".env"]);
 });
 
 test("the placeholders are made empty, and only when something is bound", async (t) => {
@@ -174,45 +176,84 @@ test("the placeholders are made empty, and only when something is bound", async 
 	assert.deepEqual(await readdir(paths.emptyDir), []);
 });
 
-test("an entry missing on the host is skipped, since bwrap would create it on the host's disk", async (t) => {
+test("an entry missing on the host is not bound, and the line says the guest will create it as a directory", async (t) => {
 	const { project, paths } = await maskedProject(t);
 	const said: string[] = [];
-	const { args, bound } = await maskBinds(
-		paths,
-		{ project, masked: ["absent"] },
-		(line) => said.push(line),
+	const args = await maskBinds(paths, { project, masked: ["absent"] }, (line) =>
+		said.push(line),
 	);
 	assert.deepEqual(args, []);
-	assert.deepEqual(bound, []);
 	assert.deepEqual(said, [
-		"masked: absent is not on the host; nothing to hide",
+		"masked: absent is not on the host; the guest will create it there as an empty directory",
 	]);
 });
 
-test("a symlink is skipped with a line saying so", async (t) => {
+test("a nested entry missing under a top-level directory that is missing too is skipped like any missing entry", async (t) => {
 	const { project, paths } = await maskedProject(t);
 	const said: string[] = [];
-	const { args, bound } = await maskBinds(
+	const args = await maskBinds(
 		paths,
-		{ project, masked: ["linked"] },
+		{ project, masked: ["packages/app/node_modules"] },
 		(line) => said.push(line),
 	);
 	assert.deepEqual(args, []);
-	assert.deepEqual(bound, []);
 	assert.deepEqual(said, [
-		"masked: linked is a symlink; a symlink is not masked",
+		"masked: packages/app/node_modules is not on the host; the guest will create it there as an empty directory",
 	]);
 });
 
-test("one line is logged for each entry skipped, and none for one bound", async (t) => {
+test("a nested entry missing while its top-level directory is there refuses the start", async (t) => {
 	const { project, paths } = await maskedProject(t);
-	const said: string[] = [];
-	await maskBinds(
-		paths,
-		{ project, masked: [".env", "absent", "linked"] },
-		(l) => said.push(l),
+	await assert.rejects(
+		maskBinds(paths, { project, masked: ["config/other.json"] }, () => {}),
+		{
+			message:
+				"masked: config is on the host but config/other.json is not; create config/other.json on the host before starting",
+		},
 	);
-	assert.equal(said.length, 2);
+});
+
+test("a symlink refuses the start, naming the entry", async (t) => {
+	const { project, paths } = await maskedProject(t);
+	await assert.rejects(
+		maskBinds(paths, { project, masked: ["linked"] }, () => {}),
+		{
+			message:
+				"masked: linked is a symlink on the host; replace it with the real path before starting",
+		},
+	);
+});
+
+test("an entry under a symlink refuses the start, naming the entry", async (t) => {
+	const { project, paths } = await maskedProject(t);
+	await assert.rejects(
+		maskBinds(paths, { project, masked: ["via/inside"] }, () => {}),
+		{
+			message:
+				"masked: via/inside is under a symlink on the host; replace it with the real path before starting",
+		},
+	);
+});
+
+test("an entry under a masked directory is not bound, since the directory's placeholder hides it, whichever is listed first", async (t) => {
+	const { project, paths } = await maskedProject(t);
+	const dirBinds = ["--ro-bind", paths.emptyDir, join(project, "config")];
+	assert.deepEqual(
+		await maskBinds(
+			paths,
+			{ project, masked: ["config", "config/secrets.json"] },
+			() => {},
+		),
+		dirBinds,
+	);
+	assert.deepEqual(
+		await maskBinds(
+			paths,
+			{ project, masked: ["config/secrets.json", "config"] },
+			() => {},
+		),
+		dirBinds,
+	);
 });
 
 test("the mask binds come after the root bind and before the command", () => {

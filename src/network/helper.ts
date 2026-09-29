@@ -1,12 +1,14 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdir, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { exists, readAppended, sizeOf, writeAtomic } from "../fs.ts";
 import * as lima from "../lima/client.ts";
+import { isPlaypenInstance } from "../session/identity.ts";
 import { self } from "../session/proc.ts";
 import { attach, capture } from "../sh.ts";
 import { sleep } from "../time.ts";
 import {
+	boundMasks,
 	cliPath,
 	type FencePaths,
 	fencePaths,
@@ -17,9 +19,11 @@ import {
 	type Mounts,
 	maskKind,
 	policyStamp,
+	qemuPid,
 	readMounts,
 	readPolicy,
 	removeSocket,
+	underMaskedDir,
 	writeHelper,
 } from "./fence.ts";
 import {
@@ -109,21 +113,42 @@ async function reloadPolicy(sandbox: string): Promise<Policy> {
  * the file `playpen start` writes -- which is how a sandbox that is already up
  * picks up a tightened allow list. `stamp` is the file the current policy
  * came from; `swap` is told the new stamp with the policy so it can report
- * what is now applied.
+ * what is now applied. `audit` runs on every poll, before the policy check.
  */
 async function serveWhileRunning(
 	sandbox: string,
 	instance: string,
 	stamp: string,
 	swap: (policy: Policy, stamp: string) => Promise<void>,
+	audit: () => Promise<void>,
 ): Promise<void> {
 	while (await vmRunning(instance)) {
 		await sleep(POLL_MS);
+		await audit();
 		const now = await policyStamp(sandbox);
 		if (now === stamp) continue;
 		stamp = now;
 		await swap(await reloadPolicy(sandbox), stamp);
 	}
+}
+
+/**
+ * Fail closed on a masked path replaced on the host: qemu now serves the
+ * host's new contents there. `limactl stop -f` is the same stop the rest of
+ * playpen uses; it is forced because the guest is not to be given the time a
+ * clean shutdown takes. If it cannot stop the VM, qemu is killed directly:
+ * killing the bwrap child would not do, since `--die-with-parent` reaches only
+ * the inside half, not the qemu that limactl started under it.
+ */
+async function stopVm(instance: string): Promise<void> {
+	try {
+		await lima.stop(instance, true);
+		return;
+	} catch (err) {
+		say(`could not stop ${instance} (${err}); killing its qemu`);
+	}
+	const qemu = isPlaypenInstance(instance) ? await qemuPid(instance) : null;
+	if (qemu !== null) process.kill(qemu, "SIGKILL");
 }
 
 /**
@@ -155,39 +180,61 @@ function jsonLineAppender(path: string): (entry: LogEntry) => void {
  * placeholder over it in the mount table bwrap gives qemu -- and qemu is the
  * 9p server, so the guest's share then has nothing of the host's at that path.
  * Read-only because the source is shared by every entry: a write through the
- * share must never land in it. `bound` is what got one, project-relative.
+ * share must never land in it.
  *
- * A missing entry is skipped, since bwrap would create the path on the host's
- * disk to bind over; so is a symlink, which may lead out of the project.
+ * An entry under another masked entry is skipped, since that placeholder
+ * already hides it. An entry missing at the top level is skipped with a line:
+ * the guest will create it on the host as a directory. Refused, with an error
+ * that stops the start, is what a guest could have arranged and the host
+ * cannot tell from a mistake: a symlink, a path through one, and a nested entry
+ * that is missing while its top-level directory is there.
  */
 export async function maskBinds(
 	paths: Pick<FencePaths, "emptyFile" | "emptyDir">,
 	mounts: Mounts,
 	note: (line: string) => void = say,
-): Promise<{ args: string[]; bound: string[] }> {
+): Promise<string[]> {
 	const args: string[] = [];
-	const bound: string[] = [];
 	for (const entry of mounts.masked) {
+		if (underMaskedDir(entry, mounts.masked)) continue;
 		const kind = await maskKind(mounts.project, entry);
+		if (kind === "symlink" || kind === "under-symlink") {
+			throw new Error(
+				`masked: ${entry} ${kind === "symlink" ? "is" : "is under"} a symlink on the host; replace it with the real path before starting`,
+			);
+		}
 		if (kind === "missing") {
-			note(`masked: ${entry} is not on the host; nothing to hide`);
-		} else if (kind === "symlink" || kind === "under-symlink") {
-			const where = kind === "symlink" ? "is" : "is under";
-			note(`masked: ${entry} ${where} a symlink; a symlink is not masked`);
+			const top = entry.split("/")[0] ?? entry;
+			if (top !== entry && (await isPresent(join(mounts.project, top)))) {
+				throw new Error(
+					`masked: ${top} is on the host but ${entry} is not; create ${entry} on the host before starting`,
+				);
+			}
+			note(
+				`masked: ${entry} is not on the host; the guest will create it there as an empty directory`,
+			);
 		} else {
 			args.push(
 				"--ro-bind",
 				kind === "dir" ? paths.emptyDir : paths.emptyFile,
 				join(mounts.project, entry),
 			);
-			bound.push(entry);
 		}
 	}
-	if (bound.length > 0) {
+	if (args.length > 0) {
 		await mkdir(paths.emptyDir, { recursive: true });
 		await writeFile(paths.emptyFile, "");
 	}
-	return { args, bound };
+	return args;
+}
+
+async function isPresent(path: string): Promise<boolean> {
+	try {
+		await lstat(path);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 /** The mask binds come after the root bind, because they lay over what it mounted. */
@@ -243,12 +290,20 @@ export async function runHelper(
 	const reattach = state !== "stopped";
 	if (reattach) say(`${instance} is already fenced; reattaching`);
 
-	// Before anything is started, so a mask list that cannot be read stops the
-	// sandbox coming up rather than leaving the project unmasked. A reattach
-	// starts no bwrap, so the qemu it found keeps the table it was born with.
-	const masks = reattach
-		? { args: [], bound: [] }
-		: await maskBinds(paths, await readMounts(sandbox));
+	// Before anything is started, so a mask list that cannot be read, or an
+	// entry that has to be refused, stops the sandbox coming up rather than
+	// leaving the project unmasked. A reattach starts no bwrap, so the qemu it
+	// found keeps the table it was born with; it still reads the list, to check
+	// which of the entries that table holds.
+	let mounts: Mounts;
+	let maskArgs: string[] = [];
+	try {
+		mounts = await readMounts(sandbox);
+		if (!reattach) maskArgs = await maskBinds(paths, mounts);
+	} catch (err) {
+		say(err instanceof Error ? err.message : String(err));
+		return 1;
+	}
 
 	const logFrom = await sizeOf(paths.gatekeeperLog);
 	const gatekeeper = await startGatekeeper({
@@ -265,7 +320,7 @@ export async function runHelper(
 		await unlink(paths.ready).catch(() => {});
 		inside = spawn(
 			"bwrap",
-			bwrapArgv(masks.args, await hiddenResolverDirs(), [
+			bwrapArgv(maskArgs, await hiddenResolverDirs(), [
 				process.execPath,
 				cliPath(),
 				"__net-inside",
@@ -282,7 +337,6 @@ export async function runHelper(
 		ready: false,
 		egress: false,
 		policy: stamp,
-		masked: masks.bound,
 	};
 	const report = async (patch: Partial<HelperRecord>): Promise<void> => {
 		record = { ...record, ...patch };
@@ -318,6 +372,17 @@ export async function runHelper(
 		return 1;
 	}
 
+	// Read from qemu's namespace rather than taken from what was asked for, so
+	// a reattach and a bwrap that bound less than it was told to are both true.
+	const liveMasks = async (entries: readonly string[]): Promise<string[]> => {
+		const qemu = await qemuPid(instance);
+		return qemu === null
+			? []
+			: boundMasks(qemu, mounts.project, entries, paths);
+	};
+	let bound = await liveMasks(mounts.masked);
+	await report({ masked: bound });
+
 	const egress = await guestReachesGatekeeper(instance, paths, logFrom);
 	// Before `ready`, so the `playpen start` waiting on it can already name a
 	// port that could not be bound. A fresh boot has no listeners yet; a guest
@@ -340,15 +405,35 @@ export async function runHelper(
 		for (const line of NO_EGRESS_ADVICE) say(`  ${line}`);
 	}
 
-	await serveWhileRunning(sandbox, instance, stamp, async (next, applied) => {
-		policy = next;
-		// After the swap, so a new listener's first connection already finds
-		// its `localhost:<host>` entry; and before the stamp is reported, so
-		// `bringUp` returns with the listeners in place.
-		const unboundPorts = await forwardPorts(instance, forwarded, next.ports);
-		forwarded = next.ports;
-		await report({ policy: applied, unboundPorts });
-	});
+	await serveWhileRunning(
+		sandbox,
+		instance,
+		stamp,
+		async (next, applied) => {
+			policy = next;
+			// After the swap, so a new listener's first connection already finds
+			// its `localhost:<host>` entry; and before the stamp is reported, so
+			// `bringUp` returns with the listeners in place.
+			const unboundPorts = await forwardPorts(instance, forwarded, next.ports);
+			forwarded = next.ports;
+			await report({ policy: applied, unboundPorts });
+		},
+		async () => {
+			const still = await liveMasks(bound);
+			const lost = bound.filter((entry) => !still.includes(entry));
+			if (lost.length === 0) return;
+			// A VM that stopped between the two checks is not a replace.
+			if (!(await vmRunning(instance))) return;
+			bound = still;
+			await report({ masked: bound });
+			for (const entry of lost) {
+				say(
+					`masked: ${entry} was replaced on the host while the sandbox ran; stopping it so the new contents never reach the guest`,
+				);
+			}
+			await stopVm(instance);
+		},
+	);
 	say(`${instance} is no longer running; shutting the fence down`);
 	await teardown(true);
 	return 0;

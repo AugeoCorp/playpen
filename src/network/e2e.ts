@@ -242,8 +242,8 @@ async function main(): Promise<void> {
 /**
  * The first read comes before the guest applies its own mask, so an empty
  * answer can only be the placeholder the helper bound under the share. The
- * write is as root, which could also unmount the mask: what matters is that
- * neither reaches the host's bytes.
+ * write is as root, which can also unmount the mask: what matters is that
+ * neither that nor the write reaches the host's bytes.
  */
 async function maskedFile(): Promise<string | null> {
 	const target = join(project, SECRET_FILE);
@@ -258,6 +258,16 @@ async function maskedFile(): Promise<string | null> {
 	await guest('printf %s "from the guest" > "$1"', [target], true);
 	const back = await guest('cat "$1"', [target]);
 	if (back !== "from the guest") return `the guest reads back "${back}"`;
+
+	// The attack the host-side bind exists for. A failed umount prints a word,
+	// so it cannot pass as the empty answer this wants.
+	const unmounted = await guest(
+		'umount "$1" || echo "umount failed"; cat "$1"',
+		[target],
+		true,
+	);
+	if (unmounted !== "")
+		return `after unmounting its own mask, the guest read "${unmounted}"`;
 
 	const host = await readFile(target, "utf8");
 	return wanted(
