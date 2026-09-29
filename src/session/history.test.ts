@@ -319,11 +319,7 @@ test("a file a live session creates just before the move puts one there is not r
 	const s = await scratch(t);
 	await guestHistory(s.src);
 	await mkdir(join(s.dst, "-home-me-project"));
-	await standIn(
-		s,
-		"mv",
-		`if [ "$1" = -nT ] && [ "\${3##*/}" = one.jsonl ]; then echo "written by a live session" > "$3"; fi; exec "${REAL.mv}" "$@"`,
-	);
+	await standIn(s, "mv", LIVE_SESSION_MV);
 	const result = run(s, MOVE);
 	assert.equal(result.code, 0, result.stderr);
 	assert.equal(
@@ -334,6 +330,74 @@ test("a file a live session creates just before the move puts one there is not r
 		await readFile(setAsideAt(s, result.stdout), "utf8"),
 		"first session",
 	);
+});
+
+/**
+ * `mv` as it runs while Claude Code writes: just before a `mv -n` would put
+ * `one.jsonl` in place, a live session creates it. Moves into
+ * `.playpen-kept` are left alone.
+ */
+const LIVE_SESSION_MV = `case "$3" in *.playpen-kept*) ;; */one.jsonl) [ "$1" = -nT ] && echo "written by a live session" > "$3";; esac; exec "${REAL.mv}" "$@"`;
+
+/** The `where` of each `kept` line on stdout, as a path under the host directory. */
+function keptPaths(s: Scratch, stdout: string): string[] {
+	return stdout
+		.trimEnd()
+		.split("\n")
+		.map((line) => join(s.dst, line.split("\t")[2] ?? ""));
+}
+
+async function version(
+	dir: string,
+	text: string,
+	month: string,
+): Promise<void> {
+	await mkdir(join(dir, "-home-me-project"), { recursive: true });
+	const file = join(dir, "-home-me-project", "p.jsonl");
+	await writeFile(file, text);
+	const at = new Date(`2026-${month}-01T00:00:00Z`);
+	await utimes(file, at, at);
+}
+
+test("three versions of one file, from the host, the guest and an old archive, all survive two moves in one run, each attempt setting aside into its own directory", async (t) => {
+	const s = await scratch(t);
+	await version(s.dst, "january, on the host", "01");
+	await version(join(s.src, "guest"), "february, in the guest", "02");
+	await version(join(s.src, "archive"), "march, in the archive", "03");
+	const result = run(
+		s,
+		'move_history "$1/guest" "$2"\nmove_history "$1/archive" "$2"',
+	);
+	assert.equal(result.code, 0, result.stderr);
+	assert.equal(
+		await readFile(join(s.dst, "-home-me-project", "p.jsonl"), "utf8"),
+		"march, in the archive",
+	);
+	const [first, second] = keptPaths(s, result.stdout);
+	assert.equal(await readFile(first ?? "", "utf8"), "january, on the host");
+	assert.equal(await readFile(second ?? "", "utf8"), "february, in the guest");
+	assert.notEqual(
+		dirname(dirname(first ?? "")),
+		dirname(dirname(second ?? "")),
+		"two attempts set aside into one directory",
+	);
+});
+
+test("a copy set aside because a live session beat the move does not replace the older copy set aside just before it", async (t) => {
+	const s = await scratch(t);
+	await guestHistory(s.src);
+	const onHost = join(s.dst, "-home-me-project", "one.jsonl");
+	await mkdir(dirname(onHost));
+	await writeFile(onHost, "stale");
+	const earlier = new Date(Date.now() - 3_600_000);
+	await utimes(onHost, earlier, earlier);
+	await standIn(s, "mv", LIVE_SESSION_MV);
+	const result = run(s, MOVE);
+	assert.equal(result.code, 0, result.stderr);
+	assert.equal(await readFile(onHost, "utf8"), "written by a live session\n");
+	const [replaced, declined] = keptPaths(s, result.stdout);
+	assert.equal(await readFile(replaced ?? "", "utf8"), "stale");
+	assert.equal(await readFile(declined ?? "", "utf8"), "first session");
 });
 
 /** An archive as the archive-on-destroy scheme wrote it: `.claude/projects/...`. */
