@@ -1,4 +1,12 @@
-import { link, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import {
+	chmod,
+	link,
+	lstat,
+	mkdir,
+	readFile,
+	unlink,
+	writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { historyDir, limaHome } from "../config.ts";
 import { exists } from "../fs.ts";
@@ -37,11 +45,19 @@ export function hostDir(sandbox: string): string {
 
 /**
  * Before every boot, since Lima creates a missing mount location itself, and
- * makes it 0755 (`os.MkdirAll` in its qemu driver).
+ * makes it 0755 (`os.MkdirAll` in its qemu driver). An existing one is
+ * brought back to 0700 too, and refused if it is a link or someone else's:
+ * Lima would serve wherever it leads.
  */
 export async function makeHostDir(sandbox: string): Promise<string> {
 	const dir = hostDir(sandbox);
 	await mkdir(dir, { recursive: true, mode: 0o700 });
+	const info = await lstat(dir);
+	if (!info.isDirectory())
+		throw new Error(`${dir} is not a directory; move it aside and start again`);
+	if (info.uid !== process.getuid?.())
+		throw new Error(`${dir} is owned by uid ${info.uid}, not by you`);
+	await chmod(dir, 0o700);
 	return dir;
 }
 

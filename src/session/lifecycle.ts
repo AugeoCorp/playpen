@@ -240,7 +240,6 @@ export function historyOnHost(sb: Sandbox): Promise<boolean> {
  * disk and the image hash has not changed.
  */
 async function giveInstanceItsMounts(sb: Sandbox): Promise<void> {
-	await history.makeHostDir(sb.sandbox);
 	const path = limaYaml(sb);
 	const yaml = await readFile(path, "utf8");
 	const mounts = mountsFor(sb);
@@ -449,7 +448,10 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 				);
 			}
 			const booting = !lima.isRunning(existing);
-			if (booting) await mountHistoryOnExisting(sb);
+			if (booting) {
+				await history.makeHostDir(sb.sandbox);
+				await mountHistoryOnExisting(sb);
+			}
 			// In every other state, including a sandbox that is already up: a
 			// stopped VM is started, one that survived its helper gets another
 			// gatekeeper, and a running one has its policy rewritten, which is
@@ -482,6 +484,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 	// it, see nothing stale, and try to start the broken instance forever.
 	await lima.clone(base.instance, sb.instance);
 	try {
+		await history.makeHostDir(sb.sandbox);
 		await giveInstanceItsMounts(sb);
 		await startFenced(sb, current);
 	} catch (err) {

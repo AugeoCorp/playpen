@@ -321,6 +321,13 @@ common package managers need, not a measurement. It stays a guess until a
 - **The project mount is the sharing channel, by design,** and so is the
   sandbox's Claude history directory, mounted at the guest's
   `~/.claude/projects`. Neither was ever part of what the fence closes.
+- **The guest writes both mounts as you.** They are 9p with Lima's default
+  `securityModel`, so qemu creates every file with your uid on the host. The
+  guest can give them any mode, make setuid files owned by you, and make
+  symlinks that lead anywhere on the host. Nothing reaches the host unless
+  something there runs or follows them: playpen never reads inside the history
+  directory, and it refuses one that is a link or not yours, but anything you
+  run over either mount on the host is trusting the guest.
 - **DNS lookups happen at the gatekeeper**, not in the guest, for every program
   that uses the guest's own resolver: `--dns virtual` makes tun2proxy answer
   those itself, so a hostname is not a side channel around the policy. A root
