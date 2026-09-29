@@ -1,4 +1,8 @@
-import type { IncomingMessage, ServerResponse } from "node:http";
+import {
+	type IncomingMessage,
+	type ServerResponse,
+	STATUS_CODES,
+} from "node:http";
 import type { Server } from "node:https";
 import https from "node:https";
 import type { LookupFunction, Socket } from "node:net";
@@ -51,8 +55,9 @@ export interface InterceptorOptions {
 const TLS_PORT = 443;
 
 /**
- * Hop-by-hop headers (RFC 9110, 7.6.1) describe the guest's connection to
- * here, not this one's to the host.
+ * Hop-by-hop headers (after RFC 9110, 7.6.1), which describe the guest's
+ * connection to here, not this one's to the host. `Transfer-Encoding` is kept
+ * because Node frames the forwarded body by it.
  */
 const HOP_BY_HOP = new Set([
 	"connection",
@@ -70,7 +75,18 @@ const ROUTING = new Set([
 	"x-forwarded-host",
 	"forwarded",
 	"x-original-url",
+	"x-rewrite-url",
+	"x-host",
+	"x-http-host-override",
+	"x-forwarded-server",
 ]);
+
+/**
+ * A TRACE answer echoes the request as the host received it (RFC 9110,
+ * 9.3.8), `Authorization` and the value in it included. TRACK is IIS's name
+ * for the same; Node's parser rejects it before it gets here today.
+ */
+const ECHOING = new Set(["TRACE", "TRACK"]);
 
 function withoutHopByHop(raw: readonly string[], upgrade: boolean): string[] {
 	const kept: string[] = [];
@@ -138,10 +154,14 @@ function tunnelServer(
 	 * front end, the request line or `Host` rather than the connection can
 	 * decide which site gets the request, and with it the value. An
 	 * absolute-form target (`GET https://other.example/`) overrides `Host`
-	 * (RFC 9112, 3.2.2), so only a path, or `*` for `OPTIONS`, is accepted.
+	 * (RFC 9112, 3.2.2), so only a path, or `*` for `OPTIONS`, is accepted; and
+	 * not a path starting `//`, which a URL parser reads as naming a host.
 	 */
 	const misdirection = (req: IncomingMessage): string | null => {
 		const target = req.url ?? "";
+		if (target.startsWith("//")) {
+			return `request target ${target} starts with //, which reads as another host than ${host}, the host this tunnel was allowed for`;
+		}
 		const originForm =
 			target.startsWith("/") || (target === "*" && req.method === "OPTIONS");
 		if (!originForm) {
@@ -154,10 +174,26 @@ function tunnelServer(
 		if (named === host) return null;
 		return `Host header ${req.headers.host ?? "(none)"} is not ${host}, the host this tunnel was allowed for`;
 	};
-	const misdirected = (req: IncomingMessage): boolean => {
+	/** Why `req` must not be sent on, and the status the guest gets instead. */
+	const refusalOf = (
+		req: IncomingMessage,
+	): { status: 405 | 421; reason: string } | null => {
+		const method = req.method ?? "";
+		if (ECHOING.has(method)) {
+			return {
+				status: 405,
+				reason: `method ${method} echoes the request back, and the value with it`,
+			};
+		}
 		const reason = misdirection(req);
-		if (reason !== null) log({ ...at(), verdict: "deny", reason });
-		return reason !== null;
+		return reason === null ? null : { status: 421, reason };
+	};
+	const refuse = (req: IncomingMessage) => {
+		const refusal = refusalOf(req);
+		if (refusal !== null) {
+			log({ ...at(), verdict: "deny", reason: refusal.reason });
+		}
+		return refusal;
 	};
 
 	/**
@@ -238,8 +274,9 @@ function tunnelServer(
 	});
 
 	server.on("request", (req: IncomingMessage, res: ServerResponse) => {
-		if (misdirected(req)) {
-			res.writeHead(421, { connection: "close" }).end();
+		const refusal = refuse(req);
+		if (refusal !== null) {
+			res.writeHead(refusal.status, { connection: "close" }).end();
 			return;
 		}
 		const up = upstream(req, false);
@@ -260,9 +297,10 @@ function tunnelServer(
 	});
 
 	server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
-		if (misdirected(req)) {
+		const refusal = refuse(req);
+		if (refusal !== null) {
 			socket.end(
-				"HTTP/1.1 421 Misdirected Request\r\nconnection: close\r\n\r\n",
+				`HTTP/1.1 ${refusal.status} ${STATUS_CODES[refusal.status]}\r\nconnection: close\r\n\r\n`,
 			);
 			return;
 		}
