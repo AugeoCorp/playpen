@@ -54,6 +54,10 @@ export interface FencePaths {
 	helper: string;
 	policy: string;
 	mounts: string;
+	/** Bound read-only over a masked file; nothing reaches it through the bind. */
+	emptyFile: string;
+	/** Bound read-only over a masked directory; nothing reaches it through the bind. */
+	emptyDir: string;
 	gatekeeperLog: string;
 	helperLog: string;
 	/** Written by the inside half once the VM is up; holds its ssh port. */
@@ -70,6 +74,8 @@ export function fencePaths(sandbox: string): FencePaths {
 		helper: join(dir, "helper.json"),
 		policy: join(dir, "policy.json"),
 		mounts: join(dir, "mounts.json"),
+		emptyFile: join(dir, "empty-file"),
+		emptyDir: join(dir, "empty-dir"),
 		gatekeeperLog: join(dir, "gatekeeper.log"),
 		helperLog: join(dir, "helper.log"),
 		ready: join(dir, "ready"),
