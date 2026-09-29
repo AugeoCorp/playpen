@@ -188,27 +188,31 @@ test("an entry missing on the host is not bound, and the line says the guest wil
 	]);
 });
 
-test("a nested entry missing under a top-level directory that is missing too is skipped like any missing entry", async (t) => {
+test("a nested entry missing under a directory that is there is skipped like any missing entry, so a fresh clone can start", async (t) => {
 	const { project, paths } = await maskedProject(t);
 	const said: string[] = [];
 	const args = await maskBinds(
 		paths,
-		{ project, masked: ["packages/app/node_modules"] },
+		{ project, masked: ["config/other.json"] },
 		(line) => said.push(line),
 	);
 	assert.deepEqual(args, []);
 	assert.deepEqual(said, [
-		"masked: packages/app/node_modules is not on the host; the guest will create it there as an empty directory",
+		"masked: config/other.json is not on the host; the guest will create it there as an empty directory",
 	]);
 });
 
-test("a nested entry missing while its top-level directory is there refuses the start", async (t) => {
+test("a nested entry whose parent is gone refuses the start, since a guest can rename a parent away", async (t) => {
 	const { project, paths } = await maskedProject(t);
 	await assert.rejects(
-		maskBinds(paths, { project, masked: ["config/other.json"] }, () => {}),
+		maskBinds(
+			paths,
+			{ project, masked: ["packages/app/node_modules"] },
+			() => {},
+		),
 		{
 			message:
-				"masked: config is on the host but config/other.json is not; create config/other.json on the host before starting",
+				"masked: packages/app is not on the host, so packages/app/node_modules cannot be masked; restore it before starting",
 		},
 	);
 });

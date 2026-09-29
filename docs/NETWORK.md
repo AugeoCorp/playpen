@@ -198,17 +198,18 @@ Three more facts about the entries:
   `masked` is as of the last poll. `bringUp` tells the user to
   `playpen stop && playpen start` for any entry that is on the host and not in
   that list.
-- A symlink, or a path under one, refuses the start, and so does a nested entry
-  that is missing while its top-level directory is there. A guest can arrange
-  both: only the bound path itself is protected from a rename, so it can rename
-  the parent of a nested entry and leave a symlink or nothing behind, and the
-  host's file would then sit unmasked under the new name.
+- A symlink, a path under one, and a nested entry whose parent is gone all
+  refuse the start. A guest can arrange each: only the bound path itself is
+  protected from a rename, so it can rename the parent of a nested entry and
+  leave a symlink or nothing behind, and the host's file would then sit unmasked
+  under the new name.
 - An entry under another masked entry is not bound, since that placeholder
   already hides it, and bwrap cannot create a bind target inside the read-only
-  placeholder directory. A top-level entry missing on the host is skipped, since
-  the bind would create it on the host's disk; the guest's mask script then
-  creates it there as an empty directory, so a masked file should exist on the
-  host first. The helper logs each skip, and `start` shows the log.
+  placeholder directory. An entry missing on the host under a parent that is
+  there is skipped, since the bind would create it on the host's disk; the
+  guest's mask script then creates it there as an empty directory, so a masked
+  file should exist on the host first. The helper logs each skip, and `start`
+  shows the log.
 
 **helper.json carries a `policy` field**, alongside `ready` and `egress`: the
 stamp (`mtime:size` of policy.json) of the policy the gatekeeper is deciding

@@ -312,6 +312,7 @@ test("a masked entry is classed by what is on the host, without following it", a
 	assert.equal(await maskKind(dir, "node_modules"), "dir");
 	assert.equal(await maskKind(dir, "absent"), "missing");
 	assert.equal(await maskKind(dir, ".env/inside"), "missing");
+	assert.equal(await maskKind(dir, "gone/inside"), "parent-missing");
 	assert.equal(await maskKind(dir, "linked"), "symlink");
 	assert.equal(await maskKind(dir, "via/inside"), "under-symlink");
 });

@@ -249,26 +249,40 @@ export async function readMounts(sandbox: string): Promise<Mounts> {
 	return parsed.data;
 }
 
-export type MaskKind = "dir" | "file" | "missing" | "symlink" | "under-symlink";
+export type MaskKind =
+	| "dir"
+	| "file"
+	| "missing"
+	| "parent-missing"
+	| "symlink"
+	| "under-symlink";
 
 /**
  * What is on the host at a masked entry, without following it. Only a `dir` or
  * a `file` can have a placeholder bound over it: bwrap would create a missing
  * path on the host's disk, and a symlink, or a path through one, may lead
- * outside the project. A guest can leave a nested entry symlinked or missing
- * by renaming its parent, since only the bound path itself is protected from a
- * rename.
+ * outside the project. A guest can leave a nested entry symlinked, or without
+ * a parent, by renaming that parent: only the bound path itself is protected
+ * from a rename. A missing leaf under a parent that is there is what a fresh
+ * clone looks like before the guest creates it.
  */
 export async function maskKind(
 	project: string,
 	entry: string,
 ): Promise<MaskKind> {
 	const path = join(project, entry);
+	let parent: string;
 	try {
-		const parent = await realpath(dirname(path));
-		if (parent !== join(await realpath(project), dirname(entry))) {
-			return "under-symlink";
-		}
+		parent = await realpath(dirname(path));
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException).code;
+		if (code === "ENOENT" || code === "ENOTDIR") return "parent-missing";
+		throw err;
+	}
+	if (parent !== join(await realpath(project), dirname(entry))) {
+		return "under-symlink";
+	}
+	try {
 		const info = await lstat(path);
 		if (info.isSymbolicLink()) return "symlink";
 		return info.isDirectory() ? "dir" : "file";

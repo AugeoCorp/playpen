@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { lstat, mkdir, unlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, unlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { exists, readAppended, sizeOf, writeAtomic } from "../fs.ts";
 import * as lima from "../lima/client.ts";
 import { isPlaypenInstance } from "../session/identity.ts";
@@ -183,11 +183,12 @@ function jsonLineAppender(path: string): (entry: LogEntry) => void {
  * share must never land in it.
  *
  * An entry under another masked entry is skipped, since that placeholder
- * already hides it. An entry missing at the top level is skipped with a line:
- * the guest will create it on the host as a directory. Refused, with an error
- * that stops the start, is what a guest could have arranged and the host
- * cannot tell from a mistake: a symlink, a path through one, and a nested entry
- * that is missing while its top-level directory is there.
+ * already hides it. An entry whose parent is there but which is missing itself
+ * is skipped with a line: the guest will create it on the host as a directory,
+ * which is what `node_modules` on a fresh clone needs. Refused, with an error
+ * that stops the start, is what a guest could have arranged by renaming the
+ * parent of a nested entry: a symlink, a path through one, or a parent that is
+ * gone.
  */
 export async function maskBinds(
 	paths: Pick<FencePaths, "emptyFile" | "emptyDir">,
@@ -203,13 +204,12 @@ export async function maskBinds(
 				`masked: ${entry} ${kind === "symlink" ? "is" : "is under"} a symlink on the host; replace it with the real path before starting`,
 			);
 		}
+		if (kind === "parent-missing") {
+			throw new Error(
+				`masked: ${dirname(entry)} is not on the host, so ${entry} cannot be masked; restore it before starting`,
+			);
+		}
 		if (kind === "missing") {
-			const top = entry.split("/")[0] ?? entry;
-			if (top !== entry && (await isPresent(join(mounts.project, top)))) {
-				throw new Error(
-					`masked: ${top} is on the host but ${entry} is not; create ${entry} on the host before starting`,
-				);
-			}
 			note(
 				`masked: ${entry} is not on the host; the guest will create it there as an empty directory`,
 			);
@@ -226,15 +226,6 @@ export async function maskBinds(
 		await writeFile(paths.emptyFile, "");
 	}
 	return args;
-}
-
-async function isPresent(path: string): Promise<boolean> {
-	try {
-		await lstat(path);
-		return true;
-	} catch {
-		return false;
-	}
 }
 
 /** The mask binds come after the root bind, because they lay over what it mounted. */

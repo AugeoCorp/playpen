@@ -100,7 +100,7 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
 - A masked path that is missing on the host is created by the guest, as an empty
   directory on the host. For a file such as `.env`, create it on the host first
   (`touch .env`). `start` refuses a masked path that is a symlink or under one,
-  and a nested one that is missing while its top-level directory is there.
+  and a nested one whose parent directory is gone.
 - `setup` runs on create and after a rebuild, never on start. Nothing is
   inferred from a lockfile. `playpen setup` re-runs it.
 - `network.allow` is a list of names, not addresses: an entry is a hostname,
