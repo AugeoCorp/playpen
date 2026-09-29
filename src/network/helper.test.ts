@@ -1,17 +1,24 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import type { X509Certificate } from "node:crypto";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdtemp, rm } from "node:fs/promises";
+import * as net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
-import { test } from "node:test";
+import { type TestContext, test } from "node:test";
+import tls from "node:tls";
+import { ensureCa } from "./ca.ts";
 import { cliPath } from "./fence.ts";
 import {
 	describeHeld,
 	portsScript,
 	readHeldSecrets,
+	startFenceGatekeeper,
 	unboundIn,
 } from "./helper.ts";
+import type { Policy } from "./policy.ts";
 
 /** The units a script stops, in order, glob included. */
 function stops(script: string): string[] {
@@ -197,4 +204,108 @@ test("a helper handed a malformed document exits naming the key and without the 
 	assert.equal(ran.status, 1, log);
 	assert.match(log, /`secrets\[0\]\.env` must be an environment variable name/);
 	assert.equal(log.includes(TOKEN), false, `the log held the value:\n${log}`);
+});
+
+/**
+ * A CONNECT for `host:443` through `port`, then TLS for `host` trusting only
+ * `caPem`. Resolves with the certificate the client was shown, or rejects
+ * with "closed" when the gatekeeper hung up instead of answering. It is
+ * closed through the TLS socket, not the one under it.
+ */
+function certificateThrough(
+	t: TestContext,
+	port: number,
+	host: string,
+	caPem: string,
+): Promise<X509Certificate> {
+	return new Promise((resolve, reject) => {
+		const socket = net.connect(port, "127.0.0.1");
+		socket.on("error", () => reject(new Error("closed")));
+		socket.on("close", () => reject(new Error("closed")));
+		socket.once("connect", () =>
+			socket.write(`CONNECT ${host}:443 HTTP/1.1\r\nHost: ${host}:443\r\n\r\n`),
+		);
+		socket.once("data", () => {
+			const secure = tls.connect(
+				{ socket, servername: host, ca: caPem },
+				() => {
+					const cert = secure.getPeerX509Certificate();
+					if (cert === undefined) reject(new Error("no certificate"));
+					else resolve(cert);
+				},
+			);
+			secure.on("error", reject);
+			t.after(() => secure.destroy());
+		});
+	});
+}
+
+async function withTempData(t: TestContext): Promise<string> {
+	const dir = await mkdtemp(join(tmpdir(), "playpen-helper-ca-"));
+	const before = process.env.XDG_DATA_HOME;
+	process.env.XDG_DATA_HOME = dir;
+	t.after(async () => {
+		if (before === undefined) delete process.env.XDG_DATA_HOME;
+		else process.env.XDG_DATA_HOME = before;
+		await rm(dir, { recursive: true, force: true });
+	});
+	return dir;
+}
+
+const secretPolicy: Policy = {
+	allow: ["api.example"],
+	mode: "enforce",
+	ports: [],
+	secrets: [{ env: "GH_TOKEN", hosts: ["api.example"] }],
+};
+
+test("the helper's gatekeeper terminates TLS for a secret's host with the install's CA", async (t) => {
+	await withTempData(t);
+	const ca = await ensureCa();
+	const gatekeeper = await startFenceGatekeeper({
+		held: [{ env: "GH_TOKEN", value: TOKEN }],
+		policy: () => secretPolicy,
+		log: () => {},
+		resolve: async () => [{ address: "127.0.0.1", family: 4 }],
+	});
+	t.after(() => gatekeeper.close());
+
+	const cert = await certificateThrough(
+		t,
+		gatekeeper.port,
+		"api.example",
+		ca.certPem,
+	);
+	assert.equal(cert.subjectAltName, "DNS:api.example");
+});
+
+test("the helper's gatekeeper holding a secret with no CA on disk fails to start, and makes none the guest would not trust", async (t) => {
+	const dataHome = await withTempData(t);
+
+	await assert.rejects(
+		startFenceGatekeeper({
+			held: [{ env: "GH_TOKEN", value: TOKEN }],
+			policy: () => secretPolicy,
+			log: () => {},
+		}),
+		/no playpen CA in .*playpen\/ca to sign certificates/,
+	);
+	assert.equal(existsSync(join(dataHome, "playpen", "ca")), false);
+});
+
+test("the helper's gatekeeper holding no secret pipes the same host, and never makes a CA", async (t) => {
+	const dataHome = await withTempData(t);
+	const gatekeeper = await startFenceGatekeeper({
+		held: [],
+		policy: () => secretPolicy,
+		log: () => {},
+		resolve: async () => [{ address: "127.0.0.1", family: 4 }],
+	});
+	t.after(() => gatekeeper.close());
+
+	await assert.rejects(
+		certificateThrough(t, gatekeeper.port, "api.example", ""),
+		{ message: "closed" },
+	);
+	assert.equal(existsSync(join(dataHome, "playpen", "ca")), false);
 });

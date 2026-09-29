@@ -9,16 +9,17 @@ not be inverted are in `AGENTS.md`. The network fence's mechanism is in
 Works end to end on Bazzite, Lima 2.2.0, Node 24. Baking the base takes ~75s
 once; a sandbox then clones from it and boots in 10s. Restart ~20s.
 
-| Area                                                               | State                  |
-| ------------------------------------------------------------------ | ---------------------- |
-| `start` `shell` `run` `list` `stop` `remove` `doctor` `image show` | done                   |
-| `playpen claude` with `~/.claude` allowlist sync and `--no-auth`   | done                   |
-| `playpen.config.ts` masks, trust gate on config execution          | done, verified on host |
-| `image build`, base image + clone                                  | done, verified on host |
-| `completion bash\|zsh`, generated from the citty command tree      | done; zsh unverified   |
-| network fence (mechanism in `docs/NETWORK.md`)                     | done, see below        |
-| per-install CA in `<dataDir>/ca/`, trusted by the base image       | unit-tested; no VM yet |
-| `network.secrets` values held by the helper, placeholders in guest | unit-tested; no VM run |
+| Area                                                               | State                                      |
+| ------------------------------------------------------------------ | ------------------------------------------ |
+| `start` `shell` `run` `list` `stop` `remove` `doctor` `image show` | done                                       |
+| `playpen claude` with `~/.claude` allowlist sync and `--no-auth`   | done                                       |
+| `playpen.config.ts` masks, trust gate on config execution          | done, verified on host                     |
+| `image build`, base image + clone                                  | done, verified on host                     |
+| `completion bash\|zsh`, generated from the citty command tree      | done; zsh unverified                       |
+| network fence (mechanism in `docs/NETWORK.md`)                     | done, see below                            |
+| `network.secrets` values held by the helper, placeholders in guest | done, hand run on a VM (no KVM)            |
+| per-install CA in `<dataDir>/ca/`, trusted by the base image       | done, hand run on a VM (no KVM)            |
+| `network.secrets` swapped into HTTPS `Authorization` headers       | done, hand run on a VM; real token unshown |
 
 ## Known problems
 
@@ -103,7 +104,21 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
   write through `limactl shell` with `sudo`, a guest login shell sourcing
   `/etc/profile.d/playpen-secrets.sh`, and the real detached spawn round trip
   (`playpen start` piping the document to a helper that outlives it, with the
-  granted variables gone from its environment). Nothing injects yet.
+  granted variables gone from its environment).
+- The interceptor that puts `network.secrets` values into requests
+  (`docs/NETWORK.md`, "Secrets") is tested against a local HTTPS upstream
+  through the real gatekeeper, and was driven by hand with curl,
+  `openssl s_client` and Python's strict `ssl` before its request guards (the
+  `Host`, request target and method refusals) were added. It speaks HTTP/1.1
+  only: HTTP/2 is not offered, so clients fall back. A value changed in the host
+  environment needs `playpen stop && playpen start`, since the helper takes its
+  values only when it is spawned. The upstream is verified against Node's
+  bundled CA list (plus `NODE_EXTRA_CA_CERTS`), not the host's system store, so
+  a host behind a TLS-intercepting corporate proxy needs that variable set for
+  `playpen start`. The value goes into `Authorization` only, so a host that
+  echoes that header back would return it to the guest; a secret should be
+  granted only to hosts it would be sent to anyway. A service that takes its
+  token in another header is not served yet.
 
 ## Next
 

@@ -152,7 +152,7 @@ function toUpstream(
 }
 
 /**
- * The gatekeeper with the interceptor, holding GH_TOKEN, with every line it
+ * The gatekeeper as the helper runs it, holding GH_TOKEN, with every line it
  * logs collected. With `upstreamPort`, `dials` gets the server name of each
  * connection the interceptor opens to the host, so a test can tell a request
  * that was never sent on from one that was cut off on its way.
