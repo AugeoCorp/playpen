@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { X509Certificate } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
-import http from "node:http";
+import http, { type ServerResponse } from "node:http";
 import https from "node:https";
 import * as net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Duplex } from "node:stream";
 import { after, before, type TestContext, test } from "node:test";
+import { setTimeout } from "node:timers/promises";
 import tls from "node:tls";
 import { type Ca, ensureCa } from "./ca.ts";
 import type { HeldSecret } from "./fence.ts";
@@ -65,10 +66,14 @@ interface Received {
 /**
  * The real host, as far as these tests go: an HTTPS server with a certificate
  * from `publicCa`, which answers every request with a fixed body and a header
- * of its own, and echoes a WebSocket-style upgrade.
+ * of its own, or as `answer` says, and echoes a WebSocket-style upgrade.
  */
 async function upstreamHost(
 	t: TestContext,
+	answer: (res: ServerResponse) => void = (res) => {
+		res.setHeader("x-upstream", "yes");
+		res.end("hello from upstream");
+	},
 ): Promise<{ port: number; received: Received[] }> {
 	const contextFor = leafMinter(publicCa);
 	const received: Received[] = [];
@@ -85,8 +90,7 @@ async function upstreamHost(
 					chunked: req.headers["transfer-encoding"] === "chunked",
 					body: Buffer.concat(chunks),
 				});
-				res.setHeader("x-upstream", "yes");
-				res.end("hello from upstream");
+				answer(res);
 			});
 		},
 	);
@@ -148,6 +152,7 @@ async function gatekeeperWith(
 	t: TestContext,
 	opts: {
 		policy: () => Policy;
+		held?: readonly HeldSecret[];
 		upstreamPort?: number;
 		resolveTo?: string;
 	},
@@ -161,7 +166,7 @@ async function gatekeeperWith(
 			{ address: opts.resolveTo ?? "127.0.0.1", family: 4 },
 		],
 		intercept: interceptor({
-			held: [GH_TOKEN],
+			held: opts.held ?? [GH_TOKEN],
 			contextFor: leafMinter(playpenCa),
 			log: record,
 			...(opts.upstreamPort === undefined
@@ -432,6 +437,76 @@ test("the host's answer reaches the guest intact", async (t) => {
 	assert.equal(answer.body, "hello from upstream");
 });
 
+test("a host hanging up partway through its answer ends the guest's response with an error within a second", async (t) => {
+	const upstream = await upstreamHost(t, (res) => {
+		res.writeHead(200, { "content-length": "1000000" });
+		res.write(Buffer.alloc(10_000), () => res.destroy());
+	});
+	const { port, log } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+
+	const outcome = await Promise.race([
+		responseOutcome(clientThrough(t, port, "api.example:443")),
+		setTimeout(1000, "still open after a second", { ref: false }),
+	]);
+
+	assert.match(outcome, /^error: /);
+	assert.ok(
+		log.some((e) => e.verdict === "error"),
+		`no error line in ${JSON.stringify(log)}`,
+	);
+});
+
+test("a guest hanging up partway through the answer is not logged as an error", async (t) => {
+	let hostSawClose: () => void = () => {};
+	const closed = new Promise<void>((resolve) => {
+		hostSawClose = resolve;
+	});
+	const upstream = await upstreamHost(t, (res) => {
+		res.writeHead(200, { "content-length": "1000000" });
+		res.write(Buffer.alloc(10_000));
+		res.on("close", hostSawClose);
+	});
+	const { port, log } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+	const agent = clientThrough(t, port, "api.example:443");
+
+	const req = https.request({ agent, host: "api.example", path: "/user" });
+	req.on("response", (res) => res.once("data", () => req.destroy()));
+	req.on("error", () => {});
+	req.end();
+	await closed;
+	// The interceptor hears of the close after the host does, and any line it
+	// would log comes after that.
+	await setTimeout(200);
+
+	assert.deepEqual(
+		log.filter((e) => e.verdict === "error"),
+		[],
+	);
+});
+
+/** How a GET over `agent` ends: "end", or "error: " and the message. */
+function responseOutcome(agent: https.Agent): Promise<string> {
+	return new Promise((resolve) => {
+		const failed = (err: Error) => resolve(`error: ${err.message}`);
+		const req = https.request(
+			{ agent, host: "api.example", path: "/user" },
+			(res) => {
+				res.resume();
+				res.on("end", () => resolve("end"));
+				res.on("error", failed);
+			},
+		);
+		req.on("error", failed);
+		req.end();
+	});
+}
+
 test("the guest is shown a certificate for the host from the playpen CA", async (t) => {
 	const { port } = await gatekeeperWith(t, { policy: () => secretPolicy() });
 
@@ -644,6 +719,26 @@ function plainHttpGet(proxyPort: number, url: string): Promise<number> {
 		req.end();
 	});
 }
+
+test("a value Node refuses to put in a header gets the guest a 502, and the gatekeeper keeps serving", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port, log } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		held: [{ env: "GH_TOKEN", value: "line\nbreak" }],
+		upstreamPort: upstream.port,
+	});
+
+	const refused = await send(clientThrough(t, port, "api.example:443"), {
+		headers: { authorization: `token ${PLACEHOLDER}` },
+	});
+	const next = await send(clientThrough(t, port, "api.example:443"), {
+		headers: {},
+	});
+
+	assert.equal(refused.status, 502);
+	assert.equal(next.status, 200);
+	assert.doesNotMatch(JSON.stringify(log), /line\\nbreak/);
+});
 
 test("the guest's hop-by-hop headers do not reach the host", async (t) => {
 	const upstream = await upstreamHost(t);
