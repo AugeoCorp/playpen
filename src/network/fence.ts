@@ -220,10 +220,20 @@ export interface Mounts {
 	masked: string[];
 }
 
-const mountsFile = z.strictObject({
-	project: z.string().min(1),
-	masked: z.array(z.string().min(1)),
-});
+const mountsFile = z.strictObject(
+	{
+		project: z
+			.string({ error: "must be a path" })
+			.min(1, { error: "must be a path" }),
+		masked: z.array(
+			z
+				.string({ error: "must be a string" })
+				.min(1, { error: "must not be empty" }),
+			{ error: "must be an array of strings" },
+		),
+	},
+	{ error: "must hold a JSON object with only `project` and `masked`" },
+);
 
 export async function writeMounts(
 	sandbox: string,
@@ -250,7 +260,8 @@ export type MaskKind =
 	| "missing"
 	| "parent-missing"
 	| "symlink"
-	| "under-symlink";
+	| "under-symlink"
+	| "under-file";
 
 /**
  * What is on the host at a masked entry, without following it. Only a `dir` or
@@ -258,8 +269,9 @@ export type MaskKind =
  * path on the host's disk, and a symlink, or a path through one, may lead
  * outside the project. A guest can leave a nested entry symlinked, or without
  * a parent, by renaming that parent: only the bound path itself is protected
- * from a rename. A missing leaf under a parent that is there is what a fresh
- * clone looks like before the guest creates it.
+ * from a rename. A missing leaf under a parent directory that is there is what
+ * a fresh clone looks like before the guest creates it; under a parent that is
+ * a file, the guest cannot create it at all.
  */
 export async function maskKind(
 	project: string,
@@ -283,7 +295,8 @@ export async function maskKind(
 		return info.isDirectory() ? "dir" : "file";
 	} catch (err) {
 		const code = (err as NodeJS.ErrnoException).code;
-		if (code === "ENOENT" || code === "ENOTDIR") return "missing";
+		if (code === "ENOENT") return "missing";
+		if (code === "ENOTDIR") return "under-file";
 		throw err;
 	}
 }

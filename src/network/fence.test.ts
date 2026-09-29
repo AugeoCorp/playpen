@@ -311,14 +311,25 @@ async function mountsFileWith(contents: unknown): Promise<void> {
 	await writeFile(fencePaths("api-abc123").mounts, JSON.stringify(contents));
 }
 
-test("a mounts.json with a malformed key is refused, naming the key", async (t) => {
+test("a mounts.json with a malformed or an extra key is refused, saying in plain words what is wrong", async (t) => {
 	await dataDir(t);
 	await mountsFileWith({ project: "/work/api", masked: ".env" });
-	await assert.rejects(readMounts("api-abc123"), /`masked`/);
+	await assert.rejects(
+		readMounts("api-abc123"),
+		/: `masked` must be an array of strings$/,
+	);
 	await mountsFileWith({ project: 7, masked: [] });
-	await assert.rejects(readMounts("api-abc123"), /`project`/);
+	await assert.rejects(readMounts("api-abc123"), /: `project` must be a path$/);
 	await mountsFileWith({ project: "/work/api", masked: [".env", 3] });
-	await assert.rejects(readMounts("api-abc123"), /`masked\[1\]`/);
+	await assert.rejects(
+		readMounts("api-abc123"),
+		/: `masked\[1\]` must be a string$/,
+	);
+	await mountsFileWith({ project: "/work/api", masked: [], extra: 1 });
+	await assert.rejects(
+		readMounts("api-abc123"),
+		/mounts\.json must hold a JSON object with only `project` and `masked`$/,
+	);
 });
 
 test("a mounts.json missing a key, or missing altogether, is refused rather than read as masking nothing", async (t) => {
@@ -350,7 +361,7 @@ test("a masked entry is classed by what is on the host, without following it", a
 	assert.equal(await maskKind(dir, ".env"), "file");
 	assert.equal(await maskKind(dir, "node_modules"), "dir");
 	assert.equal(await maskKind(dir, "absent"), "missing");
-	assert.equal(await maskKind(dir, ".env/inside"), "missing");
+	assert.equal(await maskKind(dir, ".env/inside"), "under-file");
 	assert.equal(await maskKind(dir, "gone/inside"), "parent-missing");
 	assert.equal(await maskKind(dir, "linked"), "symlink");
 	assert.equal(await maskKind(dir, "via/inside"), "under-symlink");
