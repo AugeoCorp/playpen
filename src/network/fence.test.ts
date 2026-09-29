@@ -454,6 +454,9 @@ test("stdin that is not JSON is refused without quoting what was on it", () => {
 			return true;
 		},
 	);
+});
+
+test("an empty stdin is refused as not JSON", () => {
 	assert.throws(() => parseHeldSecrets(""), /the helper's stdin is not JSON/);
 });
 

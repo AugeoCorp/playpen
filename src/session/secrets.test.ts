@@ -44,7 +44,7 @@ test("every missing variable is reported, in the order the config lists them", (
 	]);
 });
 
-test("a variable named by two grants is read once", () => {
+test("a variable named by two grants is held once", () => {
 	const again = { env: "GH_TOKEN", hosts: ["gist.github.com"] };
 	assert.deepEqual(readSecretValues([gh, again], { GH_TOKEN: "ghp_abc" }), {
 		held: [{ env: "GH_TOKEN", value: "ghp_abc" }],
@@ -52,7 +52,7 @@ test("a variable named by two grants is read once", () => {
 	});
 });
 
-test("one missing name is refused by itself", () => {
+test("one missing name is listed on its own", () => {
 	assert.equal(
 		missingMessage(["GH_TOKEN"]),
 		"network.secrets needs GH_TOKEN set in your environment",
