@@ -54,6 +54,12 @@ export async function archive(
 }
 
 /**
+ * Unpacks the archive on stdin into the guest's home, readable only by its
+ * owner. Printed for the user to run as well, so it is one line of plain sh.
+ */
+const UNPACK = "cd && umask 077 && tar -xf -";
+
+/**
  * Kept after restoring, so it stays the last known history if this one is lost.
  *
  * Never throws: by now the old sandbox is gone and the new one is built, so a
@@ -71,20 +77,20 @@ export async function restore(
 		return false;
 	}
 
-	const script = ["set -eu", "umask 077", 'cd "$HOME"', "tar -xf -"].join("\n");
 	let failure: string;
 	try {
-		const result = await lima.runScript(instance, script, { input: tar });
+		const result = await lima.runScript(instance, UNPACK, { input: tar });
 		if (result.code === 0) return true;
 		failure = result.stderr.trim() || `exit ${result.code}`;
 	} catch (err) {
 		failure = err instanceof Error ? err.message : String(err);
 	}
 	console.error(`warning: could not restore Claude history (${failure})`);
-	console.error(`  it is kept in ${path}; restore it with:`);
 	console.error(
-		`  playpen run -- sh -c 'cd && umask 077 && tar -xf -' < ${shQuote(path)}`,
+		`  it is in ${path}, which the next rebuild or remove of this sandbox may replace.`,
 	);
+	console.error(`  restore it now, from the project directory:`);
+	console.error(`  playpen run -- sh -c ${shQuote(UNPACK)} < ${shQuote(path)}`);
 	return false;
 }
 
