@@ -1,6 +1,6 @@
 # Plan
 
-Updated 2026-09-17. Design and reasoning are in `spec.md`; constraints that must
+Updated 2026-09-28. Design and reasoning are in `spec.md`; constraints that must
 not be inverted are in `AGENTS.md`. The network fence's mechanism is in
 `docs/NETWORK.md`. Update this when status changes.
 
@@ -18,12 +18,19 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
 | `completion bash\|zsh`, generated from the citty command tree      | done; zsh unverified   |
 | network fence (mechanism in `docs/NETWORK.md`)                     | done, see below        |
 | `network.secrets` values held by the helper, placeholders in guest | unit-tested; no VM run |
+| per-install CA in `<dataDir>/ca/`, trusted by the base image       | unit-tested; no VM yet |
 
 ## Known problems
 
 - An existing sandbox does not pick up image or config changes, or a rebaked
   base, on its own. `start` notices both and offers a ~10s rebuild; declining
   keeps the old one running.
+- The CA certificate is part of the image hash, and the CA is created on first
+  use, so the first `start` or `image build` after it lands mints the CA and
+  finds no matching base: every existing sandbox is offered a rebuild, and the
+  base is rebaked. Deleting `<dataDir>/ca/` does the same again. Whether a
+  booted guest trusts the CA (curl, Node, Python requests) is unverified; it
+  needs `playpen start` on a host with `limactl`.
 - `start` leaves 8GiB running until `stop`. Idle auto-stop deferred to v1; a
   forgotten VM happened twice in the first half hour, so revisit.
 - Nothing collects old sandboxes, old bases, or history archives. A clone costs

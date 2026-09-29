@@ -2,7 +2,7 @@ import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { defaults, limaHome, templatesDir } from "../config.ts";
 import { ensureBase, findBase } from "../image/bake.ts";
-import { baseImage } from "../image/base.ts";
+import { loadBaseImage } from "../image/base.ts";
 import { maskScript, render, serialize } from "../image/render.ts";
 import * as lima from "../lima/client.ts";
 import {
@@ -53,8 +53,8 @@ function templatePath(sb: Sandbox): string {
 	return join(templatesDir(), `${sb.sandbox}.yaml`);
 }
 
-function renderFor(sb: Sandbox) {
-	return render(baseImage, { ...defaults, mount: sb.cwd });
+async function renderFor(sb: Sandbox) {
+	return render(await loadBaseImage(), { ...defaults, mount: sb.cwd });
 }
 
 async function loadConfig(sb: Sandbox): Promise<{
@@ -170,7 +170,7 @@ async function renderTemplate(sb: Sandbox): Promise<Template> {
 	if (missing.length > 0 && (await liveHelper(sb.sandbox)) === null) {
 		throw new Error(missingMessage(missing));
 	}
-	const rendered = renderFor(sb);
+	const rendered = await renderFor(sb);
 	return {
 		yaml: `${serialize(rendered)}\n`,
 		hash: rendered.contentHash,

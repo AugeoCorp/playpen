@@ -53,6 +53,15 @@ export function trustDir(): string {
 	return join(dataDir(), "trust");
 }
 
+/**
+ * The certificate authority the guest is baked to trust. Under the data
+ * directory, never the project: the key must not be reachable from a guest,
+ * which mounts only the project.
+ */
+export function caDir(): string {
+	return join(dataDir(), "ca");
+}
+
 export function limaHome(): string {
 	return process.env.LIMA_HOME ?? join(homedir(), ".lima");
 }
