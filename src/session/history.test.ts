@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import {
 	chmod,
 	lstat,
@@ -16,6 +17,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { type TestContext, test } from "node:test";
+import { setTimeout as sleep } from "node:timers/promises";
 import { exists as onDisk } from "../fs.ts";
 import {
 	archivePath,
@@ -186,6 +188,33 @@ test("an attempt killed halfway through moving is finished by the next, with eve
 	assert.deepEqual(await tree(s.dst), await tree(s.src));
 });
 
+test("a move waits while an earlier one still holds the guest's lock, and then runs", async (t) => {
+	const s = await scratch(t);
+	await guestHistory(s.src);
+	const held = join(s.home, "held");
+	const holder = spawn(
+		"flock",
+		[join(s.home, ".playpen-history.lock"), "-c", `touch "${held}"; read _`],
+		{ stdio: ["pipe", "ignore", "ignore"] },
+	);
+	t.after(() => holder.kill());
+	while (!(await onDisk(held))) await sleep(20);
+
+	const move = spawn(
+		"bash",
+		["-c", `${MOVE_HISTORY}\n${MOVE}`, "bash", s.src, s.dst],
+		{ env: { ...process.env, HOME: s.home }, stdio: "ignore" },
+	);
+	const finished = once(move, "exit");
+	await sleep(300);
+	assert.deepEqual(await readdir(s.dst), [], "it ran beside the earlier move");
+
+	holder.stdin?.end();
+	const [code] = await finished;
+	assert.equal(code, 0);
+	assert.deepEqual(await tree(s.dst), await tree(s.src));
+});
+
 test("a file already on the host and newer than the guest's is kept, and named", async (t) => {
 	const s = await scratch(t);
 	await guestHistory(s.src);
@@ -228,7 +257,7 @@ async function oldArchive(s: Scratch): Promise<Buffer> {
 	]);
 }
 
-test("an old archive is unpacked into the host directory, and nothing is left beside the guest's home", async (t) => {
+test("an old archive is unpacked into the host directory, and its unpacked copy is removed from the guest's home", async (t) => {
 	const s = await scratch(t);
 	const archive = await oldArchive(s);
 	const expected = await tree(join(s.home, "old", ".claude", "projects"));
@@ -236,7 +265,10 @@ test("an old archive is unpacked into the host directory, and nothing is left be
 	const result = run(s, 'import_history "$2"', archive);
 	assert.equal(result.code, 0, result.stderr);
 	assert.deepEqual(await tree(s.dst), expected);
-	assert.deepEqual(await readdir(s.home), []);
+	assert.deepEqual(
+		(await readdir(s.home)).filter((f) => f.startsWith(".playpen-import")),
+		[],
+	);
 });
 
 test("an old archive cut short is refused, and nothing reaches the host directory", async (t) => {

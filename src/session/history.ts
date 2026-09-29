@@ -88,6 +88,11 @@ export function onHost(instance: string): Promise<boolean> {
  * whose type differs, rather than a directory being replaced by a file. `$1`
  * is left as it was.
  *
+ * Under a lock on the guest's own disk for the whole run: killing
+ * `limactl shell` on the host does not stop the script in the guest, so an
+ * interrupted start's move can still be running when the next start's begins,
+ * and both work through the same staging path.
+ *
  * Never call it as a condition (`if`, `||`): bash ignores `set -e` for the
  * whole of a function run that way, even inside it.
  */
@@ -98,6 +103,11 @@ export const MOVE_HISTORY = [
 	'	src="$1"',
 	'	dst="$2"',
 	'	stage="$dst/.playpen-staging"',
+	'	exec 9>"$HOME/.playpen-history.lock"',
+	"	if ! flock -w 600 9; then",
+	'		echo "an earlier move of Claude history is still running in the guest" >&2',
+	"		exit 1",
+	"	fi",
 	'	rm -rf "$stage"',
 	'	mkdir "$stage"',
 	'	tar -C "$src" -cf - . | tar -C "$stage" -xf -',
