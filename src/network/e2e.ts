@@ -13,7 +13,15 @@
  *   node src/network/e2e.ts
  *
  * The instance is created if it does not exist and left stopped at the end.
+ *
+ * PLAYPEN_E2E_SECRET_HOST names a host that echoes the request's headers as
+ * its body at `/headers` (httpbin.org does); with it set, section 5 also
+ * checks that a request from the guest reaches it with the real value. The
+ * helper verifies that host's certificate itself, so where this machine's own
+ * egress is TLS-intercepted, run with NODE_EXTRA_CA_CERTS naming that
+ * interceptor's CA.
  */
+import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -22,19 +30,28 @@ import { limaHome } from "../config.ts";
 import { exists } from "../fs.ts";
 import * as lima from "../lima/client.ts";
 import { instanceName } from "../session/identity.ts";
+import { profileCommand } from "../session/secrets.ts";
 import { capture } from "../sh.ts";
 import { sleep } from "../time.ts";
+import { ensureCa } from "./ca.ts";
 import {
 	bringUp,
 	fencePaths,
 	fenceStatus,
+	type HeldSecret,
 	killFenceLeftovers,
 	liveHelper,
 	policyStamp,
 	removeSocket,
 } from "./fence.ts";
 import type { LogEntry } from "./gatekeeper.ts";
-import { BUILTIN_ALLOW, HOST_ALIAS, type PortForward } from "./policy.ts";
+import {
+	BUILTIN_ALLOW,
+	HOST_ALIAS,
+	type PortForward,
+	placeholderFor,
+	type SecretGrant,
+} from "./policy.ts";
 
 const sandbox = process.env.PLAYPEN_E2E_SANDBOX ?? "fence-e2e";
 const instance = instanceName(sandbox);
@@ -42,7 +59,25 @@ const template = process.env.PLAYPEN_E2E_TEMPLATE ?? "";
 const tun2proxy = process.env.PLAYPEN_E2E_TUN2PROXY ?? "";
 const allowedHost = process.env.PLAYPEN_E2E_ALLOWED ?? "nodejs.org";
 const deniedHost = process.env.PLAYPEN_E2E_DENIED ?? "example.com";
+const echoHost = process.env.PLAYPEN_E2E_SECRET_HOST ?? "";
+/** Allowed by the built-in list and named by no secret. */
+const unlistedHost = "registry.npmjs.org";
 const paths = fencePaths(sandbox);
+
+/**
+ * Made up for the run: what is checked is where the value goes, not that any
+ * service accepts it. `allowedHost` is always one of its hosts, so the
+ * certificate check needs no echo host.
+ */
+const secret: HeldSecret = {
+	env: "PLAYPEN_E2E_TOKEN",
+	value: `e2e-${randomBytes(12).toString("hex")}`,
+};
+const secretGrant: SecretGrant = {
+	env: secret.env,
+	hosts: echoHost === "" ? [allowedHost] : [allowedHost, echoHost],
+};
+const GUEST_CA = "/tmp/playpen-ca.crt";
 
 /**
  * Argv substrings that identify a process as belonging to this sandbox's
@@ -137,6 +172,7 @@ async function waitFor(
 async function up(
 	allow: readonly string[] = [allowedHost],
 	ports: readonly PortForward[] = [],
+	secrets: readonly SecretGrant[] = [],
 ): Promise<void> {
 	await bringUp({
 		sandbox,
@@ -146,11 +182,13 @@ async function up(
 				...BUILTIN_ALLOW,
 				...allow,
 				...ports.map(({ host }) => `localhost:${host}`),
+				...secrets.flatMap(({ hosts }) => hosts),
 			],
 			mode: "enforce",
 			ports,
-			secrets: [],
+			secrets,
 		},
+		secrets: secrets.length === 0 ? [] : [secret],
 		log: (text) => process.stderr.write(text),
 	});
 }
@@ -196,10 +234,32 @@ async function main(): Promise<void> {
 		await step("and a new helper reattaches to it", reattach);
 		await step(`${allowedHost} answers again`, allowedAnswers);
 
-		console.log("\n5. stopping the VM from outside");
+		console.log("\n5. a secret");
+		if (await step("a helper holding a secret replaces this one", holdSecret)) {
+			await step(
+				`${allowedHost}, a secret's host, shows the playpen CA's certificate`,
+				secretHostIssuer,
+			);
+			await step(
+				`${unlistedHost}, named by no secret, shows its own`,
+				unlistedIssuer,
+			);
+			if (echoHost === "") {
+				console.log(
+					"  skip  the value reaches the host (no PLAYPEN_E2E_SECRET_HOST)",
+				);
+			} else {
+				await step(
+					`${echoHost} sees the value, the guest only the placeholder`,
+					valueInjected,
+				);
+			}
+		}
+
+		console.log("\n6. stopping the VM from outside");
 		await step("the helper tears the fence down and exits", stopped);
 	} finally {
-		console.log("\n6. leftover processes for this sandbox");
+		console.log("\n7. leftover processes for this sandbox");
 		try {
 			await step(
 				"no socat or __net-inside process left running",
@@ -483,6 +543,91 @@ async function noEgress(): Promise<string | null> {
 async function reattach(): Promise<string | null> {
 	await up();
 	return wanted("fence state", "sealed", await fenceStatus(sandbox, instance));
+}
+
+/**
+ * A helper takes its values only when it is spawned, so the running one is
+ * killed and a new one reattached with the secret. The guest then gets what
+ * `playpen start` would give it: the placeholder in its login profile, and the
+ * CA certificate the base image would have installed, as a file this VM's
+ * clients are pointed at.
+ */
+async function holdSecret(): Promise<string | null> {
+	const helper = await liveHelper(sandbox);
+	if (helper !== null) process.kill(helper.pid, "SIGKILL");
+	const gone = await waitFor("the old helper's exit", 30, async () => {
+		const state = await fenceStatus(sandbox, instance);
+		return state === "sealed-no-gatekeeper";
+	});
+	if (gone !== null) return gone;
+	await up([allowedHost], [], [secretGrant]);
+	const held = (await liveHelper(sandbox))?.secrets ?? [];
+	if (!held.includes(secret.env)) return `the helper holds ${held.join(", ")}`;
+
+	const { script, input } = profileCommand([
+		{ env: secret.env, placeholder: placeholderFor(secret.env) },
+	]);
+	await lima.runScript(instance, script, {
+		root: true,
+		...(input === undefined ? {} : { input }),
+	});
+	await lima.runScript(instance, `cat > ${GUEST_CA}`, {
+		input: (await ensureCa()).certPem,
+	});
+	return null;
+}
+
+/** The issuer of the certificate the guest is shown for `host`, or "". */
+function issuerSeen(host: string): Promise<string> {
+	return guest(
+		`openssl s_client -connect "$1:443" -servername "$1" </dev/null 2>/dev/null | openssl x509 -noout -issuer`,
+		[host],
+	);
+}
+
+async function secretHostIssuer(): Promise<string | null> {
+	const issuer = await issuerSeen(allowedHost);
+	return issuer.includes("playpen sandbox CA") ? null : `issuer: ${issuer}`;
+}
+
+async function unlistedIssuer(): Promise<string | null> {
+	const issuer = await issuerSeen(unlistedHost);
+	if (issuer === "") return "no certificate";
+	return issuer.includes("playpen sandbox CA") ? `issuer: ${issuer}` : null;
+}
+
+/**
+ * Through a login shell, so the header carries whatever the guest's own
+ * environment holds for the variable, as an agent's request would.
+ */
+async function valueInjected(): Promise<string | null> {
+	const placeholder = placeholderFor(secret.env);
+	const seen = await guest(`bash -lc 'printenv ${secret.env}'`);
+	if (seen !== placeholder) return `the guest's ${secret.env} is "${seen}"`;
+	const environment = await guest("bash -lc env");
+	if (environment.includes(secret.value))
+		return "the guest's environment holds the value";
+
+	const echoed = await guest(
+		`bash -lc 'curl -sS --noproxy "*" --max-time 60 --cacert ${GUEST_CA}` +
+			` -H "Authorization: token $${secret.env}" "https://$0/headers"' "$1"`,
+		[echoHost],
+	);
+	if (!echoed.includes(`token ${secret.value}`)) {
+		return `${echoHost} did not echo the value: ${echoed.slice(0, 200)}`;
+	}
+
+	const entries = await gatekeeperLog();
+	const injected = entries.some(
+		(e) =>
+			e.verdict === "inject" &&
+			e.host === echoHost &&
+			e.env === secret.env &&
+			e.header.toLowerCase() === "authorization",
+	);
+	if (!injected) return `no inject line for ${echoHost}`;
+	const raw = await readFile(paths.gatekeeperLog, "utf8");
+	return raw.includes(secret.value) ? "gatekeeper.log holds the value" : null;
 }
 
 async function stopped(): Promise<string | null> {
