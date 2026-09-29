@@ -36,7 +36,7 @@ export function templatesDir(): string {
 }
 
 /**
- * Claude transcripts and memory saved out of a sandbox before it is destroyed.
+ * Claude transcripts and memory saved out of a sandbox's guest at every stop.
  * Under the data directory for the same reason as `trustDir`: the guest can
  * reach only the project mount, so it cannot read or rewrite its own history.
  */

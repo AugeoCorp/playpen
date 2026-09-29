@@ -122,16 +122,19 @@ yet vary per sandbox. They are global defaults today.
 - [x] a stale sandbox offers a rebuild instead of only warning
 - [x] a sandbox on an older base than the newest is offered one too
 - [x] `~/.claude/projects` is saved to `history/<sandbox>.tar` at every stop
-      (the one before kept as `.prev.tar`) and restored at every start into a VM
-      that does not hold it yet, with `--keep-newer-files`; round-trip verified
-      on the host 2026-09-15. Which VM holds the copy is a marker in the Lima
-      instance's directory, so a reclone never inherits it. Only a VM that holds
-      the copy, or one with no copy on the host, may replace it; a stop first
-      restores into a VM that does not, so a sandbox from before this saves a
-      superset. A failed restore warns and is retried by the next start; a stop
-      in between saves to `.unrestored.tar` instead. A sandbox playpen stopped
-      is deleted without booting it; one stopped any other way (limactl, a host
-      shutdown) is booted fenced with nothing allowed and saved first
+      through playpen, including the auto-stop after `run`, `shell` and `claude`
+      (the one before kept as `.prev.tar`), and restored at every start into a
+      VM that does not hold it yet, with `--keep-newer-files`. Which VM holds
+      the copy is a marker in the Lima instance's directory, so a reclone never
+      inherits it. Only a VM that holds the copy, or one with no copy on the
+      host, may replace it; a stop first restores into a VM that does not, so a
+      sandbox from before this saves a superset. A failed restore warns and is
+      retried by the next start; a stop in between saves to `.unrestored.tar`
+      instead. A sandbox playpen stopped is deleted without booting it; one
+      stopped any other way (limactl, a host shutdown) is booted fenced with
+      nothing allowed and saved first. Verified on the host 2026-09-15: archive
+      on remove, restore into the new clone. The flow above was verified on the
+      scratch sandbox 2026-09-29, without KVM
 - [x] verified on the host: a fresh sandbox clones and boots in 10s, with no
       package installs and no image download
 
