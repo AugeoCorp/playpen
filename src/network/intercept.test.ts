@@ -146,7 +146,7 @@ function toUpstream(
 		tls.connect({ ...options, host: "127.0.0.1", port, ca: publicCa.certPem });
 }
 
-/** The gatekeeper with the interceptor, holding GH_TOKEN, with every line it
+/** The gatekeeper as the helper runs it, holding GH_TOKEN, with every line it
  * logs collected. */
 async function gatekeeperWith(
 	t: TestContext,

@@ -144,25 +144,28 @@ process the guest runs, not a port, so nothing here applies to it.
 
 **Secrets.** A `network.secrets` entry names a variable in the environment of
 the `playpen start` that boots the sandbox, and the hosts it may be used on. The
-value goes one way only, and nothing injects it yet. `playpen start` reads it
-and refuses to boot if any named variable is unset or empty (listing every one,
-before the VM is touched). It spawns the helper with a stdin pipe and writes one
-JSON document to it, `{ "secrets": [{ "env", "value" }] }`, followed by
-end-of-stream; a project with no secrets sends `{ "secrets": [] }`, so the
-helper never waits on a stdin that is not coming. A name that two entries share
-is sent once. The helper reads the document to the end before it serves anything
-and keeps the result in memory. It logs a count and names
-(`holding 2 secrets: GH_TOKEN, NPM_TOKEN`) and never a value. The value is not
-in argv, not in a file, and not in the helper's environment: the helper gets the
-parent's environment without every variable the policy's `secrets` name, whether
-or not a value was handed over, so a `GH_TOKEN` exported in your shell reaches
-neither the helper nor the bwrap, limactl and qemu below it. The boot that saves
-a stopped sandbox's history before it is deleted allows nothing, but its policy
-keeps the grants from the sandbox's last policy.json for the same reason. The
-hosts are not in the document: policy.json carries `env` and `hosts` and is the
-one place they are kept, and it is re-read on reload. helper.json carries the
-names the helper holds, so a later `start` can see what the running helper
-lacks.
+value goes one way only: into the helper, which puts it into the `Authorization`
+header of requests to those hosts (see "Secrets" below) and nowhere else. A host
+that echoes `Authorization` back in its answer would return the value to the
+guest, so grant a secret only to hosts you would send it to anyway.
+`playpen start` reads it and refuses to boot if any named variable is unset or
+empty (listing every one, before the VM is touched). It spawns the helper with a
+stdin pipe and writes one JSON document to it,
+`{ "secrets": [{ "env", "value" }] }`, followed by end-of-stream; a project with
+no secrets sends `{ "secrets": [] }`, so the helper never waits on a stdin that
+is not coming. A name that two entries share is sent once. The helper reads the
+document to the end before it serves anything and keeps the result in memory. It
+logs a count and names (`holding 2 secrets: GH_TOKEN, NPM_TOKEN`) and never a
+value. The value is not in argv, not in a file, and not in the helper's
+environment: the helper gets the parent's environment without every variable the
+policy's `secrets` name, whether or not a value was handed over, so a `GH_TOKEN`
+exported in your shell reaches neither the helper nor the bwrap, limactl and
+qemu below it. The boot that saves a stopped sandbox's history before it is
+deleted allows nothing, but its policy keeps the grants from the sandbox's last
+policy.json for the same reason. The hosts are not in the document: policy.json
+carries `env` and `hosts` and is the one place they are kept, and it is re-read
+on reload. helper.json carries the names the helper holds, so a later `start`
+can see what the running helper lacks.
 
 What the guest sees is a placeholder: `playpen-secret-` and the variable name in
 lower case with dashes, so `GH_TOKEN` is `playpen-secret-gh-token`. It is fixed
@@ -365,23 +368,108 @@ common package managers need, not a measurement. It stays a guess until a
 
 ## Secrets
 
-`network.secrets` will let a later interceptor terminate TLS for the hosts it
-names, so the guest can hold a placeholder while the real value is swapped in on
-the host side. For the guest to accept the interceptor's certificates, each
-install has one certificate authority (`src/network/ca.ts`) in the `ca/`
-directory under the data directory: its key is mode 0600, is refused if it is
-readable by group or others, and never leaves the host. Its certificate is
-public and is installed into the guest's trust store when the base image is
-baked (the `caTrust()` layer). curl, git and Go programs such as gh read that
-store. Node reads no system store, Python's requests carries its own bundle, and
-uv and other tools with their own TLS stack read `SSL_CERT_FILE`, so
-`NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE` and `SSL_CERT_FILE` are set through
-the image's `env`, which Lima writes to `/etc/environment` for every session,
-sudo included. The certificate is part of the image hash, so a new CA rebakes
-the base. The CA is created in a staging directory and published with one
-rename, so two first runs at once share one CA. It has no name constraints: the
-hosts differ per project and change over time, while the CA is one per install.
-Nothing intercepts yet.
+The guest holds a placeholder for each secret (see "Secrets" under "The shape"
+for how it gets there); the helper puts the real value in on the host side, in
+the headers of HTTPS requests to the hosts the secret names.
+
+**What is intercepted.** A `CONNECT` the policy allows, to port 443 of a host a
+`network.secrets` entry names, for a variable the helper holds. The host must be
+the one the entry names exactly: `api.github.com` does not cover
+`uploads.api.github.com`, though the allow entry it implies does. `secrets` is
+read from the current policy on each `CONNECT`, like `allow`, so a reload adds
+or drops interception for new tunnels without a restart; a tunnel already open
+keeps what it started with. A secret a reload adds is intercepted for only if
+the helper already holds its variable, since values arrive only at spawn; one it
+does not hold is piped, placeholder and all, with a `note` line saying so (see
+below). Every other `CONNECT` -- another host, another port on the same host --
+and every plain-HTTP request is piped as before.
+
+**What happens in the tunnel.** The gatekeeper answers the `CONNECT` itself and
+hands the tunnel to a server made for that one host
+(`src/network/intercept.ts`), which terminates TLS, offering HTTP/1.1 only. A
+TLS server name other than the host the `CONNECT` named is refused. So, with a
+421 and a `deny` line, is a request whose `Host` header names another site, and
+one whose request line is anything but a path (or `*` for `OPTIONS`): behind a
+shared front end, `Host` or a full URL in the request line
+(`GET https://other.example/`, which overrides `Host`) can decide which site
+gets the request, and with it the value. The upstream sees exactly one `Host`,
+the approved host, whatever the guest sent, and never the guest's
+`X-Forwarded-Host`, `Forwarded` or `X-Original-URL`, which some front ends route
+by; hop-by-hop headers (`Connection`, `Keep-Alive`, `Proxy-*`, `TE`, `Trailer`,
+and `Upgrade` outside an upgrade) are dropped too. Every other header goes on as
+sent. Each request's headers are read, the placeholder is replaced
+(`rewriteHeaders` in `src/network/inject.ts`), and the request goes on over a
+new TLS connection to the host the `CONNECT` named, at port 443, verified
+against the certificates Node carries. That connection is resolved and dialed
+through the same lookup a piped tunnel would use, so every rule under "Policy"
+holds for it: a secret's host whose name resolves onto this machine is refused
+the same way. Bodies, both ways, are streamed through unread; a host that hangs
+up partway through its answer cuts the guest's response off the same way, with
+an `error` line. One tunnel carries as many kept-alive requests as the client
+sends on it, and a WebSocket upgrade gets the same header rewrite before the two
+connections are joined.
+
+**Where the placeholder is replaced.** In the `Authorization` request header and
+nowhere else: wherever it appears verbatim (`token X`, `Bearer X`), and inside
+`Basic` credentials, which are decoded, swapped and encoded again, since that is
+how git sends a token. gh, git, curl `-u` and npm all send a token there. Any
+other header goes out as the guest sent it, placeholder included: a host that
+echoes a request header back (api.github.com quotes `X-GitHub-Api-Version` in an
+error) would otherwise hand the value to the guest. The same holds for
+`Authorization` itself, which this cannot close: a host that echoes it returns
+the value to the guest, so grant a secret only to hosts you would send it to
+anyway. Only the secrets whose entry names this host are swapped; a placeholder
+for any other goes out as it is.
+
+**The certificates.** A helper holding at least one secret reads the CA once at
+start (`readCa()`), and fails to start if there is none: a new CA made then
+would be one the running guest does not trust, and every intercepted handshake
+would fail. It makes one RSA key for its life and, for each host on first use, a
+certificate signed by the CA (`src/network/leaf.ts`): the host as its common
+name and its one DNS name, not a CA, server authentication only, valid for seven
+days, and naming the CA's key identifier, which Python's strict verification
+requires. One within a day of its end is minted again, since a helper lives as
+long as its VM. The guest accepts it because it trusts the CA (below).
+
+**What the log shows.** One `inject` line in `gatekeeper.log` for each header
+and variable a value went into, written once the connection to the host is up,
+so a request whose dial is refused or whose host fails verification logs none.
+It names the host, the port, the header and the variable:
+`{"verdict":"inject","host":"api.github.com","port":443,"header":"authorization","env":"GH_TOKEN",…}`.
+A wrong server name, `Host` or request target is a `deny` line saying what was
+asked for. A client that sends no server name is refused in the handshake too,
+but that shows up as an `error` line (OpenSSL's "no suitable signature
+algorithm"), since there was no name to check. Any other TLS or upstream failure
+is an `error` line with the message alone. A `CONNECT` to port 443 of a host
+that names a secret the helper does not hold gets a `note` line, so an audit
+shows why a request went out with the placeholder:
+`secret GH_TOKEN is named for this host but this helper does not hold it; piped`.
+No line carries a value, and nothing logs a body.
+
+**What it does not do.** HTTP/2: only `http/1.1` is offered, which gh, git, curl
+and Node fall back to. A client that sends no server name is refused, as above.
+Plain HTTP to a secret's host is piped, placeholder and all, since there is no
+TLS to terminate. Nothing in a body, a URL or a query string is replaced, so a
+client that sends its token that way sends the placeholder. A value changed in
+your environment reaches the helper only on `playpen stop && playpen start`. The
+upstream is checked against Node's own certificate list, plus any
+`NODE_EXTRA_CA_CERTS` in the environment `playpen start` ran with, not the
+host's system store.
+
+For the guest to accept the interceptor's certificates, each install has one
+certificate authority (`src/network/ca.ts`) in the `ca/` directory under the
+data directory: its key is mode 0600, is refused if it is readable by group or
+others, and never leaves the host. Its certificate is public and is installed
+into the guest's trust store when the base image is baked (the `caTrust()`
+layer). curl, git and Go programs such as gh read that store. Node reads no
+system store, Python's requests carries its own bundle, and uv and other tools
+with their own TLS stack read `SSL_CERT_FILE`, so `NODE_EXTRA_CA_CERTS`,
+`REQUESTS_CA_BUNDLE` and `SSL_CERT_FILE` are set through the image's `env`,
+which Lima writes to `/etc/environment` for every session, sudo included. The
+certificate is part of the image hash, so a new CA rebakes the base. The CA is
+created in a staging directory and published with one rename, so two first runs
+at once share one CA. It has no name constraints: the hosts differ per project
+and change over time, while the CA is one per install.
 
 ## What it does not contain
 
@@ -399,9 +487,12 @@ Nothing intercepts yet.
   the host's nameservers, and inside the fence there is no route to them. Every
   verdict the gatekeeper makes, allowed or refused, is logged with the host it
   named.
-- **Nothing inspects content.** The gatekeeper decides on the `CONNECT` target
-  and then pipes the connection through untouched; it never terminates TLS, so
-  it cannot see or alter what travels inside an allowed connection.
+- **Nothing inspects content, except request headers bound for a secret's
+  host.** The gatekeeper decides on the `CONNECT` target and then pipes the
+  connection through untouched; it never terminates TLS for any other host, so
+  it cannot see or alter what travels inside those connections. For a secret's
+  host it reads request headers and rewrites `Authorization`, and nothing else
+  (see "Secrets").
 - **An allowed name can front for a different one.** Many names sit behind the
   same shared CDN, so a client can open a tunnel to a name the policy allows and
   then, inside it, ask for a different site -- in the TLS handshake's SNI or the
@@ -410,7 +501,12 @@ Nothing intercepts yet.
   any of that is visible. That follows from not terminating TLS, which is the
   right call for a proxy that must not itself be able to read what it relays,
   but it means "allow `github.com`" is wider than it looks: names like
-  `objects.githubusercontent.com` sit behind shared front ends too.
+  `objects.githubusercontent.com` sit behind shared front ends too. A secret's
+  host is the exception: there the server name and `Host` must both be the host
+  the `CONNECT` named, the request line must be a path, and the upstream gets
+  one `Host` naming that host and none of the headers front ends are known to
+  route by. That closes the ways of naming another site that this code knows of;
+  a front end that routes on something else still could.
 
 ## What was measured, and where
 
@@ -454,6 +550,11 @@ re-enabling it restored the 200.
 What has not been run: a host reboot, and any of this on the maintainer's own
 machine.
 
+The interceptor was driven by hand with curl 8.5 (token, `-u` Basic, a 3 MB
+chunked upload, two URLs over one connection, a mismatched server name),
+`openssl s_client`, and Python 3.11's `ssl` with `VERIFY_X509_STRICT`, through
+the real gatekeeper to a local upstream.
+
 ## Rejected on the way
 
 - **mitmproxy's eBPF local-capture mode.** Redirects one host process's traffic
@@ -477,6 +578,11 @@ machine.
   more than `proxy-chain` for a job that is one `CONNECT` decision: about 200
   packages against 9, and 114 MB resident at idle against 73 MB, both measured
   on the same machine.
+- **mockttp as the interceptor.** Measured in a spike against the per-tunnel
+  `https.Server` now used: it adds about 190 packages, one with a native build
+  step, and 46.6 MB of `node_modules` against 3.3 MB for node-forge; and handing
+  it a tunnel takes either a private field or a second proxy chained behind the
+  gatekeeper.
 - **`bwrap --unshare-pid`.** Isolating the process namespace too, not just the
   network one, sounds like it should make the fence tidier. Lima instead reports
   a perfectly healthy instance as `Broken`, so the fence uses `--unshare-net`
@@ -485,10 +591,6 @@ machine.
 
 ## Later
 
-- **Header injection for named hosts** -- swapping the placeholder for the real
-  value, which the helper already holds, in the headers of a request the
-  gatekeeper has allowed, likely with mockttp doing the injection once a
-  connection is already known to be allowed.
 - **Publishing chosen guest ports to the host.** Lima still forwards every guest
   loopback port, but inside the fence, where nothing on the host can reach them;
   a dev server in the guest no longer shows up on the host's `localhost`.

@@ -1,6 +1,6 @@
 # Plan
 
-Updated 2026-09-28. Design and reasoning are in `spec.md`; constraints that must
+Updated 2026-09-29. Design and reasoning are in `spec.md`; constraints that must
 not be inverted are in `AGENTS.md`. The network fence's mechanism is in
 `docs/NETWORK.md`. Update this when status changes.
 
@@ -17,8 +17,9 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
 | `image build`, base image + clone                                  | done, verified on host |
 | `completion bash\|zsh`, generated from the citty command tree      | done; zsh unverified   |
 | network fence (mechanism in `docs/NETWORK.md`)                     | done, see below        |
-| per-install CA in `<dataDir>/ca/`, trusted by the base image       | unit-tested; no VM yet |
 | `network.secrets` values held by the helper, placeholders in guest | unit-tested; no VM run |
+| per-install CA in `<dataDir>/ca/`, trusted by the base image       | unit-tested; no VM yet |
+| `network.secrets` swapped into HTTPS `Authorization` headers       | unit-tested; no VM run |
 
 ## Known problems
 
@@ -85,7 +86,20 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
   write through `limactl shell` with `sudo`, a guest login shell sourcing
   `/etc/profile.d/playpen-secrets.sh`, and the real detached spawn round trip
   (`playpen start` piping the document to a helper that outlives it, with the
-  granted variables gone from its environment). Nothing injects yet.
+  granted variables gone from its environment).
+- The interceptor that puts `network.secrets` values into requests
+  (`docs/NETWORK.md`, "Secrets") is tested against a local HTTPS upstream
+  through the real gatekeeper, and was driven by hand with curl,
+  `openssl s_client` and Python's strict `ssl`. It speaks HTTP/1.1 only: HTTP/2
+  is not offered, so clients fall back. A value changed in the host environment
+  needs `playpen stop && playpen start`, since the helper takes its values only
+  when it is spawned. The upstream is verified against Node's bundled CA list
+  (plus `NODE_EXTRA_CA_CERTS`), not the host's system store, so a host behind a
+  TLS-intercepting corporate proxy needs that variable set for `playpen start`.
+  The value goes into `Authorization` only, so a host that echoes that header
+  back would return it to the guest; a secret should be granted only to hosts it
+  would be sent to anyway. A service that takes its token in another header is
+  not served yet.
 
 ## Next
 
