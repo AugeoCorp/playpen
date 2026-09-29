@@ -54,6 +54,10 @@ export interface InterceptorOptions {
 /** Only TLS is terminated; any other port on a secret host is piped. */
 const TLS_PORT = 443;
 
+/** A client that hangs up mid-handshake holds its socket until this runs out;
+ * Node's default is 120 s. */
+const HANDSHAKE_MS = 10_000;
+
 /**
  * Hop-by-hop headers (after RFC 9110, 7.6.1), which describe the guest's
  * connection to here, not this one's to the host. `Transfer-Encoding` is kept
@@ -260,6 +264,7 @@ function tunnelServer(
 			done(new Error(reason));
 		},
 		ALPNProtocols: ["http/1.1"],
+		handshakeTimeout: HANDSHAKE_MS,
 		// Node's default, 300 s for the whole request, would cut off a large
 		// upload over a slow link.
 		requestTimeout: 0,
@@ -269,7 +274,12 @@ function tunnelServer(
 		socket.once("close", () => agent.destroy());
 	});
 	server.on("tlsClientError", (err: NodeJS.ErrnoException) => {
-		if (!refusedName && err.code !== "ECONNRESET") logError(err);
+		// A client hanging up mid-handshake is not a failure worth a line. A reset
+		// arrives as ECONNRESET, but a plain close arrives only as the handshake
+		// timeout.
+		const hungUp =
+			err.code === "ECONNRESET" || err.code === "ERR_TLS_HANDSHAKE_TIMEOUT";
+		if (!refusedName && !hungUp) logError(err);
 	});
 
 	server.on("request", (req: IncomingMessage, res: ServerResponse) => {
@@ -278,19 +288,39 @@ function tunnelServer(
 			res.writeHead(refusal.status, { connection: "close" }).end();
 			return;
 		}
-		const up = upstream(req, false);
+		let up: ReturnType<typeof https.request>;
+		try {
+			up = upstream(req, false);
+		} catch (err) {
+			// A header value Node will not send, such as one with a newline in it.
+			logError(err);
+			res.writeHead(502, { connection: "close" }).end();
+			return;
+		}
+		let guestGone = false;
 		up.on("response", (answer) => {
 			res.writeHead(
 				answer.statusCode ?? 502,
 				answer.statusMessage,
 				withoutHopByHop(answer.rawHeaders, false),
 			);
+			// `pipe` does not pass on an error: a host hanging up mid-answer would
+			// otherwise leave the guest waiting for the rest.
+			answer.on("error", (err) => {
+				if (!guestGone) logError(err);
+				res.destroy();
+			});
 			answer.pipe(res);
 		});
 		up.on("error", (err) => {
 			logError(err);
 			if (res.headersSent) res.destroy();
 			else res.writeHead(502, { connection: "close" }).end();
+		});
+		res.on("close", () => {
+			if (res.writableFinished) return;
+			guestGone = true;
+			up.destroy();
 		});
 		req.pipe(up);
 	});
@@ -303,7 +333,18 @@ function tunnelServer(
 			);
 			return;
 		}
-		const up = upstream(req, true);
+		let up: ReturnType<typeof https.request>;
+		try {
+			up = upstream(req, true);
+		} catch (err) {
+			logError(err);
+			socket.destroy();
+			return;
+		}
+		let guestGone = false;
+		socket.once("close", () => {
+			guestGone = true;
+		});
 		up.on("upgrade", (answer, upSocket, upHead) => {
 			const lines = [`HTTP/1.1 101 ${answer.statusMessage ?? ""}`];
 			for (let i = 0; i + 1 < answer.rawHeaders.length; i += 2) {
@@ -331,10 +372,14 @@ function tunnelServer(
 			}
 			lines.push("connection: close");
 			socket.write(`${lines.join("\r\n")}\r\n\r\n`);
+			answer.on("error", (err) => {
+				if (!guestGone) logError(err);
+				socket.destroy();
+			});
 			answer.pipe(socket);
 		});
 		up.on("error", (err) => {
-			logError(err);
+			if (!guestGone) logError(err);
 			socket.destroy();
 		});
 		up.end();

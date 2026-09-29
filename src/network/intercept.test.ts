@@ -161,6 +161,7 @@ async function gatekeeperWith(
 	t: TestContext,
 	opts: {
 		policy: () => Policy;
+		held?: readonly HeldSecret[];
 		upstreamPort?: number;
 		/** What the host's certificate is verified against; `publicCa`, which
 		 * signed it, unless a test needs the check to fail. */
@@ -182,7 +183,7 @@ async function gatekeeperWith(
 			{ address: opts.resolveTo ?? "127.0.0.1", family: 4 },
 		],
 		intercept: interceptor({
-			held: [GH_TOKEN],
+			held: opts.held ?? [GH_TOKEN],
 			contextFor: leafMinter(playpenCa),
 			log: record,
 			...(toHost === undefined
@@ -532,6 +533,152 @@ test("the host's answer reaches the guest intact", async (t) => {
 	assert.equal(answer.headers["x-upstream"], "yes");
 	assert.equal(answer.body, "hello from upstream");
 });
+
+test("a host hanging up partway through its answer ends the guest's response with an error within a second", async (t) => {
+	const upstream = await upstreamHost(t, (res) => {
+		res.writeHead(200, { "content-length": "1000000" });
+		res.write(Buffer.alloc(10_000), () => res.destroy());
+	});
+	const { port, log } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+
+	const outcome = await Promise.race([
+		responseOutcome(clientThrough(t, port, "api.example:443")),
+		setTimeout(1000, "still open after a second", { ref: false }),
+	]);
+
+	assert.match(outcome, /^error: /);
+	assert.ok(
+		log.some((e) => e.verdict === "error"),
+		`no error line in ${JSON.stringify(log)}`,
+	);
+});
+
+test("a guest hanging up partway through the answer is not logged as an error", async (t) => {
+	let hostSawClose: () => void = () => {};
+	const closed = new Promise<void>((resolve) => {
+		hostSawClose = resolve;
+	});
+	const upstream = await upstreamHost(t, (res) => {
+		res.writeHead(200, { "content-length": "1000000" });
+		res.write(Buffer.alloc(10_000));
+		res.on("close", hostSawClose);
+	});
+	const { port, log } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+	const agent = clientThrough(t, port, "api.example:443");
+
+	const req = https.request({ agent, host: "api.example", path: "/user" });
+	req.on("response", (res) => res.once("data", () => req.destroy()));
+	req.on("error", () => {});
+	req.end();
+	await closed;
+	// The interceptor hears of the close after the host does, and any line it
+	// would log comes after that.
+	await setTimeout(200);
+
+	assert.deepEqual(
+		log.filter((e) => e.verdict === "error"),
+		[],
+	);
+});
+
+test("a guest resetting its connection while a host that declined its upgrade is still answering is not logged as an error", async (t) => {
+	let hostSawClose: () => void = () => {};
+	const closed = new Promise<void>((resolve) => {
+		hostSawClose = resolve;
+	});
+	const upstream = await upstreamHost(
+		t,
+		(res) => {
+			res.write("partial");
+			res.on("close", hostSawClose);
+		},
+		{ upgrades: false },
+	);
+	const { port, log } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+	const tunnelSocket = await tunnel(port, "api.example:443");
+	const secure = await tlsOver(t, tunnelSocket, "api.example");
+
+	secure.write(
+		"GET /socket HTTP/1.1\r\nHost: api.example\r\nConnection: Upgrade\r\nUpgrade: echo\r\n\r\n",
+	);
+	await readUntil(secure, "partial");
+	// A plain close would leave the upgraded connection half-open, waiting for
+	// the host to finish; a reset is the guest going away.
+	tunnelSocket.resetAndDestroy();
+	await closed;
+	// The interceptor hears of the close after the host does, and any line it
+	// would log comes after that.
+	await setTimeout(200);
+
+	assert.deepEqual(
+		log.filter((e) => e.verdict === "error"),
+		[],
+	);
+});
+
+test("a guest resetting its connection before the host has answered its upgrade request is not logged as an error", async (t) => {
+	let hostGotRequest: () => void = () => {};
+	const requested = new Promise<void>((resolve) => {
+		hostGotRequest = resolve;
+	});
+	let hostSawClose: () => void = () => {};
+	const closed = new Promise<void>((resolve) => {
+		hostSawClose = resolve;
+	});
+	const upstream = await upstreamHost(
+		t,
+		(res) => {
+			res.on("close", hostSawClose);
+			hostGotRequest();
+		},
+		{ upgrades: false },
+	);
+	const { port, log } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+	const tunnelSocket = await tunnel(port, "api.example:443");
+	const secure = await tlsOver(t, tunnelSocket, "api.example");
+
+	secure.write(
+		"GET /socket HTTP/1.1\r\nHost: api.example\r\nConnection: Upgrade\r\nUpgrade: echo\r\n\r\n",
+	);
+	await requested;
+	tunnelSocket.resetAndDestroy();
+	await closed;
+	await setTimeout(200);
+
+	assert.deepEqual(
+		log.filter((e) => e.verdict === "error"),
+		[],
+	);
+});
+
+/** How a GET over `agent` ends: "end", or "error: " and the message. */
+function responseOutcome(agent: https.Agent): Promise<string> {
+	return new Promise((resolve) => {
+		const failed = (err: Error) => resolve(`error: ${err.message}`);
+		const req = https.request(
+			{ agent, host: "api.example", path: "/user" },
+			(res) => {
+				res.resume();
+				res.on("end", () => resolve("end"));
+				res.on("error", failed);
+			},
+		);
+		req.on("error", failed);
+		req.end();
+	});
+}
 
 test("the guest is shown a certificate for the host from the playpen CA", async (t) => {
 	const { port } = await gatekeeperWith(t, { policy: () => secretPolicy() });
@@ -887,6 +1034,55 @@ function plainHttpGet(proxyPort: number, url: string): Promise<number> {
 		req.end();
 	});
 }
+
+test("a value Node refuses to put in a header gets the guest a 502, and the gatekeeper keeps serving", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port, log } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		held: [{ env: "GH_TOKEN", value: "line\nbreak" }],
+		upstreamPort: upstream.port,
+	});
+
+	const refused = await send(clientThrough(t, port, "api.example:443"), {
+		headers: { authorization: `token ${PLACEHOLDER}` },
+	});
+	const next = await send(clientThrough(t, port, "api.example:443"), {
+		headers: {},
+	});
+
+	assert.equal(refused.status, 502);
+	assert.equal(next.status, 200);
+	assert.doesNotMatch(JSON.stringify(log), /line\\nbreak/);
+});
+
+test("an upgrade request with a value Node refuses in a header is closed, and the gatekeeper keeps serving", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port, log } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		held: [{ env: "GH_TOKEN", value: "line\nbreak" }],
+		upstreamPort: upstream.port,
+	});
+	const secure = await tlsOver(
+		t,
+		await tunnel(port, "api.example:443"),
+		"api.example",
+	);
+
+	secure.write(
+		`GET /socket HTTP/1.1\r\nHost: api.example\r\nConnection: Upgrade\r\nUpgrade: echo\r\nAuthorization: token ${PLACEHOLDER}\r\n\r\n`,
+	);
+	const refused = await Promise.race([
+		readToClose(secure),
+		setTimeout(1000, "still open after a second", { ref: false }),
+	]);
+	const next = await send(clientThrough(t, port, "api.example:443"), {
+		headers: {},
+	});
+
+	assert.equal(refused, "");
+	assert.equal(next.status, 200);
+	assert.doesNotMatch(JSON.stringify(log), /line\\nbreak/);
+});
 
 test("the guest's hop-by-hop headers do not reach the host", async (t) => {
 	const upstream = await upstreamHost(t);
