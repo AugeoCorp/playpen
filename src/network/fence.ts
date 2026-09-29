@@ -426,10 +426,9 @@ const STOPPED_WINDOW_MS = 30_000;
  * An earlier helper still running while the VM reads stopped is one of two
  * things: a helper whose VM just went away, whose record says ready until its
  * next poll, or one still booting the VM for a `playpen start` that was
- * interrupted. A
- * new helper would refuse to run beside either, and the earlier one's record
- * would pass for its own, so this waits until it has exited or its VM is up,
- * and returns the state the fence settled in.
+ * interrupted. A new helper would refuse to run beside either, and the earlier
+ * one's record would pass for its own, so this waits until it has exited or its
+ * VM is up, and returns the state the fence settled in.
  */
 async function afterEarlierHelper(
 	sandbox: string,
