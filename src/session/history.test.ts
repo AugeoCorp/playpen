@@ -413,6 +413,20 @@ test("a guest without the history mount says so with its own exit code, and move
 	assert.deepEqual(await readdir(mount), []);
 });
 
+test("a guest whose ~/.claude/projects is a symlink is refused with a clear message, and nothing moves", async (t) => {
+	const s = await scratch(t);
+	const { mount, under } = await guest(s);
+	await guestHistory(join(under, "projects"));
+	const elsewhere = join(s.home, "elsewhere");
+	await mkdir(elsewhere);
+	await rm(mount, { recursive: true });
+	await symlink(elsewhere, mount);
+	const result = settle(s, ["takeover", ""]);
+	assert.notEqual(result.code, 0);
+	assert.match(result.stderr, /projects is a symlink/);
+	assert.deepEqual(await readdir(elsewhere), []);
+});
+
 test("an old archive written short fails only the import, and the takeover still counts", async (t) => {
 	const s = await scratch(t);
 	const archive = await oldArchive(s);
