@@ -1,5 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { unlink } from "node:fs/promises";
+import { mkdir, unlink, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { exists, readAppended, sizeOrZero, writeAtomic } from "../fs.ts";
 import * as lima from "../lima/client.ts";
 import { self } from "../session/proc.ts";
@@ -13,9 +14,12 @@ import {
 	type HelperRecord,
 	killFenceLeftovers,
 	liveHelper,
+	type Mounts,
+	maskKind,
 	policyStamp,
 	readPolicy,
 	removeSocket,
+	underMaskedDir,
 	writeHelper,
 } from "./fence.ts";
 import {
@@ -146,6 +150,84 @@ function jsonLineAppender(path: string): (entry: LogEntry) => void {
 	};
 }
 
+/**
+ * One `--ro-bind` per masked entry that is on the host, laying an empty
+ * placeholder over it in the mount table bwrap gives qemu -- and qemu is the
+ * 9p server, so the guest's share then has nothing of the host's at that path.
+ * Read-only because the source is shared by every entry: a write through the
+ * share must never land in it.
+ *
+ * An entry under another masked entry is skipped, since that placeholder
+ * already hides it. An entry whose parent is there but which is missing itself
+ * is skipped with a line: the guest will create it on the host as a directory,
+ * which is what `node_modules` on a fresh clone needs. Refused, with an error
+ * naming the entry, is what a guest could have arranged by renaming the
+ * parent of a nested entry: a symlink, a path through one, or a parent that is
+ * gone. So is an entry under a file, which the guest's mask script would fail
+ * to create, stopping it before the entries after it are masked.
+ */
+export async function maskBinds(
+	paths: Pick<FencePaths, "emptyFile" | "emptyDir">,
+	mounts: Mounts,
+	note: (line: string) => void = say,
+): Promise<string[]> {
+	const args: string[] = [];
+	for (const entry of mounts.masked) {
+		if (underMaskedDir(entry, mounts.masked)) continue;
+		const kind = await maskKind(mounts.project, entry);
+		if (kind === "symlink" || kind === "under-symlink") {
+			throw new Error(
+				`masked: ${entry} ${kind === "symlink" ? "is" : "is under"} a symlink on the host; replace it with the real path before starting`,
+			);
+		}
+		if (kind === "parent-missing") {
+			throw new Error(
+				`masked: ${dirname(entry)} is not on the host, so ${entry} cannot be masked; restore it before starting`,
+			);
+		}
+		if (kind === "under-file") {
+			throw new Error(
+				`masked: ${dirname(entry)} is a file on the host, so ${entry} cannot be masked; mask ${dirname(entry)} itself or remove the entry before starting`,
+			);
+		}
+		if (kind === "missing") {
+			note(
+				`masked: ${entry} is not on the host; the guest will create it there as an empty directory`,
+			);
+		} else {
+			args.push(
+				"--ro-bind",
+				kind === "dir" ? paths.emptyDir : paths.emptyFile,
+				join(mounts.project, entry),
+			);
+		}
+	}
+	if (args.length > 0) {
+		await mkdir(paths.emptyDir, { recursive: true });
+		await writeFile(paths.emptyFile, "");
+	}
+	return args;
+}
+
+/** The mask binds come after the root bind, because they lay over what it mounted. */
+export function bwrapArgv(
+	binds: readonly string[],
+	hidden: readonly string[],
+	command: readonly string[],
+): string[] {
+	return [
+		"--unshare-net",
+		"--dev-bind",
+		"/",
+		"/",
+		...binds,
+		...hidden,
+		"--die-with-parent",
+		"--",
+		...command,
+	];
+}
+
 function socatListen(path: string, target: string): ChildProcess {
 	return spawnSocat(unixListenAddress(path), target);
 }
@@ -195,20 +277,13 @@ export async function runHelper(
 		await unlink(paths.ready).catch(() => {});
 		inside = spawn(
 			"bwrap",
-			[
-				"--unshare-net",
-				"--dev-bind",
-				"/",
-				"/",
-				...(await hiddenResolverDirs()),
-				"--die-with-parent",
-				"--",
+			bwrapArgv([], await hiddenResolverDirs(), [
 				process.execPath,
 				cliPath(),
 				"__net-inside",
 				sandbox,
 				instance,
-			],
+			]),
 			{ stdio: "inherit" },
 		);
 	}
