@@ -101,6 +101,21 @@ test("validates entries coming out of the config", async (t) => {
 	assert.deepEqual(r.rejected, ["../etc"]);
 });
 
+test("a masked entry may be a file, at the root or nested", async (t) => {
+	assert.deepEqual(validateMasks([".env", "config/secrets.json"]), {
+		masked: [".env", "config/secrets.json"],
+		rejected: [],
+	});
+	const r = await loadProjectConfig(
+		await project(t, {
+			"playpen.config.js": 'export default { masked: [".env"] };',
+		}),
+	);
+	assert.equal(r.error, undefined);
+	assert.deepEqual(r.masked, [".env"]);
+	assert.deepEqual(r.rejected, []);
+});
+
 test("a config with no masked key is not an error", async (t) => {
 	const dir = await project(t, { "playpen.config.js": "export default {};" });
 	const r = await loadProjectConfig(dir);
