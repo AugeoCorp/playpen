@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { historyDir } from "../config.ts";
 import * as lima from "../lima/client.ts";
@@ -13,13 +13,43 @@ import { assertSandboxName } from "./identity.ts";
  * The whole directory travels rather than one project's slug: a sandbox serves
  * a single project, so that is already the scope, and it avoids depending on
  * how Claude Code names these directories.
+ *
+ * An archive stays pending on the host until a restore of it succeeds, and no
+ * archive ever replaces another: a guest that never got its history back can
+ * still be archived, and that archive holds none of what is pending.
  */
 const GUEST_REL = ".claude/projects";
 
-/** Joined into a path that is written and read, so it is checked like `store`'s. */
-export function archivePath(sandbox: string): string {
+/** Joined into paths that are written, read and renamed, so it is checked like `store`'s. */
+export function sandboxHistoryDir(sandbox: string): string {
 	assertSandboxName(sandbox);
-	return join(historyDir(), `${sandbox}.tar`);
+	return join(historyDir(), sandbox);
+}
+
+function pendingDir(sandbox: string): string {
+	return join(sandboxHistoryDir(sandbox), "pending");
+}
+
+/** Named for when it was taken, so the names sort oldest first. */
+function archiveName(at: number): string {
+	return `${new Date(at).toISOString().replaceAll(":", "")}.tar`;
+}
+
+/** `put` must fail with EEXIST rather than replace a file already there. */
+async function addPending(
+	sandbox: string,
+	at: number,
+	put: (path: string) => Promise<void>,
+): Promise<void> {
+	const dir = pendingDir(sandbox);
+	await mkdir(dir, { recursive: true });
+	for (let stamp = at; ; stamp++) {
+		try {
+			return await put(join(dir, archiveName(stamp)));
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+		}
+	}
 }
 
 /** Never throws: losing history is bad, but blocking a delete over it is worse. */
@@ -44,8 +74,9 @@ export async function archive(
 			);
 			return;
 		}
-		await mkdir(historyDir(), { recursive: true });
-		await writeFile(archivePath(sandbox), result.stdout);
+		await addPending(sandbox, Date.now(), (path) =>
+			writeFile(path, result.stdout, { flag: "wx" }),
+		);
 	} catch (err) {
 		console.error(
 			`warning: could not save Claude history (${err instanceof Error ? err.message : err})`,
@@ -53,47 +84,70 @@ export async function archive(
 	}
 }
 
-/**
- * Unpacks the archive on stdin into the guest's home, readable only by its
- * owner. Printed for the user to run as well, so it is one line of plain sh.
- */
+/** Unpacks the archive on stdin into the guest's home, readable only by its owner. */
 const UNPACK = "cd && umask 077 && tar -xf -";
 
+async function unpack(instance: string, path: string): Promise<string | null> {
+	try {
+		const result = await lima.runScript(instance, UNPACK, {
+			input: await readFile(path),
+		});
+		return result.code === 0
+			? null
+			: result.stderr.trim() || `exit ${result.code}`;
+	} catch (err) {
+		return err instanceof Error ? err.message : String(err);
+	}
+}
+
 /**
- * Kept after restoring, so it stays the last known history if this one is lost.
+ * Runs on every start, so a restore that failed is retried by the next one.
+ * With nothing pending it only reads the host's history directory; the guest
+ * is sent nothing.
  *
- * Never throws: by now the old sandbox is gone and the new one is built, so a
- * failure here must not fail the start. The warning says how to finish by hand.
+ * A restored archive becomes `restored.tar`, replacing the one before: the
+ * guest now holds its contents, so the next archive includes them.
+ *
+ * Never throws: by now the sandbox is up, and a failure here must not fail the
+ * start.
  */
 export async function restore(
 	instance: string,
 	sandbox: string,
-): Promise<boolean> {
-	const path = archivePath(sandbox);
-	let tar: Buffer;
+): Promise<void> {
 	try {
-		tar = await readFile(path);
-	} catch {
-		return false;
-	}
-
-	let failure: string;
-	try {
-		const result = await lima.runScript(instance, UNPACK, { input: tar });
-		if (result.code === 0) return true;
-		failure = result.stderr.trim() || `exit ${result.code}`;
+		const dir = pendingDir(sandbox);
+		const pending = (await readdir(dir).catch(() => []))
+			.filter((name) => name.endsWith(".tar"))
+			.sort();
+		for (const [done, name] of pending.entries()) {
+			const path = join(dir, name);
+			const failure = await unpack(instance, path);
+			if (failure !== null) {
+				warnNotRestored(failure, path, pending.length - done - 1);
+				return;
+			}
+			await rename(path, join(sandboxHistoryDir(sandbox), "restored.tar"));
+		}
+		if (pending.length > 0) {
+			console.error(`restored Claude history from the previous sandbox`);
+		}
 	} catch (err) {
-		failure = err instanceof Error ? err.message : String(err);
+		console.error(
+			`warning: could not restore Claude history (${err instanceof Error ? err.message : err})`,
+		);
+		console.error(`  the next start of this sandbox tries again.`);
 	}
-	console.error(`warning: could not restore Claude history (${failure})`);
-	console.error(
-		`  it is in ${path}, which the next rebuild or remove of this sandbox may replace.`,
-	);
-	console.error(`  restore it now, from the project directory:`);
-	console.error(`  playpen run -- sh -c ${shQuote(UNPACK)} < ${shQuote(path)}`);
-	return false;
 }
 
-function shQuote(value: string): string {
-	return `'${value.replaceAll("'", `'\\''`)}'`;
+function warnNotRestored(failure: string, path: string, later: number): void {
+	console.error(`warning: could not restore Claude history (${failure})`);
+	console.error(
+		`  it is kept in ${path}; the next start of this sandbox tries again.`,
+	);
+	if (later > 0) {
+		console.error(
+			`  ${later === 1 ? "1 later archive waits" : `${later} later archives wait`} beside it.`,
+		);
+	}
 }

@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { archivePath } from "./history.ts";
+import { sandboxHistoryDir } from "./history.ts";
 
-test("an archive is named after the sandbox", () => {
-	assert.ok(archivePath("playpen-90957d").endsWith("/playpen-90957d.tar"));
+test("a sandbox's history is kept in a directory named after it", () => {
+	assert.ok(sandboxHistoryDir("playpen-90957d").endsWith("/playpen-90957d"));
 });
 
 test("a name that could escape the history directory is refused", () => {
@@ -15,6 +15,6 @@ test("a name that could escape the history directory is refused", () => {
 		"",
 		"-leading",
 	]) {
-		assert.throws(() => archivePath(name), /invalid sandbox name/, name);
+		assert.throws(() => sandboxHistoryDir(name), /invalid sandbox name/, name);
 	}
 });

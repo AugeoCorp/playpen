@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { mock, type TestContext, test } from "node:test";
 import { baseImage } from "../image/base.ts";
 import { imageHash } from "../image/render.ts";
@@ -39,6 +38,10 @@ let fenced = false;
  * an error is thrown, a number is the exit code of a guest that says nothing.
  */
 let restoreFails: Error | number | null = null;
+/** What the fake guest's `~/.claude/projects` archives to; null when it has none. */
+let guestHistory: string | null = null;
+/** Every archive the fake guest unpacked, in the order it unpacked them. */
+const restored: string[] = [];
 
 mock.module("../network/fence.ts", {
 	// @ts-expect-error @types/node still types this as `namedExports`, which the
@@ -83,7 +86,9 @@ mock.module("../lima/client.ts", {
 		stop: async () => {
 			calls.push("stop");
 		},
-		remove: async () => {},
+		remove: async () => {
+			exists = false;
+		},
 		async clone(_source: string, target: string) {
 			exists = true;
 			await mkdir(join(limaHome, target), { recursive: true });
@@ -93,10 +98,23 @@ mock.module("../lima/client.ts", {
 				"utf8",
 			);
 		},
-		async runScript(_instance: string, script: string) {
-			if (restoreFails !== null && script.includes("tar -xf -")) {
+		async runScript(
+			_instance: string,
+			script: string,
+			opts: { input?: Uint8Array } = {},
+		) {
+			if (script.includes("tar -cf -")) {
+				calls.push("save history");
+				return { code: 0, stdout: Buffer.from(guestHistory ?? ""), stderr: "" };
+			}
+			if (script.includes("-xf -")) {
+				calls.push("restore history");
 				if (restoreFails instanceof Error) throw restoreFails;
-				return { code: restoreFails, stdout: "", stderr: "" };
+				if (restoreFails !== null) {
+					return { code: restoreFails, stdout: "", stderr: "" };
+				}
+				restored.push(String(opts.input));
+				return { code: 0, stdout: "", stderr: "" };
 			}
 			calls.push(script.includes("mount --bind") ? "apply masks" : "other");
 			return { code: maskExit, stdout: "", stderr: "mask script failed" };
@@ -112,9 +130,7 @@ async function sandboxFor(
 	t: TestContext,
 	config: string,
 ): Promise<{ sb: Sandbox; run: () => Promise<unknown> }> {
-	// The quote reaches every path under it, including the history archive's,
-	// which a failed restore prints as shell for the user to run.
-	const root = await mkdtemp(join(tmpdir(), "playpen-lifecycle-'"));
+	const root = await mkdtemp(join(tmpdir(), "playpen-lifecycle-"));
 	t.after(() => rm(root, { recursive: true, force: true }));
 	const project = join(root, "project");
 	await mkdir(project, { recursive: true });
@@ -135,6 +151,8 @@ async function sandboxFor(
 	helperUnbound = [];
 	fenced = false;
 	status = "Running";
+	guestHistory = null;
+	restored.length = 0;
 	t.after(() => {
 		process.env.XDG_DATA_HOME = before.xdg;
 		process.env.LIMA_HOME = before.lima;
@@ -232,29 +250,24 @@ test("destroying a stopped sandbox boots it inside the fence with nothing allowe
 	assert.equal(calls[0], "start behind the gatekeeper");
 });
 
-/** The archive a destroyed sandbox left for its replacement. */
-async function historySaved(sb: Sandbox, contents: string): Promise<string> {
-	const { archivePath } = await import("./history.ts");
-	const archive = archivePath(sb.sandbox);
-	await mkdir(dirname(archive), { recursive: true });
-	await writeFile(archive, contents);
-	return archive;
+/** Removes the sandbox as a rebuild does, saving `history` out of its guest first. */
+async function destroyHolding(sb: Sandbox, history: string): Promise<void> {
+	const { destroy } = await import("./lifecycle.ts");
+	guestHistory = history;
+	await destroy(sb);
+	guestHistory = null;
 }
 
-/**
- * Runs a printed shell line with `playpen` standing in as a function that
- * prints its arguments, one per line, and then its stdin.
- */
-function asTheShellRunsIt(line: string): string {
-	return execFileSync("sh", [
-		"-c",
-		`playpen() { printf '%s\\n' "$@"; cat; }\n${line}`,
-	]).toString();
+function warningsFrom(warnings: {
+	mock: { calls: { arguments: unknown[] }[] };
+}) {
+	return warnings.mock.calls.map((c) => String(c.arguments[0]));
 }
 
-test("a new sandbox still starts when the history saved from the old one cannot be put back, and the archive is kept with a way to restore it", async (t) => {
+test("a new sandbox still starts when the history saved from the old one cannot be put back, and the warning says where it is kept", async (t) => {
 	const { sb, run } = await sandboxFor(t, BOTH);
-	const archive = await historySaved(sb, "saved transcripts");
+	await run();
+	await destroyHolding(sb, "saved transcripts");
 	restoreFails = new Error("write EPIPE");
 	const warnings = t.mock.method(console, "error", () => {});
 
@@ -265,33 +278,94 @@ test("a new sandbox still starts when the history saved from the old one cannot 
 		calls.includes("run exec </dev/null; npm ci"),
 		`expected setup to run after the failed restore, got ${calls.join(", ")}`,
 	);
-	assert.equal(await readFile(archive, "utf8"), "saved transcripts");
-	const said = warnings.mock.calls.map((c) => String(c.arguments[0]));
+	const said = warningsFrom(warnings);
 	assert.ok(
 		said.includes("warning: could not restore Claude history (write EPIPE)"),
 		`expected the failure in the warning, got:\n${said.join("\n")}`,
 	);
-	const command = said.find((line) => line.includes("playpen run"));
-	assert.ok(command, `expected a restore command, got:\n${said.join("\n")}`);
-	assert.equal(
-		asTheShellRunsIt(command),
-		"run\n--\nsh\n-c\ncd && umask 077 && tar -xf -\nsaved transcripts",
+	const kept = said
+		.map((line) =>
+			line.match(
+				/^ {2}it is kept in (.+); the next start of this sandbox tries again\.$/,
+			),
+		)
+		.find((match) => match !== null);
+	assert.ok(
+		kept,
+		`expected where the archive is kept, got:\n${said.join("\n")}`,
 	);
+	assert.equal(await readFile(kept[1] ?? "", "utf8"), "saved transcripts");
 });
 
 test("a restore the guest refuses without saying why is reported by its exit code", async (t) => {
 	const { sb, run } = await sandboxFor(t, BOTH);
-	await historySaved(sb, "saved transcripts");
+	await run();
+	await destroyHolding(sb, "saved transcripts");
 	restoreFails = 2;
 	const warnings = t.mock.method(console, "error", () => {});
 
 	await run();
 
-	const said = warnings.mock.calls.map((c) => String(c.arguments[0]));
+	const said = warningsFrom(warnings);
 	assert.ok(
 		said.includes("warning: could not restore Claude history (exit 2)"),
 		`expected the exit code in the warning, got:\n${said.join("\n")}`,
 	);
+});
+
+test("history that could not be restored is restored by the next start of the same sandbox", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await run();
+	await destroyHolding(sb, "saved transcripts");
+	restoreFails = new Error("write EPIPE");
+	t.mock.method(console, "error", () => {});
+	await run();
+	restoreFails = null;
+
+	await run();
+
+	assert.deepEqual(restored, ["saved transcripts"]);
+});
+
+test("history saved while older history is still waiting to be restored does not replace it, and both are restored oldest first", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await run();
+	await destroyHolding(sb, "first sandbox's transcripts");
+	restoreFails = new Error("write EPIPE");
+	t.mock.method(console, "error", () => {});
+	await run();
+	await destroyHolding(sb, "second sandbox's transcripts");
+	restoreFails = null;
+
+	await run();
+
+	assert.deepEqual(restored, [
+		"first sandbox's transcripts",
+		"second sandbox's transcripts",
+	]);
+});
+
+test("history restored once is not put back again by later starts", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await run();
+	await destroyHolding(sb, "saved transcripts");
+	await run();
+	calls.length = 0;
+
+	await run();
+
+	assert.deepEqual(restored, ["saved transcripts"]);
+	assert.deepEqual(calls, ["leave the fence alone", "apply masks"]);
+});
+
+test("a start with no history waiting sends the guest nothing for it", async (t) => {
+	const { run } = await sandboxFor(t, "export default {};");
+	await run();
+	calls.length = 0;
+
+	await run();
+
+	assert.deepEqual(calls, ["leave the fence alone"]);
 });
 
 test("a sandbox running with no gatekeeper gets one back", async (t) => {
