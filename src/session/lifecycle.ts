@@ -15,6 +15,8 @@ import {
 	BUILTIN_ALLOW,
 	NO_EGRESS_ADVICE,
 	type Policy,
+	placeholderFor,
+	type SecretGrant,
 } from "../network/policy.ts";
 import { confirm } from "../prompt.ts";
 import * as history from "./history.ts";
@@ -27,7 +29,7 @@ import {
 	LEGACY_IGNORE_FILE,
 	type LoadedNetwork,
 } from "./projectconfig.ts";
-import { missingMessage, readSecretValues } from "./secrets.ts";
+import { missingMessage, profileCommand, readSecretValues } from "./secrets.ts";
 import * as store from "./store.ts";
 import { loadTrustedConfig } from "./trust.ts";
 
@@ -112,9 +114,6 @@ async function loadConfig(sb: Sandbox): Promise<{
 		console.error(
 			`forwarding host port ${host} to the guest's localhost:${guest}`,
 		);
-	}
-	for (const { env, hosts } of network.secrets) {
-		console.error(`naming ${env} for ${hosts.join(", ")} (not injected yet)`);
 	}
 	return { masked, setup, network };
 }
@@ -237,6 +236,38 @@ async function applyMasks(
 		return false;
 	}
 	return true;
+}
+
+/**
+ * Written for the configured names the running helper holds, not for what this
+ * start read: a helper that was already up keeps the values it was spawned
+ * with, and a name it lacks would get a placeholder nothing swaps. `bringUp`
+ * has already said so for each name left out.
+ */
+async function applySecrets(
+	sb: Sandbox,
+	grants: readonly SecretGrant[],
+): Promise<void> {
+	const held = new Set((await liveHelper(sb.sandbox))?.secrets ?? []);
+	const granted = grants.filter(({ env }) => held.has(env));
+	for (const { env, hosts } of granted) {
+		console.error(
+			`secret ${env} for ${hosts.join(", ")} (placeholder in the guest; not injected yet)`,
+		);
+	}
+	const names = new Set(granted.map(({ env }) => env));
+	const { script, input } = profileCommand(
+		[...names].map((env) => ({ env, placeholder: placeholderFor(env) })),
+	);
+	const result = await lima.runScript(sb.instance, script, {
+		root: true,
+		...(input === undefined ? {} : { input }),
+	});
+	if (result.code !== 0) {
+		console.error(
+			`warning: could not set the secret placeholders in the guest (${result.stderr.trim()})`,
+		);
+	}
 }
 
 /**
@@ -405,6 +436,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 			// started takes effect without a restart.
 			await startFenced(sb, template);
 			await applyMasks(sb, template.masks);
+			await applySecrets(sb, template.network.secrets);
 			await store.touch(sb.sandbox);
 			return { created: false, setupOk: true, setup: template.setup };
 		}
@@ -442,6 +474,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 		throw err;
 	}
 	const masked = await applyMasks(sb, current.masks);
+	await applySecrets(sb, current.network.secrets);
 	if (await history.restore(sb.instance, sb.sandbox)) {
 		console.error(`restored Claude history from the previous sandbox`);
 	}

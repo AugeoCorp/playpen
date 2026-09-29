@@ -159,17 +159,30 @@ policy.json carries `env` and `hosts` and is the one place they are kept, and it
 is re-read on reload. helper.json carries the names the helper holds, so a later
 `start` can see what the running helper lacks.
 
+What the guest sees is a placeholder: `playpen-secret-` and the variable name in
+lower case with dashes, so `GH_TOKEN` is `playpen-secret-gh-token`. It is fixed
+for the name and has no random part, because a placeholder is not a secret and
+nothing needs to store it: a guest process that outlives a helper, a token saved
+to `.npmrc`, and a reattach after the helper died all keep a placeholder that
+the next helper computes the same way. `playpen start` writes
+`/etc/profile.d/playpen-secrets.sh` in the guest, one `export GH_TOKEN='…'` line
+per secret the running helper holds, after the masks are applied, so a login
+shell has the variable set to it. With none the file is removed, so one dropped
+from the config disappears from the guest.
+
 The helper takes its values at spawn and can take no more: once it is running
 its stdin is closed. Only a `start` that spawns a helper needs the variables: a
 new sandbox, a stopped one, a rebuild, or a reattach after the helper died. A
 `shell` or `run` into a sandbox whose helper is live does not, and a change to
 `secrets` on a sandbox that is already up does what it can:
 
-- A secret dropped from the config leaves policy.json on the next `start`. The
-  helper keeps the value in memory until it exits.
+- A secret dropped from the config leaves policy.json on the next `start`, and
+  its line leaves the guest's profile. The helper keeps the value in memory
+  until it exits.
 - A secret added to the config is named in policy.json but not held.
   `playpen start` says
-  `secret GH_TOKEN added to the config takes effect after: playpen stop && playpen start`.
+  `secret GH_TOKEN added to the config takes effect after: playpen stop && playpen start`
+  and leaves it out of the guest's profile.
 - A secret already held keeps the value it was started with. A changed value in
   your environment waits for the same stop and start.
 
@@ -466,10 +479,10 @@ machine.
 
 ## Later
 
-- **Header injection for named hosts** -- putting a short-lived credential into
-  a request without it ever reaching the guest -- sitting behind the gatekeeper,
-  likely with mockttp doing the injection once a connection is already known to
-  be allowed.
+- **Header injection for named hosts** -- swapping the placeholder for the real
+  value, which the helper already holds, in the headers of a request the
+  gatekeeper has allowed, likely with mockttp doing the injection once a
+  connection is already known to be allowed.
 - **Publishing chosen guest ports to the host.** Lima still forwards every guest
   loopback port, but inside the fence, where nothing on the host can reach them;
   a dev server in the guest no longer shows up on the host's `localhost`.
