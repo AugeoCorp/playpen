@@ -80,7 +80,7 @@ export function onHost(instance: string): Promise<boolean> {
 }
 
 /**
- * Copies `$1` into `$2` through `$2/.playpen-staging`: cleared on every
+ * Copies `$1` into `$2` through `$2/.playpen-staging-<id>`: cleared on every
  * attempt, filled, compared against `$1`, and only then moved into place, by
  * renames within `$2`. So an attempt cut off at any point leaves nothing
  * partial in `$2` that the next attempt would take for newer. `$1` is left as
@@ -102,7 +102,10 @@ export function onHost(instance: string): Promise<boolean> {
  * Under a lock on the guest's own disk for the whole run: killing
  * `limactl shell` on the host does not stop the script in the guest, so an
  * interrupted start's move can still be running when the next start's begins,
- * and both work through the same staging path.
+ * and both work through the same staging path. The stage is this VM's own,
+ * named after an id kept on its disk, since two VMs can share one host
+ * directory (the same project under two `$LIMA_HOME`s, whose Lima hostnames
+ * are the same `lima-<instance>`), and each clears only its own.
  *
  * Never call it as a condition (`if`, `||`): bash ignores `set -e` for the
  * whole of a function run that way, even inside it.
@@ -113,12 +116,14 @@ export const MOVE_HISTORY = [
 	"	shopt -s nullglob dotglob",
 	'	src="$1"',
 	'	dst="$2"',
-	'	stage="$dst/.playpen-staging"',
 	'	exec 9>"$HOME/.playpen-history.lock"',
 	"	if ! flock -w 600 9; then",
 	'		echo "an earlier move of Claude history is still running in the guest" >&2',
 	"		exit 1",
 	"	fi",
+	'	id="$HOME/.playpen-vm-id"',
+	'	[ -s "$id" ] || cat /proc/sys/kernel/random/uuid > "$id"',
+	'	stage="$dst/.playpen-staging-$(cat "$id")"',
 	'	rm -rf "$stage"',
 	'	mkdir "$stage"',
 	'	tar -C "$src" -cf - . | tar -C "$stage" -xf -',

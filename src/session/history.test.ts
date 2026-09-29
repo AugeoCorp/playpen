@@ -167,13 +167,26 @@ test("a copy that differs from the guest's is refused before anything is moved",
 test("what an earlier attempt left in the staging directory never reaches the host directory", async (t) => {
 	const s = await scratch(t);
 	await guestHistory(s.src);
-	const stage = join(s.dst, ".playpen-staging", "-home-me-project");
+	await writeFile(join(s.home, ".playpen-vm-id"), "this-vm");
+	const stage = join(s.dst, ".playpen-staging-this-vm", "-home-me-project");
 	await mkdir(stage, { recursive: true });
 	await writeFile(join(stage, "two.jsonl"), "cut sho");
 	await writeFile(join(stage, "stray.jsonl"), "not in the guest");
 	const result = run(s, MOVE);
 	assert.equal(result.code, 0, result.stderr);
 	assert.deepEqual(await tree(s.dst), await tree(s.src));
+});
+
+test("a stage another VM is filling in the same host directory is left alone", async (t) => {
+	const s = await scratch(t);
+	await guestHistory(s.src);
+	await writeFile(join(s.home, ".playpen-vm-id"), "this-vm");
+	const theirs = join(s.dst, ".playpen-staging-that-vm", "-home-me-project");
+	await mkdir(theirs, { recursive: true });
+	await writeFile(join(theirs, "half.jsonl"), "half cop");
+	const result = run(s, MOVE);
+	assert.equal(result.code, 0, result.stderr);
+	assert.equal(await readFile(join(theirs, "half.jsonl"), "utf8"), "half cop");
 });
 
 test("an attempt killed halfway through moving is finished by the next, with every file whole", async (t) => {
