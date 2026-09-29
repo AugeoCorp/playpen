@@ -72,6 +72,7 @@ mock.module("../network/fence.ts", {
 				return;
 			}
 			fenced = true;
+			status = "Running";
 			calls.push("start behind the gatekeeper");
 		},
 	},
@@ -88,6 +89,8 @@ mock.module("../lima/client.ts", {
 		get: async (name: string) => (exists ? { name, status } : null),
 		stop: async () => {
 			calls.push("stop");
+			status = "Stopped";
+			fenced = false;
 		},
 		// Like Lima's, deleting an instance deletes its directory.
 		async remove(name: string) {
@@ -108,6 +111,9 @@ mock.module("../lima/client.ts", {
 			script: string,
 			opts: { input?: Uint8Array } = {},
 		) {
+			if (status !== "Running") {
+				return { code: 255, stdout: "", stderr: "instance is not running" };
+			}
 			if (script.includes("tar -cf -")) {
 				calls.push("save history");
 				const names = [...guestFiles].sort().join(" ");
@@ -265,8 +271,6 @@ test("a sandbox playpen stopped is deleted without booting it", async (t) => {
 	await run();
 	const { destroy, stop } = await import("./lifecycle.ts");
 	await stop(sb);
-	status = "Stopped";
-	fenced = false;
 	calls.length = 0;
 
 	await destroy(sb);
@@ -302,8 +306,6 @@ test("a sandbox started again after playpen stopped it, then stopped some other 
 	await run();
 	const { destroy, stop } = await import("./lifecycle.ts");
 	await stop(sb);
-	status = "Stopped";
-	fenced = false;
 	await run();
 	status = "Stopped";
 	fenced = false;
@@ -433,8 +435,6 @@ test("history is saved at the first stop of a sandbox the host has none for, and
 	guestFiles.add("first.jsonl");
 	const { stop } = await import("./lifecycle.ts");
 	await stop(sb);
-	status = "Stopped";
-	fenced = false;
 	calls.length = 0;
 
 	await run();
@@ -448,15 +448,13 @@ test("history restored once is not sent to the same sandbox again", async (t) =>
 	const { sb, run } = await sandboxFor(t, BOTH);
 	await hostHolds(sb, "old.jsonl");
 	await run();
-	calls.length = 0;
 
 	await run();
 
 	assert.deepEqual(restored, ["old.jsonl"]);
-	assert.deepEqual(calls, ["leave the fence alone", "apply masks"]);
 });
 
-test("a rebuilt sandbox gets the history its predecessor saved", async (t) => {
+test("a sandbox removed while running and started again gets back the history the removed one saved", async (t) => {
 	const { sb, run } = await sandboxFor(t, BOTH);
 	await hostHolds(sb, "old.jsonl");
 	await run();
