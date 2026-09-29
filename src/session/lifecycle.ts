@@ -197,6 +197,20 @@ function projectOnlyMounts(sb: Sandbox): string {
 	return `"mounts": ${JSON.stringify([{ location: sb.cwd, writable: true }])}`;
 }
 
+function limaYaml(sb: Sandbox): string {
+	return join(limaHome(), sb.instance, "lima.yaml");
+}
+
+/**
+ * A sandbox made before the history mount keeps its Claude history on its own
+ * disk until it next boots through playpen, which mounts the host directory
+ * and moves the history into it. Deleting the VM before then deletes it.
+ */
+export async function historyStillInGuest(sb: Sandbox): Promise<boolean> {
+	const yaml = await readFile(limaYaml(sb), "utf8").catch(() => "");
+	return yaml.includes(projectOnlyMounts(sb));
+}
+
 /**
  * A clone carries the base's instance config, which Lima has resolved: `base:`
  * consumed, the concrete `images:` list spliced in. Lima rejects a config that
@@ -215,7 +229,7 @@ function projectOnlyMounts(sb: Sandbox): string {
  */
 async function giveInstanceItsMounts(sb: Sandbox): Promise<void> {
 	await history.makeHostDir(sb.sandbox);
-	const path = join(limaHome(), sb.instance, "lima.yaml");
+	const path = limaYaml(sb);
 	const yaml = await readFile(path, "utf8");
 	const mounts = mountsFor(sb);
 	if (yaml.includes(mounts)) return;
@@ -402,7 +416,14 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 		template = await renderTemplate(sb);
 		const reason =
 			(await changedTemplate(sb, template)) ?? (await outdatedBase(sb));
-		rebuilding = reason !== null && (await confirmRebuild(reason));
+		if (reason !== null && (await historyStillInGuest(sb))) {
+			console.error(reason);
+			console.error(
+				`  a rebuild is offered once its Claude history has moved to the host, which it does the next time it boots`,
+			);
+		} else {
+			rebuilding = reason !== null && (await confirmRebuild(reason));
+		}
 		if (!rebuilding) {
 			const fence = lima.isRunning(existing)
 				? await fenceStatus(sb.sandbox, sb.instance)

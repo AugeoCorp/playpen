@@ -46,6 +46,20 @@ let helperEgress = true;
 let helperUnbound: PortForward[] = [];
 /** Whether the fake fence has been brought up already in this test. */
 let fenced = false;
+/** Every yes-or-no question put to the user, and the answer each one gets. */
+const asked: string[] = [];
+let answer = false;
+
+mock.module("../prompt.ts", {
+	// @ts-expect-error @types/node still types this as `namedExports`, which the
+	// runtime has deprecated. Delete this line once the types catch up.
+	exports: {
+		async confirm(question: string) {
+			asked.push(question);
+			return answer;
+		},
+	},
+});
 
 mock.module("../network/fence.ts", {
 	// @ts-expect-error @types/node still types this as `namedExports`, which the
@@ -152,6 +166,8 @@ async function sandboxFor(
 	helperUnbound = [];
 	fenced = false;
 	status = "Running";
+	asked.length = 0;
+	answer = false;
 	t.after(() => {
 		process.env.XDG_DATA_HOME = before.xdg;
 		process.env.LIMA_HOME = before.lima;
@@ -216,8 +232,8 @@ test("a new sandbox mounts its own host directory, writable, over the guest's ~/
 	]);
 });
 
-test("a stopped sandbox made before history was mounted gets the mount when it next starts, without a rebuild", async (t) => {
-	const { sb, run } = await sandboxFor(t, BOTH);
+/** A stopped instance whose lima.yaml mounts the project alone, as before. */
+async function stoppedWithProjectMountOnly(sb: Sandbox): Promise<void> {
 	await mkdir(join(limaHome, sb.instance), { recursive: true });
 	await writeFile(
 		join(limaHome, sb.instance, "lima.yaml"),
@@ -226,6 +242,18 @@ test("a stopped sandbox made before history was mounted gets the mount when it n
 	);
 	exists = true;
 	status = "Stopped";
+}
+
+/** As if the image or the project config changed since the sandbox was made. */
+async function templateChangedSinceCreation(sb: Sandbox): Promise<void> {
+	const dir = join(process.env.XDG_DATA_HOME ?? "", "playpen", "templates");
+	await mkdir(dir, { recursive: true });
+	await writeFile(join(dir, `${sb.sandbox}.yaml`), "{}\n", "utf8");
+}
+
+test("a stopped sandbox made before history was mounted gets the mount when it next starts, without a rebuild", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await stoppedWithProjectMountOnly(sb);
 	const result = (await run()) as { created: boolean };
 	assert.equal(result.created, false, "the sandbox was rebuilt");
 	assert.deepEqual(await limaMounts(sb), [
@@ -236,6 +264,84 @@ test("a stopped sandbox made before history was mounted gets the mount when it n
 			writable: true,
 		},
 	]);
+});
+
+test("a stopped sandbox moves the history on its disk to the host as it boots", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await stoppedWithProjectMountOnly(sb);
+	await run();
+	assert.deepEqual(calls, [
+		"start behind the gatekeeper",
+		"apply masks",
+		"settle history",
+	]);
+});
+
+test("an outdated sandbox made before history was mounted boots once to move its history before a rebuild is offered", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await stoppedWithProjectMountOnly(sb);
+	await templateChangedSinceCreation(sb);
+	answer = true;
+	const said = t.mock.method(console, "error", () => {});
+
+	const first = (await run()) as { created: boolean };
+	assert.equal(first.created, false, "rebuilt with its history still on it");
+	assert.deepEqual(asked, [], "a rebuild was offered on the first start");
+	const lines = said.mock.calls.map((c) => String(c.arguments[0])).join("\n");
+	assert.match(lines, /a rebuild is offered once its Claude history has moved/);
+
+	const second = (await run()) as { created: boolean };
+	assert.equal(asked.length, 1, "no rebuild offered once the history moved");
+	assert.equal(second.created, true, "the accepted rebuild did not happen");
+});
+
+test("a sandbox that already has the history mount starts again without touching its lima.yaml", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await run();
+	const before = await readFile(
+		join(limaHome, sb.instance, "lima.yaml"),
+		"utf8",
+	);
+	status = "Stopped";
+	const said = t.mock.method(console, "error", () => {});
+	await run();
+	const lines = said.mock.calls.map((c) => String(c.arguments[0])).join("\n");
+	assert.doesNotMatch(lines, /not mounted from the host/);
+	assert.equal(
+		await readFile(join(limaHome, sb.instance, "lima.yaml"), "utf8"),
+		before,
+	);
+});
+
+test("a sandbox whose mounts playpen did not write still starts, with a warning that its history stays on its disk", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await mkdir(join(limaHome, sb.instance), { recursive: true });
+	await writeFile(
+		join(limaHome, sb.instance, "lima.yaml"),
+		'{"mounts": [{"location": "/somewhere/else"}]}\n',
+		"utf8",
+	);
+	exists = true;
+	status = "Stopped";
+	const said = t.mock.method(console, "error", () => {});
+	const result = (await run()) as { created: boolean };
+	assert.equal(result.created, false);
+	assert.ok(
+		calls.includes("start behind the gatekeeper"),
+		`expected it to start anyway, got ${calls.join(", ")}`,
+	);
+	const lines = said.mock.calls.map((c) => String(c.arguments[0])).join("\n");
+	assert.match(lines, /Claude history is not mounted from the host/);
+	assert.match(lines, /`playpen remove` deletes it with the VM/);
+});
+
+test("a sandbox made before history was mounted counts as holding its history on its disk until it boots with the mount", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	const { historyStillInGuest } = await import("./lifecycle.ts");
+	await stoppedWithProjectMountOnly(sb);
+	assert.equal(await historyStillInGuest(sb), true, "before its first boot");
+	await run();
+	assert.equal(await historyStillInGuest(sb), false, "after it");
 });
 
 /** An archive as the archive-on-destroy scheme left it; its bytes are opaque here. */
@@ -360,6 +466,17 @@ test("removing a stopped sandbox deletes it without starting it", async (t) => {
 	calls.length = 0;
 	await destroy(sb);
 	assert.deepEqual(calls, [], "the guest was started or reached");
+});
+
+test("removing a sandbox keeps its Claude history on the host", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await run();
+	const transcript = join(historyDirOf(sb), "-project", "session.jsonl");
+	await mkdir(dirname(transcript), { recursive: true });
+	await writeFile(transcript, "written by the guest");
+	const { destroy } = await import("./lifecycle.ts");
+	await destroy(sb);
+	assert.equal(await readFile(transcript, "utf8"), "written by the guest");
 });
 
 test("a sandbox running with no gatekeeper gets one back", async (t) => {
