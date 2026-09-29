@@ -98,7 +98,9 @@ Derived from signals already present — **no LLM call**, which would add cost,
 latency, and an auth dependency to a cosmetic feature. Fallback chain:
 
 1. First user message in the guest's `~/.claude/projects/<slug>/*.jsonl`,
-   truncated to ~50 chars. Usually the ideal title verbatim.
+   truncated to ~50 chars. Usually the ideal title verbatim. Read in the guest:
+   the host holds the same files in the sandbox's history directory, but the
+   guest writes them, symlinks included, so the host never reads inside it.
 2. Git branch of the mounted dir, if not `main`/`master`.
 3. Most recent commit subject.
 4. `session <date>`.
@@ -108,8 +110,10 @@ fallthrough, so coupling to Claude's JSONL format is safe — a wrong title is
 cosmetic.
 
 **What resume actually buys you:** the cwd is a host mount, so files survive
-regardless. What's trapped in the VM is installed dependencies, shell history,
-and Claude's own session history. Resuming a sandbox resumes the conversation.
+regardless, and so is Claude's own session history, which is mounted from
+`<data>/history/<sandbox>/` and survives the VM too. What's trapped in the VM is
+installed dependencies and shell history. Resuming a sandbox resumes the
+conversation.
 
 ---
 
@@ -230,9 +234,9 @@ first to leave used to take the other down with it.
 Fixed by leases, not by refcounting in memory: a session writes
 `<dataDir>/leases/<sandbox>/<pid>` before attaching and removes it after, and
 stops the VM only when no other lease is live. Under the data directory for the
-same reason as `trustDir` -- a guest mounts only the project, so nothing inside
-a sandbox can forge a lease to keep itself alive or delete one to cut off a
-sibling.
+same reason as `trustDir` -- a guest mounts only the project and its own
+`history/<sandbox>`, so nothing inside a sandbox can forge a lease to keep
+itself alive or delete one to cut off a sibling.
 
 A lease records `{pid, start, boot}`, not just a pid. The kernel recycles pids,
 and a recycled one would pin a VM alive or block a delete; the process start
