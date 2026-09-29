@@ -2,7 +2,8 @@
 
 Per-project [Lima](https://lima-vm.io) VMs for running coding agents without
 handing them your host filesystem. The project directory is mounted read-write
-at the same path inside the guest; nothing else of yours is.
+at the same path inside the guest, and the sandbox's own Claude history
+directory at `~/.claude/projects`; nothing else of yours is.
 
 ```
 cd ~/projects/api
@@ -64,6 +65,11 @@ fence -- stop it and start it again), or `-` (stopped).
 `playpen claude` copies an allowlist from `~/.claude` (instructions, settings,
 skills, plugins, OAuth token). `--no-auth` withholds the token, API-key settings
 and account identity. `--no-sync` skips the rest.
+
+Claude's transcripts and memory are written straight to the host, to
+`$XDG_DATA_HOME/playpen/history/<sandbox>/` (`~/.local/share` by default),
+mounted at the guest's `~/.claude/projects`. A rebuild, `remove` or a crashed VM
+leaves them there for the next `start`.
 
 ## Config
 
