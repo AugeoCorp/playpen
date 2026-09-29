@@ -169,11 +169,12 @@ lower case with dashes, so `GH_TOKEN` is `playpen-secret-gh-token`. It is fixed
 for the name and has no random part, because a placeholder is not a secret and
 nothing needs to store it: a guest process that outlives a helper, a token saved
 to `.npmrc`, and a reattach after the helper died all keep a placeholder that
-the next helper computes the same way. `playpen start` writes
-`/etc/profile.d/playpen-secrets.sh` in the guest, one `export GH_TOKEN='…'` line
-per secret the running helper holds, after the masks are applied, so a login
-shell has the variable set to it. With none the file is removed, so one dropped
-from the config disappears from the guest.
+the next `start` writes the same way, and that an injector can recognise from
+the name alone. `playpen start` writes `/etc/profile.d/playpen-secrets.sh` in
+the guest, one `export GH_TOKEN='…'` line per secret the running helper holds,
+after the masks are applied, so a login shell has the variable set to it. With
+none the file is removed, so one dropped from the config disappears from the
+guest.
 
 The helper takes its values at spawn and can take no more: once it is running
 its stdin is closed. Only a `start` that spawns a helper needs the variables: a

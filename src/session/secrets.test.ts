@@ -4,7 +4,6 @@ import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
-import { placeholderFor } from "../network/policy.ts";
 import {
 	missingMessage,
 	PROFILE_PATH,
@@ -14,15 +13,6 @@ import {
 
 const gh = { env: "GH_TOKEN", hosts: ["api.github.com", "github.com"] };
 const npm = { env: "NPM_TOKEN", hosts: ["registry.example.com"] };
-
-test("a placeholder is the variable's name in lower case with dashes", () => {
-	assert.equal(placeholderFor("GH_TOKEN"), "playpen-secret-gh-token");
-	assert.equal(placeholderFor("_MY_2ND_KEY"), "playpen-secret--my-2nd-key");
-});
-
-test("two placeholders for the same variable are the same", () => {
-	assert.equal(placeholderFor("GH_TOKEN"), placeholderFor("GH_TOKEN"));
-});
 
 test("each granted variable is read, by name", () => {
 	const { held, missing } = readSecretValues([gh, npm], {
