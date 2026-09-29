@@ -1,5 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { unlink } from "node:fs/promises";
+import { text as readText } from "node:stream/consumers";
 import { exists, readAppended, sizeOf, writeAtomic } from "../fs.ts";
 import * as lima from "../lima/client.ts";
 import { self } from "../session/proc.ts";
@@ -12,7 +13,6 @@ import {
 	fenceStatus,
 	type HeldSecret,
 	type HelperRecord,
-	heldNames,
 	killFenceLeftovers,
 	liveHelper,
 	parseHeldSecrets,
@@ -157,15 +157,7 @@ function jsonLineAppender(path: string): (entry: LogEntry) => void {
 export async function readHeldSecrets(
 	input: AsyncIterable<string | Uint8Array>,
 ): Promise<HeldSecret[]> {
-	const decoder = new TextDecoder();
-	let text = "";
-	for await (const chunk of input) {
-		text +=
-			typeof chunk === "string"
-				? chunk
-				: decoder.decode(chunk, { stream: true });
-	}
-	return parseHeldSecrets(text + decoder.decode());
+	return parseHeldSecrets(await readText(input));
 }
 
 /** Names and a count, never a value: this line lands in helper.log. */
@@ -183,8 +175,7 @@ export async function runHelper(
 	instance: string,
 ): Promise<number> {
 	const paths = fencePaths(sandbox);
-	// Before anything can fail, so the writer at the other end of the pipe is
-	// never left with nobody reading.
+	// First, so the values are held before anything else can fail or log.
 	let held: HeldSecret[];
 	try {
 		held = await readHeldSecrets(process.stdin);
@@ -248,7 +239,9 @@ export async function runHelper(
 				sandbox,
 				instance,
 			],
-			{ stdio: "inherit" },
+			// Not stdin: it is the pipe the secrets came in on, and nothing under
+			// bwrap has a use for it.
+			{ stdio: ["ignore", "inherit", "inherit"] },
 		);
 	}
 
@@ -258,7 +251,7 @@ export async function runHelper(
 		ready: false,
 		egress: false,
 		policy: stamp,
-		secrets: heldNames(held),
+		secrets: held.map(({ env }) => env),
 	};
 	const report = async (patch: Partial<HelperRecord>): Promise<void> => {
 		record = { ...record, ...patch };

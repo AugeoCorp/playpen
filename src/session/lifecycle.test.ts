@@ -37,7 +37,9 @@ let fenced = false;
 /** The secrets `bringUp` was last handed, values included. */
 let fencedSecrets: readonly HeldSecret[] = [];
 /** What the fake helper says it was started with: a real one keeps what it was spawned with. */
-let helperHolds: { env: string; placeholder: string }[] = [];
+let helperHolds: string[] = [];
+/** Whether a helper is running: false until `bringUp` spawns one, and again when a test kills it. */
+let helperLive = false;
 /** Every script sent to write or remove the guest's placeholder file, with its stdin. */
 const profileWrites: { script: string; input: string | undefined }[] = [];
 /** `calls` as it stood when each of those writes was made. */
@@ -48,17 +50,20 @@ mock.module("../network/fence.ts", {
 	// runtime has deprecated. Delete this line once the types catch up.
 	exports: {
 		fenceStatus: async () => (exists ? fenceState : "stopped"),
-		liveHelper: async () => ({
-			pid: 1,
-			start: "1",
-			boot: "b",
-			gatekeeperPort: 1080,
-			ready: true,
-			egress: helperEgress,
-			unboundPorts: helperUnbound,
-			policy: "1:2",
-			secrets: helperHolds,
-		}),
+		liveHelper: async () =>
+			helperLive
+				? {
+						pid: 1,
+						start: "1",
+						boot: "b",
+						gatekeeperPort: 1080,
+						ready: true,
+						egress: helperEgress,
+						unboundPorts: helperUnbound,
+						policy: "1:2",
+						secrets: helperHolds,
+					}
+				: null,
 		// Like the real one: the policy is written whatever state the fence is
 		// in, and a sandbox that is already up behind a gatekeeper is left where
 		// it is rather than started a second time.
@@ -71,10 +76,8 @@ mock.module("../network/fence.ts", {
 				return;
 			}
 			fenced = true;
-			helperHolds = fencedSecrets.map(({ env, placeholder }) => ({
-				env,
-				placeholder,
-			}));
+			helperHolds = fencedSecrets.map(({ env }) => env);
+			helperLive = true;
 			calls.push("start behind the gatekeeper");
 		},
 	},
@@ -148,6 +151,7 @@ async function sandboxFor(
 	fenced = false;
 	fencedSecrets = [];
 	helperHolds = [];
+	helperLive = false;
 	profileWrites.length = 0;
 	callsBeforeProfile.length = 0;
 	status = "Running";
@@ -385,7 +389,7 @@ test("each secret is reported by name and hosts, and its value stays out of the 
 	const lines = said.mock.calls.map((c) => String(c.arguments[0]));
 	assert.ok(
 		lines.includes(
-			"holding PLAYPEN_TEST_TOKEN for api.github.com, github.com (placeholder in the guest; not injected yet)",
+			"secret PLAYPEN_TEST_TOKEN for api.github.com, github.com (placeholder in the guest; not injected yet)",
 		),
 		`expected a naming line, got:\n${lines.join("\n")}`,
 	);
@@ -460,6 +464,12 @@ test("a session that asked to keep the sandbox does not stop it", async (t) => {
 	);
 });
 
+const PLACEHOLDER = "playpen-secret-playpen-test-token";
+const NO_PROFILE = {
+	script: "rm -f /etc/profile.d/playpen-secrets.sh",
+	input: undefined,
+};
+
 test("a start with secrets whose variables are unset is refused, naming every one, and nothing is booted", async (t) => {
 	setEnv(t, {
 		PLAYPEN_TEST_A: undefined,
@@ -481,46 +491,70 @@ test("a start with secrets whose variables are unset is refused, naming every on
 	assert.equal(fencedWith, null);
 });
 
-test("a refused start leaves an existing sandbox as it was", async (t) => {
+test("a running sandbox whose helper is gone needs the variables again, and is left as it was when they are unset", async (t) => {
 	setEnv(t, { PLAYPEN_TEST_TOKEN: TOKEN });
 	const { run } = await sandboxFor(t, ONE_SECRET);
 	await run();
 	calls.length = 0;
 	profileWrites.length = 0;
+	fenceState = "sealed-no-gatekeeper";
+	helperLive = false;
 	delete process.env.PLAYPEN_TEST_TOKEN;
 	await assert.rejects(run(), /network\.secrets needs PLAYPEN_TEST_TOKEN/);
 	assert.deepEqual(calls, []);
 	assert.deepEqual(profileWrites, []);
 });
 
-test("the helper is handed each secret's name, placeholder, value and hosts", async (t) => {
+test("a running sandbox with a live helper does not need the variable again", async (t) => {
 	setEnv(t, { PLAYPEN_TEST_TOKEN: TOKEN });
 	const { run } = await sandboxFor(t, ONE_SECRET);
 	await run();
-	const [handed] = fencedSecrets;
-	assert.equal(fencedSecrets.length, 1);
-	assert.match(
-		handed?.placeholder ?? "",
-		/^playpen-secret-playpen-test-token-[0-9a-f]{16}$/,
+	calls.length = 0;
+	profileWrites.length = 0;
+	delete process.env.PLAYPEN_TEST_TOKEN;
+	await run();
+	assert.deepEqual(calls, ["leave the fence alone"]);
+	assert.equal(
+		profileWrites[0]?.input,
+		`export PLAYPEN_TEST_TOKEN='${PLACEHOLDER}'\n`,
 	);
-	assert.deepEqual(handed, {
-		env: "PLAYPEN_TEST_TOKEN",
-		placeholder: handed?.placeholder,
-		value: TOKEN,
-		hosts: ["api.github.com"],
-	});
 });
 
-test("two starts of the same secret get different placeholders", async (t) => {
+test("the helper is handed each secret's name and value, and no placeholder or hosts", async (t) => {
 	setEnv(t, { PLAYPEN_TEST_TOKEN: TOKEN });
 	const { run } = await sandboxFor(t, ONE_SECRET);
 	await run();
-	const before = fencedSecrets[0]?.placeholder;
-	fenceState = "sealed-no-gatekeeper";
+	assert.deepEqual(fencedSecrets, [
+		{ env: "PLAYPEN_TEST_TOKEN", value: TOKEN },
+	]);
+});
+
+test("a secret named by two entries is handed to the helper once", async (t) => {
+	setEnv(t, { PLAYPEN_TEST_TOKEN: TOKEN });
+	const { run } = await sandboxFor(
+		t,
+		'export default { network: { secrets: [{ env: "PLAYPEN_TEST_TOKEN", hosts: ["a.example.com"] }, { env: "PLAYPEN_TEST_TOKEN", hosts: ["b.example.com"] }] } };',
+	);
 	await run();
-	const after = fencedSecrets[0]?.placeholder;
-	assert.ok(before && after, "both starts should have handed a placeholder");
-	assert.notEqual(before, after);
+	assert.deepEqual(fencedSecrets, [
+		{ env: "PLAYPEN_TEST_TOKEN", value: TOKEN },
+	]);
+});
+
+test("the guest gets the same placeholder after a reattach as at the first start", async (t) => {
+	setEnv(t, { PLAYPEN_TEST_TOKEN: TOKEN });
+	const { run } = await sandboxFor(t, ONE_SECRET);
+	await run();
+	fenceState = "sealed-no-gatekeeper";
+	helperLive = false;
+	await run();
+	assert.deepEqual(
+		profileWrites.map((write) => write.input),
+		[
+			`export PLAYPEN_TEST_TOKEN='${PLACEHOLDER}'\n`,
+			`export PLAYPEN_TEST_TOKEN='${PLACEHOLDER}'\n`,
+		],
+	);
 });
 
 test("the policy the fence is handed names the secret and not its value", async (t) => {
@@ -536,10 +570,9 @@ test("the guest gets the placeholder in its login profile, and never the value",
 	setEnv(t, { PLAYPEN_TEST_TOKEN: TOKEN });
 	const { run } = await sandboxFor(t, ONE_SECRET);
 	await run();
-	const placeholder = fencedSecrets[0]?.placeholder;
 	assert.equal(profileWrites.length, 1);
 	const [write] = profileWrites;
-	assert.equal(write?.input, `export PLAYPEN_TEST_TOKEN='${placeholder}'\n`);
+	assert.equal(write?.input, `export PLAYPEN_TEST_TOKEN='${PLACEHOLDER}'\n`);
 	assert.match(write?.script ?? "", /\/etc\/profile\.d\/playpen-secrets\.sh/);
 	assert.equal(`${write?.script}${write?.input}`.includes(TOKEN), false);
 });
@@ -559,24 +592,7 @@ test("the placeholders are written after the masks are applied", async (t) => {
 test("a project with no secrets has the guest's profile removed, so a dropped secret does not linger", async (t) => {
 	const { run } = await sandboxFor(t, BOTH);
 	await run();
-	assert.deepEqual(profileWrites, [
-		{ script: "rm -f /etc/profile.d/playpen-secrets.sh", input: undefined },
-	]);
-});
-
-test("a sandbox already running keeps the placeholders its helper holds, not fresh ones the helper would not know", async (t) => {
-	setEnv(t, { PLAYPEN_TEST_TOKEN: TOKEN });
-	const { run } = await sandboxFor(t, ONE_SECRET);
-	await run();
-	const first = fencedSecrets[0]?.placeholder;
-	profileWrites.length = 0;
-	await run();
-	const fresh = fencedSecrets[0]?.placeholder;
-	assert.notEqual(fresh, first, "the second start should have made its own");
-	assert.equal(
-		profileWrites[0]?.input,
-		`export PLAYPEN_TEST_TOKEN='${first}'\n`,
-	);
+	assert.deepEqual(profileWrites, [NO_PROFILE]);
 });
 
 test("a secret the running helper was not started with is left out of the guest's profile", async (t) => {
@@ -586,7 +602,22 @@ test("a secret the running helper was not started with is left out of the guest'
 	helperHolds = [];
 	profileWrites.length = 0;
 	await run();
-	assert.deepEqual(profileWrites, [
-		{ script: "rm -f /etc/profile.d/playpen-secrets.sh", input: undefined },
-	]);
+	assert.deepEqual(profileWrites, [NO_PROFILE]);
+});
+
+test("a secret the running helper lacks, with its variable unset too, is left out and not reported", async (t) => {
+	setEnv(t, { PLAYPEN_TEST_TOKEN: TOKEN });
+	const { run } = await sandboxFor(t, ONE_SECRET);
+	await run();
+	helperHolds = [];
+	profileWrites.length = 0;
+	delete process.env.PLAYPEN_TEST_TOKEN;
+	const said = t.mock.method(console, "error", () => {});
+	await run();
+	const lines = said.mock.calls.map((c) => String(c.arguments[0]));
+	assert.deepEqual(profileWrites, [NO_PROFILE]);
+	assert.deepEqual(
+		lines.filter((line) => line.startsWith("secret ")),
+		[],
+	);
 });

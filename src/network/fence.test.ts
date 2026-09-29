@@ -15,8 +15,7 @@ import {
 	classifyFence,
 	fencePaths,
 	type HeldSecret,
-	heldNames,
-	helperEnv,
+	helperSpawnOptions,
 	liveHelper,
 	looksLikeQemu,
 	parseHeldSecrets,
@@ -327,16 +326,12 @@ test("a running helper is found by the record it wrote", async (t) => {
 	assert.deepEqual(await liveHelper("api-abc123"), record);
 });
 
-test("a helper that wrote its record before the policy field existed is still found, with no policy applied and no secrets", async (t) => {
+test("a helper that wrote its record before the policy field existed is still found, with no policy applied yet", async (t) => {
 	await dataDir(t);
 	await mkdir(fencePaths("api-abc123").dir, { recursive: true });
 	const { policy: _, ...older } = { ...helper, ...(await self()) };
 	await writeFile(fencePaths("api-abc123").helper, JSON.stringify(older));
-	assert.deepEqual(await liveHelper("api-abc123"), {
-		...older,
-		policy: "",
-		secrets: [],
-	});
+	assert.deepEqual(await liveHelper("api-abc123"), { ...older, policy: "" });
 });
 
 test("a helper.json that is not a helper record reads as no helper", async (t) => {
@@ -400,24 +395,14 @@ test("an empty cmdline, as a zombie or an unreadable process reads, is not qemu"
 
 const TOKEN = "ghp_correct-horse-battery-staple";
 
-const heldToken: HeldSecret = {
-	env: "GH_TOKEN",
-	placeholder: "playpen-secret-gh-token-3f9a0c1d5e7b2468",
-	value: TOKEN,
-	hosts: ["api.github.com", "github.com"],
-};
+const heldToken: HeldSecret = { env: "GH_TOKEN", value: TOKEN };
+const heldNpm: HeldSecret = { env: "NPM_TOKEN", value: "npm_abc" };
 
 test("the document written to the helper's stdin reads back as the same secrets", () => {
-	const other: HeldSecret = {
-		env: "NPM_TOKEN",
-		placeholder: "playpen-secret-npm-token-0123456789abcdef",
-		value: "npm_abc",
-		hosts: ["registry.example.com"],
-	};
-	assert.deepEqual(parseHeldSecrets(serializeHeldSecrets([heldToken, other])), [
-		heldToken,
-		other,
-	]);
+	assert.deepEqual(
+		parseHeldSecrets(serializeHeldSecrets([heldToken, heldNpm])),
+		[heldToken, heldNpm],
+	);
 });
 
 test("a document with no secrets is still a document, so a helper with none never waits on stdin", () => {
@@ -430,40 +415,50 @@ function documentWith(fields: Record<string, unknown>): string {
 	return JSON.stringify({ secrets: [{ ...heldToken, ...fields }] });
 }
 
-test("a stdin document that is wrong names the key at fault", () => {
-	const cases: [string, RegExp][] = [
-		[
-			documentWith({ value: undefined }),
-			/`secrets\[0\]\.value` must be a string/,
-		],
-		[documentWith({ value: "" }), /`secrets\[0\]\.value` must not be empty/],
-		[
-			documentWith({ env: "gh token" }),
-			/`secrets\[0\]\.env` must be an environment variable name/,
-		],
-		[
-			documentWith({ placeholder: TOKEN }),
-			/`secrets\[0\]\.placeholder` must be a placeholder/,
-		],
-		[
-			documentWith({ hosts: [] }),
-			/`secrets\[0\]\.hosts` must name at least one host/,
-		],
-		[
-			documentWith({ hosts: ["github.com:443"] }),
-			/`secrets\[0\]\.hosts\[0\]` must be a hostname without a port/,
-		],
-		[
-			'{"secrets":"GH_TOKEN"}',
-			/`secrets` must be an array of \{ env, placeholder, value, hosts \}/,
-		],
-		['{"secrets":[null]}', /`secrets\[0\]` must be \{ env, hosts \}/],
-		["{}", /`secrets` must be an array/],
-		["[]", /the helper's stdin must hold a JSON object/],
-	];
-	for (const [text, message] of cases) {
-		assert.throws(() => parseHeldSecrets(text), message, text);
-	}
+test("a secret with no value is refused, naming the key", () => {
+	assert.throws(
+		() => parseHeldSecrets(documentWith({ value: undefined })),
+		/`secrets\[0\]\.value` must be a string/,
+	);
+});
+
+test("a secret with an empty value is refused, naming the key", () => {
+	assert.throws(
+		() => parseHeldSecrets(documentWith({ value: "" })),
+		/`secrets\[0\]\.value` must not be empty/,
+	);
+});
+
+test("a secret whose name is not an environment variable name is refused, naming the key", () => {
+	assert.throws(
+		() => parseHeldSecrets(documentWith({ env: "gh token" })),
+		/`secrets\[0\]\.env` must be an environment variable name/,
+	);
+});
+
+test("a secret that is not an object is refused, naming the key", () => {
+	assert.throws(
+		() => parseHeldSecrets('{"secrets":[null]}'),
+		/`secrets\[0\]` must be \{ env, value \}/,
+	);
+});
+
+test("a document whose secrets are not an array is refused, naming the key", () => {
+	assert.throws(
+		() => parseHeldSecrets('{"secrets":"GH_TOKEN"}'),
+		/`secrets` must be an array of \{ env, value \}/,
+	);
+});
+
+test("a document with no secrets key is refused, naming the key", () => {
+	assert.throws(() => parseHeldSecrets("{}"), /`secrets` must be an array/);
+});
+
+test("a document that is not an object is refused", () => {
+	assert.throws(
+		() => parseHeldSecrets("[]"),
+		/the helper's stdin must hold a JSON object/,
+	);
 });
 
 test("stdin that is not JSON is refused without quoting what was on it", () => {
@@ -487,31 +482,38 @@ test("a value in a rejected document is not in the message either", () => {
 	);
 });
 
-test("helper.json keeps a held secret's name and placeholder and nothing else", () => {
-	assert.deepEqual(heldNames([heldToken]), [
-		{ env: "GH_TOKEN", placeholder: heldToken.placeholder },
-	]);
-});
-
-test("neither policy.json nor helper.json ever holds a secret's value", async (t) => {
+test("helper.json is not written for a record whose secrets are more than names, and the refusal does not quote them", async (t) => {
 	await dataDir(t);
-	await writePolicy("api-abc123", {
-		allow: ["api.github.com", "github.com"],
-		mode: "enforce",
-		ports: [],
-		secrets: [{ env: heldToken.env, hosts: heldToken.hosts }],
-	});
-	await writeHelper("api-abc123", {
+	await mkdir(fencePaths("api-abc123").dir, { recursive: true });
+	const leaky = {
 		...helper,
 		...(await self()),
-		secrets: heldNames([heldToken]),
+		secrets: [heldToken],
+	} as unknown as Parameters<typeof writeHelper>[1];
+	await assert.rejects(writeHelper("api-abc123", leaky), (err: Error) => {
+		assert.match(err.message, /secrets/);
+		assert.equal(err.message.includes(TOKEN), false, err.message);
+		return true;
 	});
-	const paths = fencePaths("api-abc123");
-	for (const path of [paths.policy, paths.helper]) {
-		const text = await readFile(path, "utf8");
-		assert.equal(text.includes(TOKEN), false, `${path} holds the value`);
-		assert.match(text, /GH_TOKEN/, `${path} should still name the secret`);
-	}
+	await assert.rejects(stat(fencePaths("api-abc123").helper));
+});
+
+test("policy.json does not carry a value handed in with a secret's grant", async (t) => {
+	await dataDir(t);
+	const leaky = {
+		allow: ["api.github.com"],
+		mode: "enforce",
+		ports: [],
+		secrets: [{ env: "GH_TOKEN", hosts: ["api.github.com"], value: TOKEN }],
+	} as unknown as Parameters<typeof writePolicy>[1];
+	await writePolicy("api-abc123", leaky);
+	const text = await readFile(fencePaths("api-abc123").policy, "utf8");
+	assert.equal(
+		text.includes(TOKEN),
+		false,
+		`policy.json held the value: ${text}`,
+	);
+	assert.match(text, /GH_TOKEN/);
 });
 
 test("a helper.json from before secrets existed reads as holding none", async (t) => {
@@ -523,42 +525,47 @@ test("a helper.json from before secrets existed reads as holding none", async (t
 });
 
 test("a helper is told to restart for a secret it was not started with", () => {
-	assert.deepEqual(restartNotices({ secrets: [] }, [heldToken]), [
+	assert.deepEqual(restartNotices({ secrets: [] }, ["GH_TOKEN"]), [
 		"secret GH_TOKEN added to the config takes effect after: playpen stop && playpen start\n",
 	]);
 });
 
-test("a helper started with the same secret names has nothing to be told, whatever their placeholders", () => {
-	const startedWith = [
-		{
-			env: "GH_TOKEN",
-			placeholder: "playpen-secret-gh-token-0000000000000000",
-		},
-	];
-	assert.deepEqual(restartNotices({ secrets: startedWith }, [heldToken]), []);
+test("a helper started with the same secret names has nothing to be told", () => {
+	assert.deepEqual(restartNotices({ secrets: ["GH_TOKEN"] }, ["GH_TOKEN"]), []);
 });
 
 test("a secret dropped from the config since the helper started is not a reason to restart", () => {
-	assert.deepEqual(restartNotices({ secrets: heldNames([heldToken]) }, []), []);
+	assert.deepEqual(restartNotices({ secrets: ["GH_TOKEN"] }, []), []);
 });
 
-test("only the names a running helper lacks are reported, each once", () => {
-	const npm: HeldSecret = { ...heldToken, env: "NPM_TOKEN" };
-	const aws: HeldSecret = { ...heldToken, env: "AWS_TOKEN" };
-	const notices = restartNotices({ secrets: heldNames([heldToken]) }, [
-		heldToken,
-		npm,
-		aws,
+test("only the names a running helper lacks are reported", () => {
+	const notices = restartNotices({ secrets: ["GH_TOKEN"] }, [
+		"GH_TOKEN",
+		"NPM_TOKEN",
+		"AWS_TOKEN",
 	]);
-	assert.equal(notices.length, 2);
-	assert.match(notices[0] ?? "", /^secret NPM_TOKEN added/);
-	assert.match(notices[1] ?? "", /^secret AWS_TOKEN added/);
+	assert.deepEqual(notices, [
+		"secret NPM_TOKEN added to the config takes effect after: playpen stop && playpen start\n",
+		"secret AWS_TOKEN added to the config takes effect after: playpen stop && playpen start\n",
+	]);
 });
 
-test("the helper's environment lacks the variables its secrets came from and keeps the rest", () => {
-	const env = helperEnv(
-		{ GH_TOKEN: TOKEN, PATH: "/usr/bin", HOME: "/home/me" },
-		[heldToken],
-	);
+test("a name the config lists twice is reported once", () => {
+	const notices = restartNotices({ secrets: [] }, ["GH_TOKEN", "GH_TOKEN"]);
+	assert.equal(notices.length, 1);
+});
+
+test("the helper is spawned detached, with a pipe for stdin and helper.log for its output", () => {
+	const { detached, stdio } = helperSpawnOptions(7, [heldToken], {});
+	assert.equal(detached, true);
+	assert.deepEqual(stdio, ["pipe", 7, 7]);
+});
+
+test("the helper is spawned without the variables its secrets came from, and with the rest", () => {
+	const { env } = helperSpawnOptions(7, [heldToken], {
+		GH_TOKEN: TOKEN,
+		PATH: "/usr/bin",
+		HOME: "/home/me",
+	});
 	assert.deepEqual(env, { PATH: "/usr/bin", HOME: "/home/me" });
 });

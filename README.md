@@ -120,8 +120,10 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
   with no port and not an address. Injection will match the host exactly; the
   allow entry it implies covers subdomains, like any entry in `allow`. A mistake
   here stops the config loading rather than being skipped. The value is read
-  from your environment at `playpen start`, which refuses to start if it is
-  unset, and the guest sees a placeholder in its place; nothing is injected yet.
+  from your environment by the `playpen start` that boots the sandbox, which
+  refuses to boot without it; the guest sees a placeholder in its place, and
+  nothing is injected yet. A later `shell` or `run` into a sandbox that is
+  already running does not need the variable.
 - `mode: "log"` records what the sandbox reaches and blocks nothing on the
   internet side; your own machine's localhost stays closed in every mode. Use it
   to find the hosts a project needs, then list them; the default is `enforce`.

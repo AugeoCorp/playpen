@@ -15,6 +15,8 @@ import {
 	BUILTIN_ALLOW,
 	NO_EGRESS_ADVICE,
 	type Policy,
+	placeholderFor,
+	type SecretGrant,
 } from "../network/policy.ts";
 import { confirm } from "../prompt.ts";
 import * as history from "./history.ts";
@@ -27,7 +29,7 @@ import {
 	LEGACY_IGNORE_FILE,
 	type LoadedNetwork,
 } from "./projectconfig.ts";
-import { profileCommand, readSecretValues } from "./secrets.ts";
+import { missingMessage, profileCommand, readSecretValues } from "./secrets.ts";
 import * as store from "./store.ts";
 import { loadTrustedConfig } from "./trust.ts";
 
@@ -113,11 +115,6 @@ async function loadConfig(sb: Sandbox): Promise<{
 			`forwarding host port ${host} to the guest's localhost:${guest}`,
 		);
 	}
-	for (const { env, hosts } of network.secrets) {
-		console.error(
-			`holding ${env} for ${hosts.join(", ")} (placeholder in the guest; not injected yet)`,
-		);
-	}
 	return { masked, setup, network };
 }
 
@@ -161,12 +158,18 @@ interface Template {
 	network: LoadedNetwork;
 	/** Read while the template is, so a missing variable refuses the start before anything is built or torn down. */
 	secrets: HeldSecret[];
+	missing: string[];
 }
 
 /** Loads the project config, so it is read once per command and reused. */
 async function renderTemplate(sb: Sandbox): Promise<Template> {
 	const { masked, setup, network } = await loadConfig(sb);
-	const secrets = readSecretValues(network.secrets, process.env);
+	const { held, missing } = readSecretValues(network.secrets, process.env);
+	// A live helper already has its values, so only a start that will spawn one
+	// needs them here.
+	if (missing.length > 0 && (await liveHelper(sb.sandbox)) === null) {
+		throw new Error(missingMessage(missing));
+	}
 	const rendered = renderFor(sb);
 	return {
 		yaml: `${serialize(rendered)}\n`,
@@ -174,7 +177,8 @@ async function renderTemplate(sb: Sandbox): Promise<Template> {
 		masks: masked,
 		setup,
 		network,
-		secrets,
+		secrets: held,
+		missing,
 	};
 }
 
@@ -235,18 +239,25 @@ async function applyMasks(
 }
 
 /**
- * Written from what the running helper holds rather than from what this start
- * generated: a helper that was already up keeps its own placeholders, and one
- * the guest carries that the helper does not know would never be swapped. A
- * secret the helper lacks is left out; `bringUp` has already said so.
+ * Written for the configured names the running helper holds, not for what this
+ * start read: a helper that was already up keeps the values it was spawned
+ * with, and a name it lacks would get a placeholder nothing swaps. `bringUp`
+ * has already said so for each name left out.
  */
 async function applySecrets(
 	sb: Sandbox,
-	secrets: readonly HeldSecret[],
+	grants: readonly SecretGrant[],
 ): Promise<void> {
-	const held = (await liveHelper(sb.sandbox))?.secrets ?? [];
+	const held = new Set((await liveHelper(sb.sandbox))?.secrets ?? []);
+	const granted = grants.filter(({ env }) => held.has(env));
+	for (const { env, hosts } of granted) {
+		console.error(
+			`secret ${env} for ${hosts.join(", ")} (placeholder in the guest; not injected yet)`,
+		);
+	}
+	const names = new Set(granted.map(({ env }) => env));
 	const { script, input } = profileCommand(
-		secrets.flatMap(({ env }) => held.filter((h) => h.env === env)),
+		[...names].map((env) => ({ env, placeholder: placeholderFor(env) })),
 	);
 	const result = await lima.runScript(sb.instance, script, {
 		root: true,
@@ -402,6 +413,10 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 		const reason =
 			(await changedTemplate(sb, template)) ?? (await outdatedBase(sb));
 		rebuilding = reason !== null && (await confirmRebuild(reason));
+		// A rebuild spawns a helper, and destroys the one that had the values.
+		if (rebuilding && template.missing.length > 0) {
+			throw new Error(missingMessage(template.missing));
+		}
 		if (!rebuilding) {
 			const fence = lima.isRunning(existing)
 				? await fenceStatus(sb.sandbox, sb.instance)
@@ -421,7 +436,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 			// started takes effect without a restart.
 			await startFenced(sb, template);
 			await applyMasks(sb, template.masks);
-			await applySecrets(sb, template.secrets);
+			await applySecrets(sb, template.network.secrets);
 			await store.touch(sb.sandbox);
 			return { created: false, setupOk: true, setup: template.setup };
 		}
@@ -459,7 +474,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 		throw err;
 	}
 	const masked = await applyMasks(sb, current.masks);
-	await applySecrets(sb, current.secrets);
+	await applySecrets(sb, current.network.secrets);
 	if (await history.restore(sb.instance, sb.sandbox)) {
 		console.error(`restored Claude history from the previous sandbox`);
 	}

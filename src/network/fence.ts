@@ -117,14 +117,11 @@ const helperRecord = ownerSchema.extend({
 	 */
 	unboundPorts: z.array(portForward).optional(),
 	/**
-	 * The secrets this helper was handed at spawn, by name and placeholder:
-	 * enough for `bringUp` to see what a running helper lacks and for `start` to
-	 * put the same placeholders in the guest. Never the value, which stays in the
+	 * The names of the secrets this helper was handed at spawn, so `start` can
+	 * see what a running helper lacks. Never a value, which stays in the
 	 * helper's memory. Absent from a helper older than `secrets`.
 	 */
-	secrets: z
-		.array(z.object({ env: z.string(), placeholder: z.string() }))
-		.default([]),
+	secrets: z.array(z.string()).default([]),
 });
 
 export type HelperRecord = z.infer<typeof helperRecord>;
@@ -133,7 +130,10 @@ export async function writeHelper(
 	sandbox: string,
 	record: HelperRecord,
 ): Promise<void> {
-	await writeAtomic(fencePaths(sandbox).helper, `${JSON.stringify(record)}\n`);
+	await writeAtomic(
+		fencePaths(sandbox).helper,
+		`${JSON.stringify(helperRecord.parse(record))}\n`,
+	);
 }
 
 async function readHelper(sandbox: string): Promise<HelperRecord | null> {
@@ -162,7 +162,7 @@ export async function writePolicy(
 ): Promise<boolean> {
 	const paths = fencePaths(sandbox);
 	await ensureFenceDir(sandbox);
-	const next = `${JSON.stringify(policy)}\n`;
+	const next = `${JSON.stringify(policyFile.parse(policy))}\n`;
 	const previous = await readFile(paths.policy, "utf8").catch(() => "");
 	await writeAtomic(paths.policy, next);
 	return next !== previous;
@@ -183,11 +183,13 @@ export async function policyStamp(sandbox: string): Promise<string> {
 	}
 }
 
+const envName = z
+	.string({ error: "must be an environment variable name" })
+	.refine(isEnvName, { error: "must be an environment variable name" });
+
 const secretGrant = z.object(
 	{
-		env: z
-			.string({ error: "must be an environment variable name" })
-			.refine(isEnvName, { error: "must be an environment variable name" }),
+		env: envName,
 		hosts: z
 			.array(
 				z
@@ -202,16 +204,19 @@ const secretGrant = z.object(
 	{ error: "must be { env, hosts }" },
 );
 
-const heldSecret = secretGrant.extend({
-	placeholder: z
-		.string({ error: "must be a placeholder" })
-		.regex(/^playpen-secret-[a-z0-9-]+-[0-9a-f]{16}$/, {
-			error: "must be a placeholder",
-		}),
-	value: z
-		.string({ error: "must be a string" })
-		.min(1, { error: "must not be empty" }),
-});
+/**
+ * Names and values only. Where a value may be used comes from policy.json,
+ * which is re-read on reload, and the placeholder is computed from the name.
+ */
+const heldSecret = z.object(
+	{
+		env: envName,
+		value: z
+			.string({ error: "must be a string" })
+			.min(1, { error: "must not be empty" }),
+	},
+	{ error: "must be { env, value }" },
+);
 
 /** A secret as the helper holds it: the only type here that carries a value. */
 export type HeldSecret = z.infer<typeof heldSecret>;
@@ -219,7 +224,7 @@ export type HeldSecret = z.infer<typeof heldSecret>;
 const helperInput = z.object(
 	{
 		secrets: z.array(heldSecret, {
-			error: "must be an array of { env, placeholder, value, hosts }",
+			error: "must be an array of { env, value }",
 		}),
 	},
 	{ error: "must hold a JSON object" },
@@ -248,13 +253,6 @@ export function parseHeldSecrets(text: string): HeldSecret[] {
 	return result.data.secrets;
 }
 
-/** The part of a held secret that helper.json may carry. */
-export function heldNames(
-	secrets: readonly HeldSecret[],
-): HelperRecord["secrets"] {
-	return secrets.map(({ env, placeholder }) => ({ env, placeholder }));
-}
-
 /**
  * What `start` has to tell the user when it finds a helper already running:
  * the helper took its values from the start that spawned it, so a secret added
@@ -262,13 +260,13 @@ export function heldNames(
  */
 export function restartNotices(
 	helper: Pick<HelperRecord, "secrets">,
-	wanted: readonly HeldSecret[],
+	configured: readonly string[],
 ): string[] {
-	const held = new Set(helper.secrets.map(({ env }) => env));
-	return wanted
-		.filter(({ env }) => !held.has(env))
+	const held = new Set(helper.secrets);
+	return [...new Set(configured)]
+		.filter((env) => !held.has(env))
 		.map(
-			({ env }) =>
+			(env) =>
 				`secret ${env} added to the config takes effect after: playpen stop && playpen start\n`,
 		);
 }
@@ -404,6 +402,18 @@ export function cliPath(): string {
 	return join(dirname(fileURLToPath(import.meta.url)), "..", "cli.ts");
 }
 
+export function helperSpawnOptions(
+	logFd: number,
+	secrets: readonly HeldSecret[],
+	env: NodeJS.ProcessEnv = process.env,
+): { detached: true; stdio: ["pipe", number, number]; env: NodeJS.ProcessEnv } {
+	return {
+		detached: true,
+		stdio: ["pipe", logFd, logFd],
+		env: helperEnv(env, secrets),
+	};
+}
+
 /**
  * Detached with its output in helper.log, because it has to outlive the
  * `playpen start` that asked for it: the sandbox stays up after the command
@@ -422,11 +432,7 @@ async function spawnHelper(
 		const child = spawn(
 			process.execPath,
 			[cliPath(), "__net-helper", sandbox, instance],
-			{
-				detached: true,
-				stdio: ["pipe", log.fd, log.fd],
-				env: helperEnv(process.env, secrets),
-			},
+			helperSpawnOptions(log.fd, secrets),
 		);
 		// A helper that dies before reading closes the pipe under this write; its
 		// exit is what `bringUp` reports, so the write's own error is not.
@@ -495,7 +501,10 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 		}
 		const running = await liveHelper(sandbox);
 		if (running !== null) {
-			for (const notice of restartNotices(running, secrets)) opts.log(notice);
+			const configured = opts.policy.secrets.map(({ env }) => env);
+			for (const notice of restartNotices(running, configured)) {
+				opts.log(notice);
+			}
 		}
 		return;
 	}
