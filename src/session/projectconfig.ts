@@ -4,7 +4,13 @@ import { z } from "zod";
 import { exists } from "../fs.ts";
 import { describeIssue } from "../issue.ts";
 import { isPort } from "../network/names.ts";
-import { type PortForward, parseEntry } from "../network/policy.ts";
+import {
+	isEnvName,
+	type PortForward,
+	parseEntry,
+	parseSecretHost,
+	type SecretGrant,
+} from "../network/policy.ts";
 
 export const CONFIG_FILE = "playpen.config.ts";
 
@@ -45,6 +51,15 @@ export type NetworkMode = z.infer<typeof networkMode>;
  * with it rather than needing one in `allow`. The guest port has to be free
  * in the guest.
  *
+ * `secrets` names credentials from this machine's environment that the
+ * sandbox may use on given hosts: `{ env: "GH_TOKEN", hosts: ["github.com"] }`.
+ * Names only, never a value: this file sits in the project directory, which
+ * the sandbox mounts. Nothing is injected yet: in this version an entry is
+ * validated and reported and does nothing else. Each host is a plain hostname,
+ * not an address and without a port; injection will match it exactly, and it
+ * is allowed as if it were in `allow`, which covers its subdomains. A mistake
+ * in `secrets` fails the load rather than being dropped.
+ *
  * `mode: "log"` records verdicts and refuses nothing, for finding out what a
  * project reaches. It is never the default.
  */
@@ -52,6 +67,7 @@ export interface NetworkConfig {
 	allow?: string[];
 	mode?: NetworkMode;
 	ports?: Array<number | PortForward>;
+	secrets?: Array<{ env: string; hosts: string[] }>;
 }
 
 export interface PlaypenConfig {
@@ -113,6 +129,7 @@ export interface LoadedNetwork {
 	allow: string[];
 	mode: NetworkMode;
 	ports: PortForward[];
+	secrets: SecretGrant[];
 }
 
 export interface LoadedConfig {
@@ -229,12 +246,53 @@ const portForwards = z
 			});
 	});
 
+const SECRET_ENV = "must be an environment variable name like GH_TOKEN";
+
+/**
+ * A secret is injected into an HTTP header for a named host, so an address or a
+ * port has nothing to match. `parseSecretHost` in network/policy.ts decides,
+ * because policy.json is read back through it.
+ */
+const SECRET_HOST = "must be a hostname, without a port and not an address";
+
+const secretHost = z
+	.string({ error: SECRET_HOST })
+	.transform((raw) => parseSecretHost(raw))
+	.pipe(z.string({ error: SECRET_HOST }));
+
+/**
+ * Strict: a `value` written here would be a secret in a file the guest can
+ * read, and an object schema would otherwise strip it silently.
+ */
+const secretEntry = z.strictObject(
+	{
+		env: z
+			.string({ error: SECRET_ENV })
+			.refine(isEnvName, { error: SECRET_ENV }),
+		hosts: z
+			.array(secretHost, { error: "must be an array of hostnames" })
+			.min(1, { error: "must name at least one host" }),
+	},
+	{
+		error: (issue) =>
+			issue.code === "unrecognized_keys"
+				? "must be { env, hosts } and nothing else; a value never goes in this file"
+				: "must be { env, hosts }",
+	},
+);
+
+const secrets = z.array(secretEntry, {
+	error: "must be an array of { env, hosts }",
+});
+
 /**
  * Shape problems — `allow` that is not an array, a `mode` that is neither
- * spelling, any `ports` entry at all that is wrong — fail the load rather than
- * being dropped: a `mode` meant to say "log" that was quietly dropped would
- * enforce instead, and a dropped port would leave a client in the guest
- * talking to whatever else holds that port.
+ * spelling, any `ports` or `secrets` entry at all that is wrong — fail the load
+ * rather than being dropped: a `mode` meant to say "log" that was quietly
+ * dropped would enforce instead, a dropped port would leave a client in the
+ * guest talking to whatever else holds that port, a dropped secret host would
+ * let the guest's placeholder reach that host unswapped, and a dropped entry
+ * or a stray `value` key would hide behind a warning.
  */
 const networkSchema = z
 	.object(
@@ -242,6 +300,7 @@ const networkSchema = z
 			allow: lenientList(allowEntry),
 			mode: networkMode.default("enforce"),
 			ports: portForwards.default([]),
+			secrets: secrets.default([]),
 		},
 		{ error: "must be an object" },
 	)
@@ -262,10 +321,14 @@ const configSchema = z
 		},
 	)
 	.transform(
-		({ masked, setup, network: { allow, mode, ports } }): LoadedConfig => ({
+		({
+			masked,
+			setup,
+			network: { allow, mode, ports, secrets },
+		}): LoadedConfig => ({
 			masked: masked.kept,
 			setup: setup.kept,
-			network: { allow: [...new Set(allow.kept)], mode, ports },
+			network: { allow: [...new Set(allow.kept)], mode, ports, secrets },
 			rejected: masked.dropped,
 			rejectedSetup: setup.dropped,
 			rejectedNetwork: allow.dropped,
@@ -291,6 +354,7 @@ export function validateNetwork(
 			allow: [],
 			mode: "enforce",
 			ports: [],
+			secrets: [],
 			rejected: [],
 			error: describeIssue(result.error),
 		};
@@ -333,7 +397,7 @@ export async function importConfig(file: string): Promise<LoadedConfig> {
 	const empty: LoadedConfig = {
 		masked: [],
 		setup: [],
-		network: { allow: [], mode: "enforce", ports: [] },
+		network: { allow: [], mode: "enforce", ports: [], secrets: [] },
 		rejected: [],
 		rejectedSetup: [],
 		rejectedNetwork: [],
@@ -363,7 +427,7 @@ export async function loadProjectConfig(
 		return {
 			masked: [],
 			setup: [],
-			network: { allow: [], mode: "enforce", ports: [] },
+			network: { allow: [], mode: "enforce", ports: [], secrets: [] },
 			rejected: [],
 			rejectedSetup: [],
 			rejectedNetwork: [],

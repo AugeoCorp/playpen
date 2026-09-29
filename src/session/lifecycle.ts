@@ -1,16 +1,12 @@
 import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { defaults, limaHome, templatesDir } from "../config.ts";
+import { writeAtomic } from "../fs.ts";
 import { ensureBase, findBase } from "../image/bake.ts";
 import { baseImage } from "../image/base.ts";
 import { maskScript, render, serialize } from "../image/render.ts";
 import * as lima from "../lima/client.ts";
-import {
-	bringUp,
-	fenceStatus,
-	liveHelper,
-	readMounts,
-} from "../network/fence.ts";
+import { bringUp, fenceStatus, liveHelper } from "../network/fence.ts";
 import {
 	BUILTIN_ALLOW,
 	NO_EGRESS_ADVICE,
@@ -112,6 +108,9 @@ async function loadConfig(sb: Sandbox): Promise<{
 			`forwarding host port ${host} to the guest's localhost:${guest}`,
 		);
 	}
+	for (const { env, hosts } of network.secrets) {
+		console.error(`naming ${env} for ${hosts.join(", ")} (not injected yet)`);
+	}
 	return { masked, setup, network };
 }
 
@@ -182,14 +181,27 @@ async function writeTemplate(sb: Sandbox, template: Template): Promise<void> {
  */
 const NO_MOUNTS = /"?mounts"?\s*:\s*\[\s*\]/g;
 
+function mountsFor(sb: Sandbox): string {
+	// JSON is valid YAML in either style, and quotes the paths correctly.
+	return `"mounts": ${JSON.stringify([
+		{ location: sb.cwd, writable: true },
+		{
+			location: history.hostDir(sb.sandbox),
+			mountPoint: history.GUEST_MOUNT_POINT,
+			writable: true,
+			"9p": { securityModel: history.SECURITY_MODEL },
+		},
+	])}`;
+}
+
 /**
  * A clone carries the base's instance config, which Lima has resolved: `base:`
  * consumed, the concrete `images:` list spliced in. Lima rejects a config that
  * still has `base:` and no `images:`, so playpen's own rendered template cannot
  * replace it -- only the empty `mounts` the base left behind is rewritten.
  *
- * Provisioning stays skipped either way: the guard markers are on the cloned
- * disk and the image hash has not changed.
+ * Provisioning stays skipped: the guard markers are on the cloned disk and the
+ * image hash has not changed.
  */
 async function giveCloneItsMount(sb: Sandbox): Promise<void> {
 	const path = join(limaHome(), sb.instance, "lima.yaml");
@@ -200,9 +212,10 @@ async function giveCloneItsMount(sb: Sandbox): Promise<void> {
 			`cloned ${path} has ${found} empty \`mounts\` to fill in, expected 1`,
 		);
 	}
-	// JSON is valid YAML in either style, and quotes the path correctly.
-	const mounts = JSON.stringify([{ location: sb.cwd, writable: true }]);
-	await writeFile(path, yaml.replace(NO_MOUNTS, `"mounts": ${mounts}`), "utf8");
+	await writeAtomic(
+		path,
+		yaml.replace(NO_MOUNTS, () => mountsFor(sb)),
+	);
 }
 
 /**
@@ -263,12 +276,42 @@ async function outdatedBase(sb: Sandbox): Promise<string | null> {
 }
 
 /**
- * Offered rather than done: a reclone is ~10s, but the guest disk goes with it
- * -- installed packages and masked directories. Claude transcripts and memory
- * are archived across it. `start` is routine, so it asks.
+ * A sandbox made before the history mount keeps Claude history on its own
+ * disk, so deleting the VM deletes it. Read from lima.yaml: nothing here boots
+ * the VM to find out.
  */
-async function confirmRebuild(reason: string): Promise<boolean> {
+async function historyOnVmDisk(sb: Sandbox): Promise<boolean> {
+	const yaml = await readFile(
+		join(limaHome(), sb.instance, "lima.yaml"),
+		"utf8",
+	).catch(() => null);
+	return (
+		yaml !== null && !yaml.includes(JSON.stringify(history.hostDir(sb.sandbox)))
+	);
+}
+
+const HISTORY_ON_VM_DISK = [
+	"Its Claude transcripts and memory are on the VM's disk, from before the history mount, and go with it.",
+	"To keep them, copy them into the project first:",
+	"  playpen run -- sh -c 'tar -C ~ -cf claude-projects.tar .claude/projects'",
+];
+
+/** For the `remove` prompt: what deleting the VM does to Claude history. */
+export async function historyNotice(sb: Sandbox): Promise<string[]> {
+	if (await historyOnVmDisk(sb)) return HISTORY_ON_VM_DISK;
+	return [
+		`Claude transcripts and memory stay on the host, in ${history.hostDir(sb.sandbox)}.`,
+	];
+}
+
+/**
+ * Offered rather than done: a reclone is ~10s, but the guest disk goes with it
+ * -- installed packages and masked directories. `start` is routine, so it asks.
+ */
+async function confirmRebuild(sb: Sandbox, reason: string): Promise<boolean> {
 	console.error(reason);
+	if (await historyOnVmDisk(sb))
+		for (const line of HISTORY_ON_VM_DISK) console.error(`  ${line}`);
 	const ok = await confirm(
 		`  rebuild it now? ~10s, discards packages and masked dirs [y/N] `,
 	);
@@ -295,18 +338,20 @@ export interface Running {
  * in it but the build.
  */
 async function startFenced(sb: Sandbox, template: Template): Promise<void> {
-	const { allow, mode, ports } = template.network;
+	const { allow, mode, ports, secrets } = template.network;
 	await fenced(
 		sb,
 		{
-			// A port is a grant of that host port, so writing it once is enough.
+			// A port or a secret's host is a grant, so writing it once is enough.
 			allow: [
 				...BUILTIN_ALLOW,
 				...allow,
 				...ports.map(({ host }) => `localhost:${host}`),
+				...secrets.flatMap(({ hosts }) => hosts),
 			],
 			mode,
 			ports,
+			secrets,
 		},
 		template.masks,
 	);
@@ -368,7 +413,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 		template = await renderTemplate(sb);
 		const reason =
 			(await changedTemplate(sb, template)) ?? (await outdatedBase(sb));
-		rebuilding = reason !== null && (await confirmRebuild(reason));
+		rebuilding = reason !== null && (await confirmRebuild(sb, reason));
 		if (!rebuilding) {
 			const fence = lima.isRunning(existing)
 				? await fenceStatus(sb.sandbox, sb.instance)
@@ -381,6 +426,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 						`  stop it and start it again: playpen stop --force && playpen start`,
 				);
 			}
+			if (!lima.isRunning(existing)) await history.makeHostDir(sb.sandbox);
 			// In every other state, including a sandbox that is already up: a
 			// stopped VM is started, one that survived its helper gets another
 			// gatekeeper, and a running one has its policy rewritten, which is
@@ -388,6 +434,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 			// started takes effect without a restart.
 			await startFenced(sb, template);
 			await applyMasks(sb, template.masks);
+			await history.prepareGuest(sb.instance);
 			await store.touch(sb.sandbox);
 			return { created: false, setupOk: true, setup: template.setup };
 		}
@@ -400,7 +447,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 	if (!guard.ok) throw new Error(guard.reason ?? `refusing to mount ${sb.cwd}`);
 	if (guard.warning) console.error(`warning: ${guard.warning}`);
 
-	if (rebuilding) await destroy(sb, template?.masks);
+	if (rebuilding) await destroy(sb);
 
 	const current = template ?? (await renderTemplate(sb));
 	await writeTemplate(sb, current);
@@ -412,6 +459,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 	// it, see nothing stale, and try to start the broken instance forever.
 	await lima.clone(base.instance, sb.instance);
 	try {
+		await history.makeHostDir(sb.sandbox);
 		await giveCloneItsMount(sb);
 		await startFenced(sb, current);
 	} catch (err) {
@@ -425,9 +473,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 		throw err;
 	}
 	const masked = await applyMasks(sb, current.masks);
-	if (await history.restore(sb.instance, sb.sandbox)) {
-		console.error(`restored Claude history from the previous sandbox`);
-	}
+	await history.prepareGuest(sb.instance);
 
 	// Recorded before setup, not after: setup can run for minutes, and an
 	// instance that exists with no record is one `start` will neither finish nor
@@ -529,56 +575,10 @@ export async function stop(sb: Sandbox): Promise<void> {
 	if (existing && lima.isRunning(existing)) await lima.stop(sb.instance);
 }
 
-/**
- * Archiving needs the guest up, so a stopped sandbox is started for it: ~10s on
- * a delete, worth it because transcripts and memory exist nowhere else. It is
- * started fenced with nothing allowed: the archive travels over the control
- * socket, and a guest that is about to be deleted is the last one to hand the
- * network to. Best effort throughout -- a sandbox too broken to boot must
- * still be deletable, but never at the cost of the masks: if the list of
- * them cannot be read, the boot is skipped and the history with it.
- *
- * `masks` are the current config's, when the caller has them, and are added to
- * the recorded ones so an entry added since the last start is covered too.
- */
-async function saveHistory(
-	sb: Sandbox,
-	running: boolean,
-	masks: readonly string[],
-): Promise<void> {
-	try {
-		// No session record means creation never finished, so there is no history
-		// and no reason to boot it.
-		if (!running && !(await store.load(sb.sandbox))) return;
-		if (!running) {
-			console.error(`starting it briefly to save Claude history`);
-			// The guest side is not applied for this boot, so the host side is all
-			// that keeps the masks out of it. Unreadable means unknown, not "mask
-			// nothing": the throw lands in the warning below.
-			const recorded = await readMounts(sb.sandbox);
-			await fenced(sb, { allow: [], mode: "enforce", ports: [] }, [
-				...new Set([...recorded.masked, ...masks]),
-			]);
-		}
-		await history.archive(sb.instance, sb.sandbox);
-	} catch (err) {
-		console.error(
-			`warning: could not save Claude history (${err instanceof Error ? err.message : err})`,
-		);
-	}
-}
-
-export async function destroy(
-	sb: Sandbox,
-	masks: readonly string[] = [],
-): Promise<void> {
+export async function destroy(sb: Sandbox): Promise<void> {
 	const existing = await lima.get(sb.instance);
 	if (existing) {
-		await saveHistory(sb, lima.isRunning(existing), masks);
-		// Re-read: saveHistory may have started it, and stopping an instance that
-		// is already stopped is an error that must not block the delete.
-		if (lima.isRunning(await lima.get(sb.instance)))
-			await lima.stop(sb.instance, true);
+		if (lima.isRunning(existing)) await lima.stop(sb.instance, true);
 		await lima.remove(sb.instance);
 	}
 	await store.remove(sb.sandbox);

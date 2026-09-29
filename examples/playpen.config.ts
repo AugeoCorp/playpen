@@ -18,6 +18,9 @@ export default {
 		// Your machine's port 1234 at the guest's own localhost:4321. Implies "localhost:1234".
 		ports: [{ host: 1234, guest: 4321 }],
 
+		// A credential from your environment for these hosts, by name only. Implies their allow entries. Not injected yet.
+		secrets: [{ env: "GH_TOKEN", hosts: ["api.github.com", "github.com"] }],
+
 		// "log" allows everything on the internet side and records it, for finding the list.
 		// mode: "log",
 	},

@@ -109,7 +109,7 @@ function readAtLeast(
 }
 
 function policyFor(port: number, mode: Policy["mode"] = "enforce"): Policy {
-	return { allow: [`localhost:${port}`], mode, ports: [] };
+	return { allow: [`localhost:${port}`], mode, ports: [], secrets: [] };
 }
 
 test("a CONNECT to the local alias reaches the local server, banner first", async (t) => {
@@ -142,7 +142,7 @@ test("a CONNECT to the local alias reaches the local server, banner first", asyn
 
 test("a policy replaced while the gatekeeper runs decides the connections after it", async (t) => {
 	const localPort = await bannerServer(t);
-	let policy: Policy = { allow: [], mode: "enforce", ports: [] };
+	let policy: Policy = { allow: [], mode: "enforce", ports: [], secrets: [] };
 	const gatekeeper = await startGatekeeper({
 		policy: () => policy,
 		log: () => {},
@@ -168,7 +168,7 @@ test("a policy replaced while the gatekeeper runs decides the connections after 
 test("a CONNECT to a host outside the policy is refused with 403, before any upstream connection", async (t) => {
 	const entries: Array<{ verdict: string; reason: string }> = [];
 	const gatekeeper = await startGatekeeper({
-		policy: () => ({ allow: [], mode: "enforce", ports: [] }),
+		policy: () => ({ allow: [], mode: "enforce", ports: [], secrets: [] }),
 		log: (line) => entries.push(line),
 	});
 	t.after(() => gatekeeper.close());
@@ -184,7 +184,7 @@ test("a CONNECT to a host outside the policy is refused with 403, before any ups
 
 test("a CONNECT to a bare IP literal is refused with 403", async (t) => {
 	const gatekeeper = await startGatekeeper({
-		policy: () => ({ allow: [], mode: "enforce", ports: [] }),
+		policy: () => ({ allow: [], mode: "enforce", ports: [], secrets: [] }),
 		log: () => {},
 	});
 	t.after(() => gatekeeper.close());
@@ -214,7 +214,7 @@ test("in log mode, a CONNECT to an address on this machine is refused with 403",
 	// really listening: what refuses them is the policy, not a dead port.
 	const localPort = await bannerServer(t, "0.0.0.0");
 	const gatekeeper = await startGatekeeper({
-		policy: () => ({ allow: [], mode: "log", ports: [] }),
+		policy: () => ({ allow: [], mode: "log", ports: [], secrets: [] }),
 		log: () => {},
 	});
 	t.after(() => gatekeeper.close());
@@ -234,7 +234,12 @@ test("an allowed name that resolves onto this machine is refused, and the refusa
 	const resolver = resolverFor("127.0.0.1");
 	const entries: Array<{ verdict: string; reason: string }> = [];
 	const gatekeeper = await startGatekeeper({
-		policy: () => ({ allow: ["mirror.example"], mode: "enforce", ports: [] }),
+		policy: () => ({
+			allow: ["mirror.example"],
+			mode: "enforce",
+			ports: [],
+			secrets: [],
+		}),
 		log: (line) => entries.push(line),
 		resolve: resolver.resolve,
 	});
@@ -262,6 +267,7 @@ test("a name entry with a port still may not resolve to this machine's loopback;
 			allow: [`internal.example:${localPort}`],
 			mode: "enforce",
 			ports: [],
+			secrets: [],
 		}),
 		log: (line) => entries.push(line),
 		resolve: resolver.resolve,
@@ -292,7 +298,12 @@ test("a name resolving to an address this machine has on an interface is refused
 	const resolver = resolverFor(own.address);
 	const entries: Array<{ verdict: string; reason: string }> = [];
 	const gatekeeper = await startGatekeeper({
-		policy: () => ({ allow: ["me.example:8080"], mode: "enforce", ports: [] }),
+		policy: () => ({
+			allow: ["me.example:8080"],
+			mode: "enforce",
+			ports: [],
+			secrets: [],
+		}),
 		log: (line) => entries.push(line),
 		resolve: resolver.resolve,
 	});
@@ -312,7 +323,12 @@ test("the same name without a port in the entry may not resolve inside either, a
 	const resolver = resolverFor("127.0.0.1");
 	const entries: Array<{ verdict: string; reason: string }> = [];
 	const gatekeeper = await startGatekeeper({
-		policy: () => ({ allow: ["internal.example"], mode: "enforce", ports: [] }),
+		policy: () => ({
+			allow: ["internal.example"],
+			mode: "enforce",
+			ports: [],
+			secrets: [],
+		}),
 		log: (line) => entries.push(line),
 		resolve: resolver.resolve,
 	});
@@ -339,6 +355,7 @@ test("a ported name entry may still not resolve to link-local, cloud metadata in
 			allow: ["internal.example:8080"],
 			mode: "enforce",
 			ports: [],
+			secrets: [],
 		}),
 		log: (line) => entries.push(line),
 		resolve: resolver.resolve,
@@ -370,6 +387,7 @@ test("a ported name entry is dispatched to resolution rather than refused outrig
 			allow: ["internal.example:5432"],
 			mode: "enforce",
 			ports: [],
+			secrets: [],
 		}),
 		log: (line) => entries.push(line),
 		// Records the ask and then never settles, so the gatekeeper is never
@@ -407,7 +425,7 @@ test("in log mode, an unlisted name is reported rather than refused, and still c
 	const resolver = resolverFor("127.0.0.1");
 	const entries: Array<{ verdict: string; reason: string }> = [];
 	const gatekeeper = await startGatekeeper({
-		policy: () => ({ allow: [], mode: "log", ports: [] }),
+		policy: () => ({ allow: [], mode: "log", ports: [], secrets: [] }),
 		log: (line) => entries.push(line),
 		resolve: resolver.resolve,
 	});
@@ -424,7 +442,12 @@ test("in log mode, an unlisted name is reported rather than refused, and still c
 test("an allowed name is resolved as the allow entry spells it, whatever the request's case and trailing dot", async (t) => {
 	const resolver = resolverFor("127.0.0.1");
 	const gatekeeper = await startGatekeeper({
-		policy: () => ({ allow: ["mirror.example"], mode: "enforce", ports: [] }),
+		policy: () => ({
+			allow: ["mirror.example"],
+			mode: "enforce",
+			ports: [],
+			secrets: [],
+		}),
 		log: () => {},
 		resolve: resolver.resolve,
 	});
@@ -437,7 +460,7 @@ test("an allowed name is resolved as the allow entry spells it, whatever the req
 test("log mode still refuses this machine's loopback", async (t) => {
 	const localPort = await bannerServer(t);
 	const gatekeeper = await startGatekeeper({
-		policy: () => ({ allow: [], mode: "log", ports: [] }),
+		policy: () => ({ allow: [], mode: "log", ports: [], secrets: [] }),
 		log: () => {},
 	});
 	t.after(() => gatekeeper.close());
@@ -455,7 +478,7 @@ test("log mode still refuses this machine's loopback", async (t) => {
 test("a CONNECT to the probe name is refused with 403 and logged as a probe, not a deny", async (t) => {
 	const entries: Array<{ verdict: string; host: string }> = [];
 	const gatekeeper = await startGatekeeper({
-		policy: () => ({ allow: [], mode: "enforce", ports: [] }),
+		policy: () => ({ allow: [], mode: "enforce", ports: [], secrets: [] }),
 		log: (line) => entries.push(line),
 	});
 	t.after(() => gatekeeper.close());
