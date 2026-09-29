@@ -27,9 +27,8 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
   forgotten VM happened twice in the first half hour, so revisit.
 - Nothing collects old sandboxes, old bases, or history archives. A clone costs
   almost nothing, but every `image build --force` and every image change leaves
-  a ~2GB base behind. Unscheduled. Whatever does it cannot just delete:
-  `destroy` boots a stopped sandbox to archive its Claude history, so collecting
-  N sandboxes costs N boots unless they are archived on stop instead.
+  a ~2GB base behind. Unscheduled. Claude history is saved at every stop, so
+  deleting a stopped sandbox boots nothing.
 - Node 26 from nodejs.org and mise are both in the base, verified in a booted
   guest from wiped mise state: `npm test` runs natively (80 pass, nothing
   skipped, no compile-out); a project pinning `.node-version` installs and
@@ -121,10 +120,15 @@ yet vary per sandbox. They are global defaults today.
 - [x] `list` hides bases
 - [x] a stale sandbox offers a rebuild instead of only warning
 - [x] a sandbox on an older base than the newest is offered one too
-- [x] `~/.claude/projects` is archived on destroy and restored on create, so a
-      rebuild keeps transcripts and the memory directory; round-trip verified on
-      the host 2026-09-15. A restore that fails warns, keeps the archive and
-      prints the command to restore it by hand; it does not fail the start
+- [x] `~/.claude/projects` is saved to `history/<sandbox>.tar` at every stop
+      (the one before kept as `.prev.tar`) and restored at every start into a VM
+      that does not hold it yet, with `--keep-newer-files`; round-trip verified
+      on the host 2026-09-15. Which VM holds the copy is a marker in the Lima
+      instance's directory, so a reclone never inherits it. Only a VM that holds
+      the copy, or one with no copy on the host, may replace it: a failed
+      restore warns, is retried by the next start, and until then a stop saves
+      nothing. A stopped sandbox is deleted without booting it; one stopped
+      outside playpen loses what it wrote since its last `playpen stop`
 - [x] verified on the host: a fresh sandbox clones and boots in 10s, with no
       package installs and no image download
 
