@@ -6,7 +6,9 @@ import https from "node:https";
 import * as net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Duplex } from "node:stream";
 import { after, before, type TestContext, test } from "node:test";
+import { setTimeout } from "node:timers/promises";
 import tls from "node:tls";
 import { type Ca, ensureCa } from "./ca.ts";
 import type { HeldSecret } from "./fence.ts";
@@ -57,12 +59,15 @@ interface Received {
 	authorization: string | undefined;
 	rawHeaders: string[];
 	servername: string;
+	chunked: boolean;
+	body: Buffer;
 }
 
 /**
  * The real host, as far as these tests go: an HTTPS server with a certificate
  * from `publicCa`, which answers every request with a fixed body and a header
- * of its own, or as `answer` says.
+ * of its own, or as `answer` says, and echoes a WebSocket-style upgrade unless
+ * `upgrades` is false, when it answers an upgrade request as `answer` says.
  */
 async function upstreamHost(
 	t: TestContext,
@@ -70,26 +75,45 @@ async function upstreamHost(
 		res.setHeader("x-upstream", "yes");
 		res.end("hello from upstream");
 	},
+	{ upgrades = true }: { upgrades?: boolean } = {},
 ): Promise<{ port: number; received: Received[] }> {
 	const contextFor = leafMinter(publicCa);
 	const received: Received[] = [];
 	const server = https.createServer(
 		{ SNICallback: (name, done) => done(null, contextFor(name)) },
 		(req, res) => {
-			req.resume();
+			const chunks: Buffer[] = [];
+			req.on("data", (chunk: Buffer) => chunks.push(chunk));
 			req.on("end", () => {
 				received.push({
 					authorization: req.headers.authorization,
 					rawHeaders: req.rawHeaders,
 					servername: (req.socket as tls.TLSSocket).servername || "",
+					chunked: req.headers["transfer-encoding"] === "chunked",
+					body: Buffer.concat(chunks),
 				});
 				answer(res);
 			});
 		},
 	);
+	// With no listener, Node hands an upgrade request to the request handler.
+	const upgrade = (req: http.IncomingMessage, socket: Duplex) => {
+		received.push({
+			authorization: req.headers.authorization,
+			rawHeaders: req.rawHeaders,
+			servername: (req.socket as tls.TLSSocket).servername || "",
+			chunked: false,
+			body: Buffer.alloc(0),
+		});
+		socket.write(
+			"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: echo\r\n\r\n",
+		);
+		socket.on("data", (chunk) => socket.write(`echo:${chunk}`));
+	};
+	if (upgrades) server.on("upgrade", upgrade);
 	// Closed here rather than left to the client's cleanup, which runs after
 	// this; `closeAllConnections` misses a connection that never sent a
-	// request.
+	// request, or that was upgraded.
 	const open = new Set<tls.TLSSocket>();
 	server.on("secureConnection", (socket: tls.TLSSocket) => {
 		open.add(socket);
@@ -253,8 +277,8 @@ function clientThrough(
 }
 
 /**
- * One GET over `agent`. `headers` as a flat `[name, value, …]` list goes out
- * exactly as given, with no `Host` added, so a test can send two.
+ * One request over `agent`. `headers` as a flat `[name, value, …]` list goes
+ * out exactly as given, with no `Host` added, so a test can send two.
  */
 function send(
 	agent: https.Agent,
@@ -262,6 +286,7 @@ function send(
 		headers: Record<string, string> | string[];
 		method?: string;
 		path?: string;
+		body?: Buffer;
 	},
 ): Promise<{ status: number; headers: Record<string, unknown>; body: string }> {
 	return new Promise((resolve, reject) => {
@@ -286,6 +311,15 @@ function send(
 			},
 		);
 		req.on("error", reject);
+		if (opts.body === undefined) {
+			req.end();
+			return;
+		}
+		// In pieces and with no length, so it goes out chunked.
+		const piece = 64 * 1024;
+		for (let at = 0; at < opts.body.length; at += piece) {
+			req.write(opts.body.subarray(at, at + piece));
+		}
 		req.end();
 	});
 }
@@ -516,6 +550,28 @@ test("the guest is shown a certificate for the host from the playpen CA", async 
 	);
 });
 
+test("a 3 MB chunked upload arrives at the host byte for byte", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+	const upload = Buffer.alloc(3 * 1024 * 1024, "0123456789abcdef");
+	upload.write(PLACEHOLDER, 1000);
+
+	const answer = await send(clientThrough(t, port, "api.example:443"), {
+		method: "POST",
+		headers: { authorization: `token ${PLACEHOLDER}` },
+		body: upload,
+	});
+
+	assert.equal(answer.status, 200);
+	const received = upstream.received[0];
+	assert.equal(received?.chunked, true, "the upload did not arrive chunked");
+	assert.equal(received?.body.length, upload.length);
+	assert.ok(received?.body.equals(upload), "the body arrived changed");
+});
+
 test("two requests on one kept-alive connection are both sent on, through one tunnel", async (t) => {
 	const upstream = await upstreamHost(t);
 	const { port, log } = await gatekeeperWith(t, {
@@ -568,6 +624,186 @@ test("a TLS server name other than the approved host is refused, and the refusal
 	assert.match(denied?.reason ?? "", /other\.example is not api\.example/);
 	assert.deepEqual(upstream.received, []);
 });
+
+test("an upgrade request gets the real value too, and the upgraded connection carries data both ways", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+	const secure = await tlsOver(
+		t,
+		await tunnel(port, "api.example:443"),
+		"api.example",
+	);
+
+	secure.write(
+		`GET /socket HTTP/1.1\r\nHost: api.example\r\nConnection: Upgrade\r\nUpgrade: echo\r\nAuthorization: token ${PLACEHOLDER}\r\n\r\n`,
+	);
+	const switched = await readUntil(secure, "\r\n\r\n");
+	secure.write("ping");
+	const echoed = await readUntil(secure, "echo:ping");
+
+	assert.match(switched, /^HTTP\/1\.1 101 /);
+	assert.equal(echoed, "echo:ping");
+	assert.equal(upstream.received[0]?.authorization, "token ghp_real_value");
+});
+
+test("an upgrade request whose Host names another site is refused with a 421, and nothing is sent on", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port, log, dials } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+	const secure = await tlsOver(
+		t,
+		await tunnel(port, "api.example:443"),
+		"api.example",
+	);
+
+	secure.write(
+		`GET /socket HTTP/1.1\r\nHost: evil.example\r\nConnection: Upgrade\r\nUpgrade: echo\r\nAuthorization: token ${PLACEHOLDER}\r\n\r\n`,
+	);
+	const answer = await readUntil(secure, "\r\n\r\n");
+
+	assert.match(answer, /^HTTP\/1\.1 421 /);
+	assert.deepEqual(dials, [], "the host was dialed");
+	const denied = log.find((e) => e.verdict === "deny");
+	assert.match(
+		denied?.reason ?? "",
+		/Host header evil\.example is not api\.example/,
+	);
+});
+
+test("an upgrade request with the TRACE method is refused with a 405, and nothing is sent on", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port, log, dials } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+	const secure = await tlsOver(
+		t,
+		await tunnel(port, "api.example:443"),
+		"api.example",
+	);
+
+	secure.write(
+		`TRACE /socket HTTP/1.1\r\nHost: api.example\r\nConnection: Upgrade\r\nUpgrade: echo\r\nAuthorization: token ${PLACEHOLDER}\r\n\r\n`,
+	);
+	const answer = await readUntil(secure, "\r\n\r\n");
+
+	assert.match(answer, /^HTTP\/1\.1 405 /);
+	assert.deepEqual(dials, [], "the host was dialed");
+	const denied = log.find((e) => e.verdict === "deny");
+	assert.match(denied?.reason ?? "", /method TRACE echoes the request back/);
+});
+
+test("an upgrade request reaches the host with one Host, the approved one, and no routing headers", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+	const secure = await tlsOver(
+		t,
+		await tunnel(port, "api.example:443"),
+		"api.example",
+	);
+
+	secure.write(
+		[
+			"GET /socket HTTP/1.1",
+			"Host: api.example",
+			"Host: evil.example",
+			"X-Forwarded-Host: evil.example",
+			"Forwarded: host=evil.example",
+			"X-Original-URL: https://evil.example/",
+			"X-Host: evil.example",
+			"Connection: Upgrade",
+			"Upgrade: echo",
+			"",
+			"",
+		].join("\r\n"),
+	);
+	await readUntil(secure, "\r\n\r\n");
+
+	const received = upstream.received[0];
+	assert.ok(received, "the upgrade request never arrived");
+	assert.deepEqual(
+		{
+			host: headersNamed(received, "host"),
+			xForwardedHost: headersNamed(received, "x-forwarded-host"),
+			forwarded: headersNamed(received, "forwarded"),
+			xOriginalUrl: headersNamed(received, "x-original-url"),
+			xHost: headersNamed(received, "x-host"),
+		},
+		{
+			host: ["api.example"],
+			xForwardedHost: [],
+			forwarded: [],
+			xOriginalUrl: [],
+			xHost: [],
+		},
+	);
+});
+
+test("a host declining an upgrade has its answer passed back as a plain response, unchunked, and the tunnel closed after it", async (t) => {
+	const upstream = await upstreamHost(
+		t,
+		(res) => {
+			// No length, so the host sends it chunked.
+			res.write("no ");
+			res.end("upgrade");
+		},
+		{ upgrades: false },
+	);
+	const { port } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+	const secure = await tlsOver(
+		t,
+		await tunnel(port, "api.example:443"),
+		"api.example",
+	);
+
+	secure.write(
+		"GET /socket HTTP/1.1\r\nHost: api.example\r\nConnection: Upgrade\r\nUpgrade: echo\r\n\r\n",
+	);
+	const answer = await Promise.race([
+		readToClose(secure),
+		setTimeout(1000, "still open after a second", { ref: false }),
+	]);
+
+	assert.match(answer, /^HTTP\/1\.1 200 /);
+	assert.doesNotMatch(answer, /transfer-encoding/i);
+	assert.match(answer, /\r\n\r\nno upgrade$/);
+});
+
+/** Everything `socket` sends from now until it closes. */
+function readToClose(socket: tls.TLSSocket): Promise<string> {
+	return new Promise((resolve) => {
+		let seen = "";
+		socket.on("data", (chunk: Buffer) => {
+			seen += chunk.toString();
+		});
+		socket.on("close", () => resolve(seen));
+	});
+}
+
+/** What `socket` sends from now until `end` has arrived, `end` included. */
+function readUntil(socket: tls.TLSSocket, end: string): Promise<string> {
+	return new Promise((resolve) => {
+		let seen = "";
+		const onData = (chunk: Buffer) => {
+			seen += chunk.toString();
+			if (!seen.endsWith(end)) return;
+			socket.off("data", onData);
+			resolve(seen);
+		};
+		socket.on("data", onData);
+	});
+}
 
 test("a tunnel the interceptor declines is piped untouched: the guest sees the host's own certificate, and the host the placeholder", async (t) => {
 	const upstream = await upstreamHost(t);
