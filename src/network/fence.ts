@@ -174,11 +174,13 @@ export async function policyStamp(sandbox: string): Promise<string> {
 	}
 }
 
+const envName = z
+	.string({ error: "must be an environment variable name" })
+	.refine(isEnvName, { error: "must be an environment variable name" });
+
 const secretGrant = z.object(
 	{
-		env: z
-			.string({ error: "must be an environment variable name" })
-			.refine(isEnvName, { error: "must be an environment variable name" }),
+		env: envName,
 		hosts: z
 			.array(
 				z
@@ -192,6 +194,54 @@ const secretGrant = z.object(
 	},
 	{ error: "must be { env, hosts }" },
 );
+
+/**
+ * Names and values only. Where a value may be used comes from policy.json,
+ * which is re-read on reload.
+ */
+const heldSecret = z.object(
+	{
+		env: envName,
+		value: z
+			.string({ error: "must be a string" })
+			.min(1, { error: "must not be empty" }),
+	},
+	{ error: "must be { env, value }" },
+);
+
+/** A secret as the helper holds it: the only type here that carries a value. */
+export type HeldSecret = z.infer<typeof heldSecret>;
+
+const helperInput = z.object(
+	{
+		secrets: z.array(heldSecret, {
+			error: "must be an array of { env, value }",
+		}),
+	},
+	{ error: "must hold a JSON object" },
+);
+
+export function serializeHeldSecrets(secrets: readonly HeldSecret[]): string {
+	return JSON.stringify({ secrets });
+}
+
+/**
+ * Every message names a key and never quotes the input, and a JSON syntax
+ * error is replaced by a fixed sentence because Node's own quotes the text it
+ * choked on.
+ */
+export function parseHeldSecrets(text: string): HeldSecret[] {
+	const subject = "the helper's stdin";
+	let json: unknown;
+	try {
+		json = JSON.parse(text);
+	} catch {
+		throw new Error(`${subject} is not JSON`);
+	}
+	const result = helperInput.safeParse(json);
+	if (!result.success) throw new Error(describeIssue(result.error, subject));
+	return result.data.secrets;
+}
 
 const policyFile = z.object(
 	{

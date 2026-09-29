@@ -7,10 +7,13 @@ import { self } from "../session/proc.ts";
 import {
 	classifyFence,
 	fencePaths,
+	type HeldSecret,
 	liveHelper,
 	looksLikeQemu,
+	parseHeldSecrets,
 	policyStamp,
 	readPolicy,
+	serializeHeldSecrets,
 	writeHelper,
 	writePolicy,
 } from "./fence.ts";
@@ -378,4 +381,91 @@ test("a recycled pid now running an unrelated process is not mistaken for qemu",
 
 test("an empty cmdline, as a zombie or an unreadable process reads, is not qemu", () => {
 	assert.equal(looksLikeQemu(""), false);
+});
+
+const TOKEN = "ghp_correct-horse-battery-staple";
+
+const heldToken: HeldSecret = { env: "GH_TOKEN", value: TOKEN };
+const heldNpm: HeldSecret = { env: "NPM_TOKEN", value: "npm_abc" };
+
+test("the document written to the helper's stdin reads back as the same secrets", () => {
+	assert.deepEqual(
+		parseHeldSecrets(serializeHeldSecrets([heldToken, heldNpm])),
+		[heldToken, heldNpm],
+	);
+});
+
+/** A stdin document that is `heldToken` with one field replaced. */
+function documentWith(fields: Record<string, unknown>): string {
+	return JSON.stringify({ secrets: [{ ...heldToken, ...fields }] });
+}
+
+test("a secret with no value is refused, naming the key", () => {
+	assert.throws(
+		() => parseHeldSecrets(documentWith({ value: undefined })),
+		/`secrets\[0\]\.value` must be a string/,
+	);
+});
+
+test("a secret with an empty value is refused, naming the key", () => {
+	assert.throws(
+		() => parseHeldSecrets(documentWith({ value: "" })),
+		/`secrets\[0\]\.value` must not be empty/,
+	);
+});
+
+test("a secret whose name is not an environment variable name is refused, naming the key", () => {
+	assert.throws(
+		() => parseHeldSecrets(documentWith({ env: "gh token" })),
+		/`secrets\[0\]\.env` must be an environment variable name/,
+	);
+});
+
+test("a secret that is not an object is refused, naming the key", () => {
+	assert.throws(
+		() => parseHeldSecrets('{"secrets":[null]}'),
+		/`secrets\[0\]` must be \{ env, value \}/,
+	);
+});
+
+test("a document whose secrets are not an array is refused, naming the key", () => {
+	assert.throws(
+		() => parseHeldSecrets('{"secrets":"GH_TOKEN"}'),
+		/`secrets` must be an array of \{ env, value \}/,
+	);
+});
+
+test("a document with no secrets key is refused, naming the key", () => {
+	assert.throws(() => parseHeldSecrets("{}"), /`secrets` must be an array/);
+});
+
+test("a document that is not an object is refused", () => {
+	assert.throws(
+		() => parseHeldSecrets("[]"),
+		/the helper's stdin must hold a JSON object/,
+	);
+});
+
+test("stdin that is not JSON is refused without quoting what was on it", () => {
+	assert.throws(
+		() => parseHeldSecrets(`${TOKEN} {`),
+		(err: Error) => {
+			assert.equal(err.message, "the helper's stdin is not JSON");
+			return true;
+		},
+	);
+});
+
+test("an empty stdin is refused as not JSON", () => {
+	assert.throws(() => parseHeldSecrets(""), /the helper's stdin is not JSON/);
+});
+
+test("a value in a rejected document is not in the message either", () => {
+	assert.throws(
+		() => parseHeldSecrets(documentWith({ env: "gh token" })),
+		(err: Error) => {
+			assert.equal(err.message.includes(TOKEN), false, err.message);
+			return true;
+		},
+	);
 });
