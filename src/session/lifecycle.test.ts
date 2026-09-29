@@ -140,7 +140,7 @@ mock.module("../lima/client.ts", {
 					"utf8",
 				);
 				if (!yaml.includes('"mountPoint":"{{.Home}}/.claude/projects"'))
-					return { code: 1, stdout: "", stderr: "not mounted from the host" };
+					return { code: 3, stdout: "", stderr: "not mounted from the host" };
 				const steps = [
 					...(settleArgs[0] === "takeover"
 						? [`takeover\t${takeoverExit}`]
@@ -450,6 +450,21 @@ test("a sandbox whose mounts playpen did not write still starts, with a warning 
 		/`playpen remove --yes --discard-history` deletes it with the VM/,
 	);
 	assert.deepEqual(asked, [], "offered a rebuild with its history unmoved");
+	const { historyOnHost } = await import("./lifecycle.ts");
+	assert.equal(await historyOnHost(sb), false);
+});
+
+test("a sandbox that boots without its history mount no longer counts as having its history on the host", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await run();
+	await writeFile(
+		join(limaHome, sb.instance, "lima.yaml"),
+		'{"mounts": [{"location": "/somewhere/else"}]}\n',
+		"utf8",
+	);
+	status = "Stopped";
+	t.mock.method(console, "error", () => {});
+	await run();
 	const { historyOnHost } = await import("./lifecycle.ts");
 	assert.equal(await historyOnHost(sb), false);
 });

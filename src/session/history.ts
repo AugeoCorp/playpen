@@ -189,6 +189,12 @@ export const IMPORT_HISTORY = [
 ].join("\n");
 
 /**
+ * Claude Code in a guest without the mount writes history to the guest's own
+ * disk again, so the marker saying none is there has to go.
+ */
+const NOT_MOUNTED = 3;
+
+/**
  * Once per boot, on every start until the history is on the host, and on a
  * start that finds an archive left by the older archive-on-destroy scheme.
  *
@@ -205,7 +211,8 @@ export const IMPORT_HISTORY = [
  * Each step asked for prints its own result, `takeover<TAB>code` and
  * `import<TAB>code`, and the script goes on to the next: an old archive
  * written short must not keep the guest's own history from counting as moved.
- * The script's exit code is for what stops both.
+ * The script's exit code is for what stops both, and `NOT_MOUNTED` when the
+ * history mount is missing.
  */
 export const SETTLE = [
 	"set -euo pipefail",
@@ -214,7 +221,7 @@ export const SETTLE = [
 	'[ -O "$claude" ] || sudo chown "$(id -u):$(id -g)" "$claude"',
 	'if ! mountpoint -q "$claude/projects"; then',
 	'  echo "$claude/projects is not mounted from the host" >&2',
-	"  exit 1",
+	`  exit ${NOT_MOUNTED}`,
 	"fi",
 	MOVE_HISTORY,
 	IMPORT_HISTORY,
@@ -267,6 +274,8 @@ export async function settle(
 		return;
 	}
 	const why = result.stderr.trim() || `exit ${result.code}`;
+	if (result.code === NOT_MOUNTED)
+		await unlink(marker(instance)).catch(() => {});
 	if (result.code !== 0) {
 		warnUnsettled(sandbox, takeover, archive !== null, why);
 		return;

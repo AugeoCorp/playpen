@@ -403,6 +403,16 @@ test("a start's takeover moves what lies under the mount into it, and says so", 
 	assert.deepEqual(await tree(mount), await tree(join(under, "projects")));
 });
 
+test("a guest without the history mount says so with its own exit code, and moves nothing", async (t) => {
+	const s = await scratch(t);
+	const { mount, under } = await guest(s, false);
+	await guestHistory(join(under, "projects"));
+	const result = settle(s, ["takeover", ""]);
+	assert.equal(result.code, 3, result.stderr);
+	assert.match(result.stderr, /is not mounted from the host/);
+	assert.deepEqual(await readdir(mount), []);
+});
+
 test("an old archive written short fails only the import, and the takeover still counts", async (t) => {
 	const s = await scratch(t);
 	const archive = await oldArchive(s);
