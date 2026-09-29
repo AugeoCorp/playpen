@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
-import { missingMessage, readSecretValues } from "./secrets.ts";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { type TestContext, test } from "node:test";
+import {
+	missingMessage,
+	PROFILE_PATH,
+	profileCommand,
+	readSecretValues,
+} from "./secrets.ts";
 
 const gh = { env: "GH_TOKEN", hosts: ["api.github.com", "github.com"] };
 const npm = { env: "NPM_TOKEN", hosts: ["registry.example.com"] };
@@ -71,4 +80,42 @@ test("three missing names are listed with commas and 'and'", () => {
 		missingMessage(["GH_TOKEN", "NPM_TOKEN", "AWS_KEY"]),
 		"network.secrets needs GH_TOKEN, NPM_TOKEN and AWS_KEY set in your environment",
 	);
+});
+
+/** Runs `script` as the guest would, under a stricter umask than the script sets for itself. */
+function runProfileScript(t: TestContext, placeholder: string) {
+	const dir = mkdtempSync(join(tmpdir(), "profile-"));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
+	const path = join(dir, "playpen-secrets.sh");
+	const { script, input } = profileCommand(
+		[{ env: "EVIL", placeholder }],
+		path,
+	);
+	const wrote = spawnSync("bash", ["-c", `umask 077; ${script}`], {
+		input,
+		encoding: "utf8",
+	});
+	return { dir, path, wrote };
+}
+
+test("the profile a login shell sources gives back a hostile placeholder exactly", (t) => {
+	const hostile = "x'; touch pwned; ' $(touch pwned) `touch pwned` \\ \"";
+	const { dir, path, wrote } = runProfileScript(t, hostile);
+	assert.equal(wrote.status, 0, wrote.stderr);
+	const read = spawnSync("sh", ["-c", `. "$0"; printf %s "$EVIL"`, path], {
+		encoding: "utf8",
+		cwd: dir,
+	});
+	assert.equal(read.stdout, hostile);
+	assert.deepEqual(readdirSync(dir), ["playpen-secrets.sh"]);
+});
+
+test("the profile is readable by everyone whatever umask the shell had", (t) => {
+	const { path, wrote } = runProfileScript(t, "playpen-secret-evil");
+	assert.equal(wrote.status, 0, wrote.stderr);
+	assert.equal(statSync(path).mode & 0o777, 0o644);
+});
+
+test("with no secrets the profile is removed, so one dropped from the config leaves the guest", () => {
+	assert.deepEqual(profileCommand([]), { script: `rm -f ${PROFILE_PATH}` });
 });

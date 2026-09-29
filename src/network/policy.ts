@@ -189,6 +189,17 @@ export function isEnvName(name: string): boolean {
 	return /^[A-Z_][A-Z0-9_]*$/.test(name);
 }
 
+/**
+ * What the guest holds in place of a secret: fixed per variable name, with
+ * nothing random in it. A placeholder is not a secret, so it needs no rotation
+ * and no storage, and a fixed one keeps working when it outlives the helper
+ * that was started with it: a guest process already running, a token saved to
+ * `.npmrc`, a reattach after the helper died.
+ */
+export function placeholderFor(env: string): string {
+	return `playpen-secret-${env.toLowerCase().replaceAll("_", "-")}`;
+}
+
 function matchesHost(entry: Extract<Entry, { kind: "host" }>, host: string) {
 	return host === entry.host || host.endsWith(`.${entry.host}`);
 }

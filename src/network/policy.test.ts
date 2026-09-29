@@ -6,6 +6,7 @@ import {
 	HOST_ALIAS,
 	type Policy,
 	PROBE_HOST,
+	placeholderFor,
 } from "./policy.ts";
 
 function enforcing(allow: readonly string[]): Policy {
@@ -271,4 +272,9 @@ test("probe.playpen.internal stays a probe even when log mode would allow anythi
 
 test("probe.playpen.internal stays a probe even when the project allows it by name", () => {
 	assert.equal(decide(enforcing([PROBE_HOST]), PROBE_HOST, 443).kind, "probe");
+});
+
+test("a placeholder is the variable's name in lower case with dashes", () => {
+	assert.equal(placeholderFor("GH_TOKEN"), "playpen-secret-gh-token");
+	assert.equal(placeholderFor("_MY_2ND_KEY"), "playpen-secret--my-2nd-key");
 });

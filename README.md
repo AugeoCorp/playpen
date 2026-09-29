@@ -127,11 +127,12 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
   allow entry it implies covers subdomains, like any entry in `allow`. A mistake
   here stops the config loading rather than being skipped. The value is read
   from your environment by the `playpen start` that boots the sandbox, which
-  refuses to boot without it, and nothing is injected yet. A later `shell` or
-  `run` into a sandbox that is already running does not need the variable. Every
-  sandbox trusts a certificate authority made for this install, whose key stays
-  on the host (`docs/NETWORK.md`, "Secrets"); the first `start` after upgrading
-  rebakes the base and offers each sandbox a rebuild.
+  refuses to boot without it; the guest sees a placeholder in its place, and
+  nothing is injected yet. A later `shell` or `run` into a sandbox that is
+  already running does not need the variable. Every sandbox trusts a certificate
+  authority made for this install, whose key stays on the host
+  (`docs/NETWORK.md`, "Secrets"); the first `start` after upgrading rebakes the
+  base and offers each sandbox a rebuild.
 - `mode: "log"` records what the sandbox reaches and blocks nothing on the
   internet side; your own machine's localhost stays closed in every mode. Use it
   to find the hosts a project needs, then list them; the default is `enforce`.

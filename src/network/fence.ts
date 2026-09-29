@@ -207,7 +207,7 @@ const secretGrant = z.object(
 
 /**
  * Names and values only. Where a value may be used comes from policy.json,
- * which is re-read on reload.
+ * which is re-read on reload, and the placeholder is computed from the name.
  */
 const heldSecret = z.object(
 	{
