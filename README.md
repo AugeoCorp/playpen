@@ -2,7 +2,8 @@
 
 Per-project [Lima](https://lima-vm.io) VMs for running coding agents without
 handing them your host filesystem. The project directory is mounted read-write
-at the same path inside the guest; nothing else of yours is.
+at the same path inside the guest, and the sandbox's own Claude history
+directory at `~/.claude/projects`; nothing else of yours is.
 
 ```
 cd ~/projects/api

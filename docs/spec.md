@@ -234,9 +234,9 @@ first to leave used to take the other down with it.
 Fixed by leases, not by refcounting in memory: a session writes
 `<dataDir>/leases/<sandbox>/<pid>` before attaching and removes it after, and
 stops the VM only when no other lease is live. Under the data directory for the
-same reason as `trustDir` -- a guest mounts only the project, so nothing inside
-a sandbox can forge a lease to keep itself alive or delete one to cut off a
-sibling.
+same reason as `trustDir` -- a guest mounts only the project and its own
+`history/<sandbox>`, so nothing inside a sandbox can forge a lease to keep
+itself alive or delete one to cut off a sibling.
 
 A lease records `{pid, start, boot}`, not just a pid. The kernel recycles pids,
 and a recycled one would pin a VM alive or block a delete; the process start

@@ -230,7 +230,7 @@ export function historyOnHost(sb: Sandbox): Promise<boolean> {
  * replace it -- only the `mounts` the base left empty is rewritten.
  *
  * A sandbox made before the history mount existed has the project's mount
- * alone, which playpen wrote and so can match exactly. It gets the history
+ * alone, which playpen wrote and so can recognise. It gets the history
  * mount here too, in place, on its next boot: Lima reads lima.yaml on every
  * start. Its rendered template is left as it was, so `changedTemplate` does
  * not offer a rebuild for this -- a rebuild would delete the guest's own copy
@@ -260,7 +260,8 @@ async function giveInstanceItsMounts(sb: Sandbox): Promise<void> {
 
 /**
  * Not fatal: the sandbox still works, with Claude history kept in the guest as
- * before. Said, because that history is now lost when the sandbox is removed.
+ * before. Said, because until the history is on the host the sandbox cannot be
+ * rebuilt or removed without discarding it.
  */
 async function mountHistoryOnExisting(sb: Sandbox): Promise<void> {
 	try {

@@ -29,6 +29,10 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
   `remove` keeps on purpose. A clone costs almost nothing, but every
   `image build --force` and every image change leaves a ~2GB base behind.
   Unscheduled. `remove` boots nothing, so collecting sandboxes costs no boots.
+- The history directory is named after the sandbox, not the VM, so two
+  `$LIMA_HOME`s holding a sandbox for the same project mount one history
+  directory into two VMs, which both write it. The history-on-host marker is per
+  VM, so each still moves its own disk's history before it can be removed.
 - Node 26 from nodejs.org and mise are both in the base, verified in a booted
   guest from wiped mise state: `npm test` runs natively (80 pass, nothing
   skipped, no compile-out); a project pinning `.node-version` installs and
@@ -132,10 +136,16 @@ yet vary per sandbox. They are global defaults today.
       shows it with the host user's gid, since 9p passes host ids through; Lima
       gives the guest user the host's uid, so it owns it and can write it.
 - [x] a sandbox from before the mount gets it in its `lima.yaml` on its next
-      boot through playpen, which also moves the history on its disk into it and
-      imports a leftover `<sandbox>.tar` inside the guest. A rebuild is not
-      offered until that boot has happened. If moving it fails, the history
-      stays hidden under the mount and a later rebuild deletes it.
+      boot through playpen (compact or pretty-printed project-only mounts; any
+      other shape is left alone, with a warning). Every start then copies the
+      history on its disk into the mount through a cleared staging directory,
+      checks the copy against the source, and moves it into place without
+      replacing anything newer, until one succeeds; a leftover `<sandbox>.tar`
+      is imported the same way. The guest's own copy stays on its disk. Only a
+      successful move writes `playpen-history-on-host` in the instance
+      directory, and without it no rebuild is offered and `remove` refuses
+      unless given `--discard-history`. So an interrupted or failed move costs a
+      retry, never the history.
 - [x] verified on the host: a fresh sandbox clones and boots in 10s, with no
       package installs and no image download
 
