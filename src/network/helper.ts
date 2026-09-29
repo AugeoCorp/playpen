@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { unlink } from "node:fs/promises";
-import { exists, readAppended, sizeOf, writeAtomic } from "../fs.ts";
+import { exists, readAppended, sizeOrZero, writeAtomic } from "../fs.ts";
 import * as lima from "../lima/client.ts";
 import { self } from "../session/proc.ts";
 import { attach, capture } from "../sh.ts";
@@ -96,7 +96,7 @@ async function reloadPolicy(sandbox: string): Promise<Policy> {
 		say(
 			`policy.json is unreadable (${err}); denying everything until the next start`,
 		);
-		return { allow: [], mode: "enforce", ports: [] };
+		return { allow: [], mode: "enforce", ports: [], secrets: [] };
 	}
 }
 
@@ -180,7 +180,7 @@ export async function runHelper(
 	const reattach = state !== "stopped";
 	if (reattach) say(`${instance} is already fenced; reattaching`);
 
-	const logFrom = await sizeOf(paths.gatekeeperLog);
+	const logFrom = await sizeOrZero(paths.gatekeeperLog);
 	const gatekeeper = await startGatekeeper({
 		policy: () => policy,
 		log: jsonLineAppender(paths.gatekeeperLog),
