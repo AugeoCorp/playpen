@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { X509Certificate } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
-import http from "node:http";
+import http, { type ServerResponse } from "node:http";
 import https from "node:https";
 import * as net from "node:net";
 import { tmpdir } from "node:os";
@@ -62,10 +62,14 @@ interface Received {
 /**
  * The real host, as far as these tests go: an HTTPS server with a certificate
  * from `publicCa`, which answers every request with a fixed body and a header
- * of its own.
+ * of its own, or as `answer` says.
  */
 async function upstreamHost(
 	t: TestContext,
+	answer: (res: ServerResponse) => void = (res) => {
+		res.setHeader("x-upstream", "yes");
+		res.end("hello from upstream");
+	},
 ): Promise<{ port: number; received: Received[] }> {
 	const contextFor = leafMinter(publicCa);
 	const received: Received[] = [];
@@ -79,8 +83,7 @@ async function upstreamHost(
 					rawHeaders: req.rawHeaders,
 					servername: (req.socket as tls.TLSSocket).servername || "",
 				});
-				res.setHeader("x-upstream", "yes");
-				res.end("hello from upstream");
+				answer(res);
 			});
 		},
 	);
@@ -124,8 +127,12 @@ function toUpstream(
 		tls.connect({ ...options, host: "127.0.0.1", port, ca: ca.certPem });
 }
 
-/** The gatekeeper with the interceptor, holding GH_TOKEN, with every line it
- * logs collected. */
+/**
+ * The gatekeeper with the interceptor, holding GH_TOKEN, with every line it
+ * logs collected. With `upstreamPort`, `dials` gets the server name of each
+ * connection the interceptor opens to the host, so a test can tell a request
+ * that was never sent on from one that was cut off on its way.
+ */
 async function gatekeeperWith(
 	t: TestContext,
 	opts: {
@@ -136,9 +143,14 @@ async function gatekeeperWith(
 		upstreamCa?: Ca;
 		resolveTo?: string;
 	},
-): Promise<{ port: number; log: LogEntry[] }> {
+): Promise<{ port: number; log: LogEntry[]; dials: string[] }> {
 	const log: LogEntry[] = [];
 	const record = (line: LogEntry) => log.push(line);
+	const dials: string[] = [];
+	const toHost =
+		opts.upstreamPort === undefined
+			? undefined
+			: toUpstream(opts.upstreamPort, opts.upstreamCa ?? publicCa);
 	const gatekeeper = await startGatekeeper({
 		policy: opts.policy,
 		log: record,
@@ -149,15 +161,18 @@ async function gatekeeperWith(
 			held: [GH_TOKEN],
 			contextFor: leafMinter(playpenCa),
 			log: record,
-			...(opts.upstreamPort === undefined
+			...(toHost === undefined
 				? {}
 				: {
-						connect: toUpstream(opts.upstreamPort, opts.upstreamCa ?? publicCa),
+						connect: (options: tls.ConnectionOptions) => {
+							dials.push(options.servername ?? "");
+							return toHost(options);
+						},
 					}),
 		}),
 	});
 	t.after(() => gatekeeper.close());
-	return { port: gatekeeper.port, log };
+	return { port: gatekeeper.port, log, dials };
 }
 
 /**
@@ -245,6 +260,7 @@ function send(
 	agent: https.Agent,
 	opts: {
 		headers: Record<string, string> | string[];
+		method?: string;
 		path?: string;
 	},
 ): Promise<{ status: number; headers: Record<string, unknown>; body: string }> {
@@ -254,6 +270,7 @@ function send(
 				agent,
 				host: "api.example",
 				path: opts.path ?? "/user",
+				method: opts.method ?? "GET",
 				headers: opts.headers,
 			},
 			(res) => {
@@ -301,7 +318,7 @@ test("the host is dialed by the name the CONNECT approved", async (t) => {
 
 test("a request whose Host header names another site is refused, and nothing is sent on", async (t) => {
 	const upstream = await upstreamHost(t);
-	const { port, log } = await gatekeeperWith(t, {
+	const { port, log, dials } = await gatekeeperWith(t, {
 		policy: () => secretPolicy(),
 		upstreamPort: upstream.port,
 	});
@@ -314,7 +331,7 @@ test("a request whose Host header names another site is refused, and nothing is 
 	});
 
 	assert.equal(answer.status, 421);
-	assert.deepEqual(upstream.received, []);
+	assert.deepEqual(dials, [], "the host was dialed");
 	const denied = log.find((e) => e.verdict === "deny");
 	assert.match(
 		denied?.reason ?? "",
@@ -324,7 +341,7 @@ test("a request whose Host header names another site is refused, and nothing is 
 
 test("a request line naming another site in full is refused, and nothing is sent on", async (t) => {
 	const upstream = await upstreamHost(t);
-	const { port, log } = await gatekeeperWith(t, {
+	const { port, log, dials } = await gatekeeperWith(t, {
 		policy: () => secretPolicy(),
 		upstreamPort: upstream.port,
 	});
@@ -335,12 +352,71 @@ test("a request line naming another site in full is refused, and nothing is sent
 	});
 
 	assert.equal(answer.status, 421);
-	assert.deepEqual(upstream.received, []);
+	assert.deepEqual(dials, [], "the host was dialed");
 	const denied = log.find((e) => e.verdict === "deny");
 	assert.match(
 		denied?.reason ?? "",
 		/request target https:\/\/evil\.example\/steal is not a path on api\.example/,
 	);
+});
+
+test("a request target starting with // is refused, since a URL parser reads it as naming another host", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port, log, dials } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+
+	const answer = await send(clientThrough(t, port, "api.example:443"), {
+		path: "//evil.example/steal",
+		headers: { authorization: `token ${PLACEHOLDER}` },
+	});
+
+	assert.equal(answer.status, 421);
+	assert.deepEqual(dials, [], "the host was dialed");
+	const denied = log.find((e) => e.verdict === "deny");
+	assert.match(
+		denied?.reason ?? "",
+		/request target \/\/evil\.example\/steal starts with \/\//,
+	);
+});
+
+test("a request target of * is refused for any method but OPTIONS", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port, dials } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+
+	const answer = await send(clientThrough(t, port, "api.example:443"), {
+		method: "GET",
+		path: "*",
+		headers: { authorization: `token ${PLACEHOLDER}` },
+	});
+
+	assert.equal(answer.status, 421);
+	assert.deepEqual(dials, [], "the host was dialed");
+});
+
+test("a TRACE request is refused with a 405 before the host is dialed, since the host would echo the value back", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port, log, dials } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+
+	const answer = await send(clientThrough(t, port, "api.example:443"), {
+		method: "TRACE",
+		headers: { authorization: `token ${PLACEHOLDER}` },
+	});
+
+	assert.deepEqual(
+		{ status: answer.status, connection: answer.headers.connection },
+		{ status: 405, connection: "close" },
+	);
+	assert.deepEqual(dials, [], "the host was dialed");
+	const denied = log.find((e) => e.verdict === "deny");
+	assert.match(denied?.reason ?? "", /method TRACE echoes the request back/);
 });
 
 test("the host sees exactly one Host header, the approved host, when the guest sends two", async (t) => {
@@ -376,6 +452,10 @@ test("headers a front end could route by instead of Host never reach the host", 
 			"x-forwarded-host": "evil.example",
 			forwarded: "host=evil.example",
 			"x-original-url": "https://evil.example/",
+			"x-rewrite-url": "https://evil.example/",
+			"x-host": "evil.example",
+			"x-http-host-override": "evil.example",
+			"x-forwarded-server": "evil.example",
 		},
 	});
 
@@ -386,8 +466,20 @@ test("headers a front end could route by instead of Host never reach the host", 
 			xForwardedHost: headersNamed(received, "x-forwarded-host"),
 			forwarded: headersNamed(received, "forwarded"),
 			xOriginalUrl: headersNamed(received, "x-original-url"),
+			xRewriteUrl: headersNamed(received, "x-rewrite-url"),
+			xHost: headersNamed(received, "x-host"),
+			xHttpHostOverride: headersNamed(received, "x-http-host-override"),
+			xForwardedServer: headersNamed(received, "x-forwarded-server"),
 		},
-		{ xForwardedHost: [], forwarded: [], xOriginalUrl: [] },
+		{
+			xForwardedHost: [],
+			forwarded: [],
+			xOriginalUrl: [],
+			xRewriteUrl: [],
+			xHost: [],
+			xHttpHostOverride: [],
+			xForwardedServer: [],
+		},
 	);
 });
 
@@ -592,6 +684,24 @@ test("the guest's hop-by-hop headers do not reach the host", async (t) => {
 			proxyConnection: [],
 		},
 	);
+});
+
+test("the host's hop-by-hop headers do not reach the guest", async (t) => {
+	const upstream = await upstreamHost(t, (res) => {
+		res.setHeader("keep-alive", "timeout=1");
+		res.end("hello from upstream");
+	});
+	const { port } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+
+	const answer = await send(clientThrough(t, port, "api.example:443"), {
+		headers: {},
+	});
+
+	// The interceptor's own keep-alive to the guest is Node's default, 5 s.
+	assert.equal(answer.headers["keep-alive"], "timeout=5");
 });
 
 test("the host is dialed only at an address the gatekeeper's own rules allow", async (t) => {
