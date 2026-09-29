@@ -29,11 +29,12 @@ function loopBody(script: string): string[] {
 	return lines.slice(from + 1, lines.indexOf("done"));
 }
 
-test("a directory mask is a directory on the VM disk bound over the target, as it always was", () => {
+test("a directory mask is a directory on the VM disk bound over the target", () => {
 	const body = loopBody(maskScript(MOUNT, ["node_modules"])).join("\n");
 	assert.ok(
 		body.includes(
 			[
+				'  store="/var/lib/playpen/masks/$rel"',
 				'  mkdir -p "$store"',
 				'  chown "$owner" "$store"',
 				'  mkdir -p "$target"',
@@ -46,25 +47,24 @@ test("a directory mask is a directory on the VM disk bound over the target, as i
 	);
 });
 
-test("a mask whose target is a file gets a file on the VM disk bound over it", () => {
+test("a mask whose target is a file gets a file on the VM disk, in its own store, bound over it, and nothing else", () => {
 	const body = loopBody(maskScript(MOUNT, [".env"])).join("\n");
-	assert.match(
-		body,
-		/^ {2}if \[ -f "\$target" \] && \[ ! -L "\$target" \]; then$/m,
+	assert.ok(
+		body.startsWith(
+			[
+				'  target="$MOUNT/$rel"',
+				'  if [ -f "$target" ] && [ ! -L "$target" ]; then',
+				'    store="/var/lib/playpen/mask-files/$rel"',
+				'    mkdir -p "$(dirname "$store")"',
+				'    touch "$store"',
+				'    chown "$owner" "$store"',
+				'    mountpoint -q "$target" || mount --bind "$store" "$target"',
+				"    continue",
+				"  fi",
+			].join("\n"),
+		),
+		`the file branch changed:\n${body}`,
 	);
-	assert.match(body, /^ {4}touch "\$store"$/m);
-	assert.match(
-		body,
-		/^ {4}mountpoint -q "\$target" \|\| mount --bind "\$store" "\$target"$/m,
-	);
-});
-
-test("the file branch is decided before anything is created on the share, and ends its entry", () => {
-	const body = loopBody(maskScript(MOUNT, [".env"]));
-	const file = body.findIndex((l) => l.includes('[ -f "$target" ]'));
-	const created = body.indexOf('  mkdir -p "$target"');
-	assert.ok(file >= 0 && file < created);
-	assert.ok(body.indexOf("    continue") < created);
 });
 
 test("every entry is quoted into the loop", () => {
