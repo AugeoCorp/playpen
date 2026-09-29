@@ -46,7 +46,12 @@ function collect(
 		});
 
 		if (input !== undefined && child.stdin) {
-			child.stdin.on("error", reject);
+			// A command that exits without reading all of its input, like a
+			// `limactl shell` into a stopped instance, closes the pipe under the
+			// write. Its exit code and stderr say why, so `close` is the answer.
+			child.stdin.on("error", (err: NodeJS.ErrnoException) => {
+				if (err.code !== "EPIPE") reject(err);
+			});
 			child.stdin.end(input);
 		}
 	});
