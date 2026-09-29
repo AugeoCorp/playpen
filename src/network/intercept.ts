@@ -6,14 +6,17 @@ import type { Duplex } from "node:stream";
 import type tls from "node:tls";
 import type { HeldSecret } from "./fence.ts";
 import type { LogEntry } from "./gatekeeper.ts";
+import { rewriteHeaders } from "./inject.ts";
 import type { ContextFor } from "./leaf.ts";
 import { type Policy, parseSecretHost } from "./policy.ts";
 
 /**
- * How a held secret's host is reached: for a `CONNECT` to a host the secret
- * names, TLS is terminated here with a certificate from the install's CA, and
- * each request goes on over a fresh TLS connection to that same host. Bodies
- * are streamed through unread. Everything else the gatekeeper pipes untouched.
+ * Where a held secret's value goes into requests: for a `CONNECT` to a host
+ * the secret names, TLS is terminated here with a certificate from the
+ * install's CA, each request's headers get the real value in place of the
+ * placeholder, and the request goes on over a fresh TLS connection to that
+ * same host. Bodies are streamed through unread. Everything else the
+ * gatekeeper pipes untouched.
  */
 
 export interface Target {
@@ -64,8 +67,9 @@ export function interceptor(opts: InterceptorOptions): Interceptor {
 	return (policy, target, lookup) => {
 		if (target.port !== TLS_PORT) return null;
 		const granted = grantedTo(policy, target.host);
-		if (!opts.held.some((secret) => granted.has(secret.env))) return null;
-		return tunnelServer(opts, target, lookup);
+		const secrets = opts.held.filter((secret) => granted.has(secret.env));
+		if (secrets.length === 0) return null;
+		return tunnelServer(opts, target, secrets, lookup);
 	};
 }
 
@@ -78,6 +82,7 @@ export function interceptor(opts: InterceptorOptions): Interceptor {
 function tunnelServer(
 	opts: InterceptorOptions,
 	{ host, port }: Target,
+	secrets: readonly HeldSecret[],
 	lookup: LookupFunction,
 ): Server {
 	const { contextFor, log } = opts;
@@ -94,8 +99,20 @@ function tunnelServer(
 	if (connect !== undefined)
 		agent.createConnection = (o) => connect(o as tls.ConnectionOptions);
 
-	const upstream = (req: IncomingMessage) =>
-		https.request({
+	const upstream = (req: IncomingMessage) => {
+		const { headers, injected } = rewriteHeaders(req.rawHeaders, secrets);
+		const logInjected = () => {
+			for (const { header, env } of injected) {
+				log({
+					...at(),
+					verdict: "inject",
+					header,
+					env,
+					reason: `${env} in ${header}`,
+				});
+			}
+		};
+		const request = https.request({
 			host,
 			port,
 			servername: host,
@@ -103,8 +120,17 @@ function tunnelServer(
 			agent,
 			method: req.method,
 			path: req.url,
-			headers: req.rawHeaders,
+			headers,
 		});
+		// Logged once the connection to the host is up, which is when the value
+		// leaves: a dial the address rules refuse, or a certificate that fails,
+		// sends nothing. A kept-alive connection is up already.
+		request.once("socket", (socket) => {
+			if (socket.connecting) socket.once("secureConnect", logInjected);
+			else logInjected();
+		});
+		return request;
+	};
 
 	let refusedName = false;
 	const server = https.createServer({
