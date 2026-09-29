@@ -1,5 +1,6 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { z } from "zod";
 import { trustDir } from "../config.ts";
 import { confirm } from "../prompt.ts";
 import { type ConfigGraph, readConfigGraph } from "./configgraph.ts";
@@ -31,15 +32,17 @@ export function decideTrust(
 	return pinned === current ? "trusted" : "changed";
 }
 
-interface TrustRecord {
+const trustRecord = z.object({
 	/** Hash of the whole approved graph. */
-	hash: string;
+	hash: z.string(),
 	/** Which of CONFIG_FILES was approved, so a rename is not silently inherited. */
-	file: string;
+	file: z.string(),
 	/** Per-file hashes, so a re-prompt can say which files moved. */
-	files: Record<string, string>;
-	approved: string;
-}
+	files: z.record(z.string(), z.string()),
+	approved: z.string(),
+});
+
+type TrustRecord = z.infer<typeof trustRecord>;
 
 function recordPath(sandbox: string): string {
 	assertSandboxName(sandbox);
@@ -53,9 +56,9 @@ function snapshotDir(sandbox: string): string {
 
 async function readRecord(sandbox: string): Promise<TrustRecord | null> {
 	try {
-		return JSON.parse(
-			await readFile(recordPath(sandbox), "utf8"),
-		) as TrustRecord;
+		return trustRecord.parse(
+			JSON.parse(await readFile(recordPath(sandbox), "utf8")),
+		);
 	} catch {
 		return null;
 	}
@@ -167,8 +170,7 @@ export async function loadTrustedConfig(
 	}
 
 	const record = await readRecord(sandbox);
-	const pinned =
-		record && record.file === name && record.files ? record.hash : null;
+	const pinned = record?.file === name ? record.hash : null;
 	const state = decideTrust(pinned, graph.hash);
 
 	if (state !== "trusted") {

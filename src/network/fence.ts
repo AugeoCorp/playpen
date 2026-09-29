@@ -10,14 +10,17 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { z } from "zod";
 import { dataDir, limaHome } from "../config.ts";
 import { readAppended, sizeOf, writeAtomic } from "../fs.ts";
+import { describeIssue } from "../issue.ts";
 import { assertSandboxName } from "../session/identity.ts";
-import { isLive, type Owner } from "../session/proc.ts";
+import { isLive, ownerSchema } from "../session/proc.ts";
+import { networkMode } from "../session/projectconfig.ts";
 import { capture } from "../sh.ts";
 import { sleep } from "../time.ts";
 import { isPort } from "./names.ts";
-import type { Policy, PortForward } from "./policy.ts";
+import type { Policy } from "./policy.ts";
 
 /**
  * The fence: a network namespace with no route out, holding one sandbox VM.
@@ -80,29 +83,42 @@ async function ensureFenceDir(sandbox: string): Promise<void> {
 	await chmod(dir, 0o700);
 }
 
-export interface HelperRecord extends Owner {
-	gatekeeperPort: number;
+const PORT_RANGE = "must be a port from 1 to 65535";
+
+const port = z
+	.number({ error: PORT_RANGE })
+	.refine(isPort, { error: PORT_RANGE });
+
+const portForward = z.object(
+	{ host: port, guest: port },
+	{ error: "must be { host, guest }" },
+);
+
+const helperRecord = ownerSchema.extend({
+	gatekeeperPort: z.number(),
 	/** False between the helper starting and the guest first answering. */
-	ready: boolean;
+	ready: z.boolean(),
 	/**
 	 * Whether the guest's own request for `PROBE_HOST` reached the gatekeeper.
 	 * The fence being up says nothing about this: the guest's tun2proxy can be
 	 * dead and everything out here still look healthy.
 	 */
-	egress: boolean;
+	egress: z.boolean(),
 	/**
 	 * `policyStamp` of the policy.json the gatekeeper is deciding with, so
 	 * `bringUp` can tell a rewritten policy has been applied rather than
 	 * assume it. Empty until the first policy is loaded.
 	 */
-	policy: string;
+	policy: z.string().default(""),
 	/**
 	 * Entries of the policy's `ports` with nothing listening at the guest's end,
 	 * so `playpen start` can name them. Absent from a helper older than
 	 * `ports`, and until the guest has first been asked.
 	 */
-	unboundPorts?: PortForward[];
-}
+	unboundPorts: z.array(portForward).optional(),
+});
+
+export type HelperRecord = z.infer<typeof helperRecord>;
 
 export async function writeHelper(
 	sandbox: string,
@@ -114,7 +130,7 @@ export async function writeHelper(
 async function readHelper(sandbox: string): Promise<HelperRecord | null> {
 	try {
 		const raw = await readFile(fencePaths(sandbox).helper, "utf8");
-		return JSON.parse(raw) as HelperRecord;
+		return helperRecord.parse(JSON.parse(raw));
 	} catch {
 		return null;
 	}
@@ -158,31 +174,32 @@ export async function policyStamp(sandbox: string): Promise<string> {
 	}
 }
 
+const policyFile = z.object(
+	{
+		allow: z.array(z.string({ error: "must be a string" }), {
+			error: "must be an array of strings",
+		}),
+		mode: networkMode,
+		/**
+		 * Both numbers are printed into a root script in the guest, so a
+		 * hand-edited policy.json must not get anything else in.
+		 */
+		ports: z.array(portForward, {
+			error: "must be an array of { host, guest }",
+		}),
+	},
+	{ error: "must hold a JSON object" },
+);
+
 /**
  * Throws rather than falling back to a default: an unreadable policy must stop
  * the sandbox coming up, never open it.
  */
 export async function readPolicy(sandbox: string): Promise<Policy> {
 	const path = fencePaths(sandbox).policy;
-	const parsed = JSON.parse(await readFile(path, "utf8")) as Partial<Policy>;
-	const { allow, mode, ports } = parsed;
-	if (!Array.isArray(allow) || allow.some((e) => typeof e !== "string")) {
-		throw new Error(`${path}: \`allow\` must be an array of strings`);
-	}
-	if (mode !== "enforce" && mode !== "log") {
-		throw new Error(`${path}: \`mode\` must be "enforce" or "log"`);
-	}
-	// The guest numbers are printed into a root script in the guest, so a
-	// hand-edited file must not get anything else in.
-	const port = (p: Partial<PortForward> | null) =>
-		typeof p === "object" &&
-		p !== null &&
-		isPort(p.host ?? 0) &&
-		isPort(p.guest ?? 0);
-	if (!Array.isArray(ports) || !ports.every(port)) {
-		throw new Error(`${path}: \`ports\` must be an array of { host, guest }`);
-	}
-	return { allow, mode, ports };
+	const result = policyFile.safeParse(JSON.parse(await readFile(path, "utf8")));
+	if (!result.success) throw new Error(describeIssue(result.error, path));
+	return result.data;
 }
 
 export type FenceState =

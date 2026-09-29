@@ -3,12 +3,15 @@ import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
+import { self } from "../session/proc.ts";
 import {
 	classifyFence,
 	fencePaths,
+	liveHelper,
 	looksLikeQemu,
 	policyStamp,
 	readPolicy,
+	writeHelper,
 	writePolicy,
 } from "./fence.ts";
 
@@ -167,17 +170,80 @@ async function policyWithPorts(ports: unknown): Promise<void> {
 test("a policy.json whose ports are not all port numbers is refused, since the guest runs them as root", async (t) => {
 	await dataDir(t);
 	await policyWithPorts([{ host: 5000, guest: "4321; reboot" }]);
-	await assert.rejects(readPolicy("api-abc123"), /`ports` must be/);
+	await assert.rejects(
+		readPolicy("api-abc123"),
+		/`ports\[0\]\.guest` must be a port from 1 to 65535/,
+	);
 	await policyWithPorts([{ host: 5000 }]);
-	await assert.rejects(readPolicy("api-abc123"), /`ports` must be/);
+	await assert.rejects(
+		readPolicy("api-abc123"),
+		/`ports\[0\]\.guest` must be a port from 1 to 65535/,
+	);
+	await policyWithPorts([{ host: 0, guest: 4321 }]);
+	await assert.rejects(
+		readPolicy("api-abc123"),
+		/`ports\[0\]\.host` must be a port from 1 to 65535/,
+	);
 	await policyWithPorts("5000");
-	await assert.rejects(readPolicy("api-abc123"), /`ports` must be/);
+	await assert.rejects(
+		readPolicy("api-abc123"),
+		/`ports` must be an array of \{ host, guest \}/,
+	);
+});
+
+test("a port in policy.json reaches the helper as its host and guest numbers alone, whatever else the entry holds", async (t) => {
+	await dataDir(t);
+	await policyWithPorts([{ host: 5000, guest: 4321, command: "; reboot" }]);
+	const { ports } = await readPolicy("api-abc123");
+	assert.deepEqual(ports, [{ host: 5000, guest: 4321 }]);
+});
+
+test("a policy.json port that is not an object is refused by its position", async (t) => {
+	await dataDir(t);
+	const path = fencePaths("api-abc123").policy;
+	await policyWithPorts([null]);
+	await assert.rejects(readPolicy("api-abc123"), {
+		message: `${path}: \`ports[0]\` must be { host, guest }`,
+	});
+	await policyWithPorts([{ host: 5000, guest: 4321 }, 22]);
+	await assert.rejects(readPolicy("api-abc123"), {
+		message: `${path}: \`ports[1]\` must be { host, guest }`,
+	});
 });
 
 test("a policy.json with no ports at all is refused rather than read as forwarding nothing", async (t) => {
 	await dataDir(t);
 	await policyWithPorts(undefined);
-	await assert.rejects(readPolicy("api-abc123"), /`ports` must be/);
+	await assert.rejects(
+		readPolicy("api-abc123"),
+		/`ports` must be an array of \{ host, guest \}/,
+	);
+});
+
+test("a running helper is found by the record it wrote", async (t) => {
+	await dataDir(t);
+	await mkdir(fencePaths("api-abc123").dir, { recursive: true });
+	const record = { ...helper, ...(await self()) };
+	await writeHelper("api-abc123", record);
+	assert.deepEqual(await liveHelper("api-abc123"), record);
+});
+
+test("a helper that wrote its record before the policy field existed is still found, with no policy applied yet", async (t) => {
+	await dataDir(t);
+	await mkdir(fencePaths("api-abc123").dir, { recursive: true });
+	const { policy: _, ...older } = { ...helper, ...(await self()) };
+	await writeFile(fencePaths("api-abc123").helper, JSON.stringify(older));
+	assert.deepEqual(await liveHelper("api-abc123"), { ...older, policy: "" });
+});
+
+test("a helper.json that is not a helper record reads as no helper", async (t) => {
+	await dataDir(t);
+	await mkdir(fencePaths("api-abc123").dir, { recursive: true });
+	await writeFile(
+		fencePaths("api-abc123").helper,
+		JSON.stringify({ ...helper, ...(await self()), ready: "yes" }),
+	);
+	assert.equal(await liveHelper("api-abc123"), null);
 });
 
 async function dirMode(path: string): Promise<number> {

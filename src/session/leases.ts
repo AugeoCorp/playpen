@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { dataDir } from "../config.ts";
 import { writeAtomic } from "../fs.ts";
 import { assertSandboxName } from "./identity.ts";
-import { isLive, type Owner, self } from "./proc.ts";
+import { isLive, type Owner, ownerSchema, self } from "./proc.ts";
 
 export type { Owner };
 
@@ -55,7 +55,7 @@ export async function live(sandbox: string): Promise<Owner[]> {
 		const path = join(dir, name);
 		let owner: Owner;
 		try {
-			owner = JSON.parse(await readFile(path, "utf8")) as Owner;
+			owner = ownerSchema.parse(JSON.parse(await readFile(path, "utf8")));
 		} catch {
 			// Written atomically, so this is corrupt rather than half-written.
 			await unlink(path).catch(() => {});

@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { dataDir } from "../config.ts";
 import { sleep } from "../time.ts";
 import { assertSandboxName } from "./identity.ts";
-import { isLive, type Owner, self } from "./proc.ts";
+import { isLive, type Owner, ownerSchema, self } from "./proc.ts";
 
 /**
  * Serialises deciding to stop a sandbox against attaching to one.
@@ -28,7 +28,7 @@ function lockPath(name: string): string {
 /** Who the lock file says holds it, or null if there is no readable lock. */
 async function heldBy(path: string): Promise<Owner | null> {
 	try {
-		return JSON.parse(await readFile(path, "utf8")) as Owner;
+		return ownerSchema.parse(JSON.parse(await readFile(path, "utf8")));
 	} catch {
 		return null;
 	}

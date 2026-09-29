@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
+import { trustDir } from "../config.ts";
 import { readConfigGraph } from "./configgraph.ts";
 import { decideTrust, loadTrustedConfig, pinConfig } from "./trust.ts";
 
@@ -151,6 +152,18 @@ test("approving one filename does not bless another", async (t) => {
 	await writeFile(join(dir, "playpen.config.js"), CONFIG, "utf8");
 
 	// Same bytes are approved under the .js name, but .ts is what will be loaded.
+	const r = await loadTrustedConfig(dir, sandbox);
+	assert.equal(r.state, "unpinned");
+	assert.equal(r.loaded, false);
+});
+
+test("an approval recorded without the date it was approved is asked for again, even though its hash matches", async (t) => {
+	const { dir, sandbox } = await scenario(t, { "playpen.config.js": CONFIG });
+	await approve(dir, sandbox);
+	const record = join(trustDir(), `${sandbox}.json`);
+	const { hash, file, files } = JSON.parse(await readFile(record, "utf8"));
+	await writeFile(record, JSON.stringify({ hash, file, files }), "utf8");
+
 	const r = await loadTrustedConfig(dir, sandbox);
 	assert.equal(r.state, "unpinned");
 	assert.equal(r.loaded, false);
