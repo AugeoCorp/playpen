@@ -144,21 +144,23 @@ process the guest runs, not a port, so nothing here applies to it.
 
 **Secrets.** A `network.secrets` entry names a variable in the environment of
 the `playpen start` that boots the sandbox, and the hosts it may be used on. The
-value goes one way only: into the helper, which puts it into requests to those
-hosts (see "Secrets" below) and nowhere else. `playpen start` reads it and
-refuses to boot if any named variable is unset or empty (listing every one,
-before the VM is touched). It spawns the helper with a stdin pipe and writes one
-JSON document to it, `{ "secrets": [{ "env", "value" }] }`, followed by
-end-of-stream; a project with no secrets sends `{ "secrets": [] }`, so the
-helper never waits on a stdin that is not coming. A name that two entries share
-is sent once. The helper reads the document to the end before it serves anything
-and keeps the result in memory. It logs a count and names
-(`holding 2 secrets: GH_TOKEN, NPM_TOKEN`) and never a value. The value is not
-in argv, not in a file, and not in the helper's environment, which is the
-parent's with the granted variables removed. The hosts are not in the document:
-policy.json carries `env` and `hosts` and is the one place they are kept, and it
-is re-read on reload. helper.json carries the names the helper holds, so a later
-`start` can see what the running helper lacks.
+value goes one way only: into the helper, which puts it into the `Authorization`
+header of requests to those hosts (see "Secrets" below) and nowhere else. A host
+that echoes `Authorization` back in its answer would return the value to the
+guest, so grant a secret only to hosts you would send it to anyway.
+`playpen start` reads it and refuses to boot if any named variable is unset or
+empty (listing every one, before the VM is touched). It spawns the helper with a
+stdin pipe and writes one JSON document to it,
+`{ "secrets": [{ "env", "value" }] }`, followed by end-of-stream; a project with
+no secrets sends `{ "secrets": [] }`, so the helper never waits on a stdin that
+is not coming. A name that two entries share is sent once. The helper reads the
+document to the end before it serves anything and keeps the result in memory. It
+logs a count and names (`holding 2 secrets: GH_TOKEN, NPM_TOKEN`) and never a
+value. The value is not in argv, not in a file, and not in the helper's
+environment, which is the parent's with the granted variables removed. The hosts
+are not in the document: policy.json carries `env` and `hosts` and is the one
+place they are kept, and it is re-read on reload. helper.json carries the names
+the helper holds, so a later `start` can see what the running helper lacks.
 
 What the guest sees is a placeholder: `playpen-secret-` and the variable name in
 lower case with dashes, so `GH_TOKEN` is `playpen-secret-gh-token`. It is fixed
@@ -389,11 +391,17 @@ the same way. Bodies, both ways, are streamed through unread. One tunnel carries
 as many kept-alive requests as the client sends on it, and a WebSocket upgrade
 gets the same header rewrite before the two connections are joined.
 
-**Where the placeholder is replaced.** In request header values and nowhere
-else: wherever it appears verbatim (`token X`, `Bearer X`, a header of the
-client's own), and inside `Basic` credentials, which are decoded, swapped and
-encoded again, since that is how git sends a token. Only the secrets whose entry
-names this host are swapped; a placeholder for any other goes out as it is.
+**Where the placeholder is replaced.** In the `Authorization` request header and
+nowhere else: wherever it appears verbatim (`token X`, `Bearer X`), and inside
+`Basic` credentials, which are decoded, swapped and encoded again, since that is
+how git sends a token. gh, git, curl `-u` and npm all send a token there. Any
+other header goes out as the guest sent it, placeholder included: a host that
+echoes a request header back (api.github.com quotes `X-GitHub-Api-Version` in an
+error) would otherwise hand the value to the guest. The same holds for
+`Authorization` itself, which this cannot close: a host that echoes it returns
+the value to the guest, so grant a secret only to hosts you would send it to
+anyway. Only the secrets whose entry names this host are swapped; a placeholder
+for any other goes out as it is.
 
 **The certificates.** A helper holding at least one secret reads the CA once at
 start (`ensureCa()`, which only reads a CA that exists). It makes one RSA key
@@ -456,7 +464,8 @@ and change over time, while the CA is one per install.
   host.** The gatekeeper decides on the `CONNECT` target and then pipes the
   connection through untouched; it never terminates TLS for any other host, so
   it cannot see or alter what travels inside those connections. For a secret's
-  host it reads request headers, and nothing else (see "Secrets").
+  host it reads request headers and rewrites `Authorization`, and nothing else
+  (see "Secrets").
 - **An allowed name can front for a different one.** Many names sit behind the
   same shared CDN, so a client can open a tunnel to a name the policy allows and
   then, inside it, ask for a different site -- in the TLS handshake's SNI or the
@@ -518,12 +527,13 @@ certificate into the guest, and checks that `openssl s_client` in the guest sees
 the playpen CA as the issuer for the secret's host and a different one for
 `registry.npmjs.org`. With the echo host set, a login shell's `curl` sends
 `Authorization: token $PLAYPEN_E2E_TOKEN` there, and the step passes only if the
-host echoes the value back, the guest's environment holds only the placeholder,
-and `gatekeeper.log` has the `inject` line and not the value. The interceptor
-itself was driven by hand with curl 8.5 (token, `-u` Basic, a 3 MB chunked
-upload, two URLs over one connection, a mismatched server name),
-`openssl s_client`, and Python 3.11's `ssl` with `VERIFY_X509_STRICT`, through
-the real gatekeeper to a local upstream.
+host's echo shows the value in `Authorization` (httpbin's `/headers` echoes it,
+which is also the residual risk "Secrets" names), the guest's environment holds
+only the placeholder, and `gatekeeper.log` has the `inject` line and not the
+value. The interceptor itself was driven by hand with curl 8.5 (token, `-u`
+Basic, a 3 MB chunked upload, two URLs over one connection, a mismatched server
+name), `openssl s_client`, and Python 3.11's `ssl` with `VERIFY_X509_STRICT`,
+through the real gatekeeper to a local upstream.
 
 ## Rejected on the way
 

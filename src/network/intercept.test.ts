@@ -55,6 +55,7 @@ function secretPolicy(extraAllow: readonly string[] = []): Policy {
 
 interface Received {
 	authorization: string | undefined;
+	rawHeaders: string[];
 	servername: string;
 	chunked: boolean;
 	body: Buffer;
@@ -78,6 +79,7 @@ async function upstreamHost(
 			req.on("end", () => {
 				received.push({
 					authorization: req.headers.authorization,
+					rawHeaders: req.rawHeaders,
 					servername: (req.socket as tls.TLSSocket).servername || "",
 					chunked: req.headers["transfer-encoding"] === "chunked",
 					body: Buffer.concat(chunks),
@@ -90,6 +92,7 @@ async function upstreamHost(
 	server.on("upgrade", (req, socket: Duplex) => {
 		received.push({
 			authorization: req.headers.authorization,
+			rawHeaders: req.rawHeaders,
 			servername: (req.socket as tls.TLSSocket).servername || "",
 			chunked: false,
 			body: Buffer.alloc(0),
@@ -116,6 +119,14 @@ async function upstreamHost(
 			}),
 	);
 	return { port: (server.address() as net.AddressInfo).port, received };
+}
+
+/** Every value `received` got for the header `name`, whatever its case. */
+function headersNamed(received: Received | undefined, name: string): string[] {
+	const raw = received?.rawHeaders ?? [];
+	return raw.filter(
+		(_, i) => i % 2 === 1 && raw[i - 1]?.toLowerCase() === name,
+	);
 }
 
 /**
@@ -563,6 +574,26 @@ test("the host is dialed only at an address the gatekeeper's own rules allow", a
 	);
 });
 
+test("a placeholder in a header other than Authorization reaches the host as the guest sent it", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port, log } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+
+	await send(clientThrough(t, port, "api.example:443"), {
+		headers: { "x-api-version": PLACEHOLDER },
+	});
+
+	assert.deepEqual(headersNamed(upstream.received[0], "x-api-version"), [
+		PLACEHOLDER,
+	]);
+	assert.deepEqual(
+		log.filter((e) => e.verdict === "inject"),
+		[],
+	);
+});
+
 test("each injection is logged with the host, the header and the variable, and the log never holds the value", async (t) => {
 	const upstream = await upstreamHost(t);
 	const { port, log } = await gatekeeperWith(t, {
@@ -571,25 +602,25 @@ test("each injection is logged with the host, the header and the variable, and t
 	});
 
 	await send(clientThrough(t, port, "api.example:443"), {
-		headers: {
-			authorization: `token ${PLACEHOLDER}`,
-			"x-also": PLACEHOLDER,
-		},
+		headers: { authorization: `token ${PLACEHOLDER}` },
 	});
 
-	const injected = log.flatMap((e) =>
-		e.verdict === "inject"
-			? [{ host: e.host, port: e.port, header: e.header, env: e.env }]
-			: [],
+	const injected = log.filter((e) => e.verdict === "inject");
+	assert.deepEqual(
+		injected.map(({ host, port, header, env }) => ({
+			host,
+			port,
+			header,
+			env,
+		})),
+		[
+			{
+				host: "api.example",
+				port: 443,
+				header: "authorization",
+				env: "GH_TOKEN",
+			},
+		],
 	);
-	assert.deepEqual(injected, [
-		{
-			host: "api.example",
-			port: 443,
-			header: "authorization",
-			env: "GH_TOKEN",
-		},
-		{ host: "api.example", port: 443, header: "x-also", env: "GH_TOKEN" },
-	]);
 	assert.doesNotMatch(JSON.stringify(log), /ghp_real_value/);
 });

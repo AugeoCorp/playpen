@@ -14,6 +14,14 @@ export interface Injection {
  */
 const BASIC = /^(basic +)(\S+)$/i;
 
+/**
+ * The one header a value goes into, since it is where gh, git, curl `-u` and
+ * npm send a token. A host that echoes some other request header back, as
+ * api.github.com does `X-GitHub-Api-Version` in an error body, would otherwise
+ * hand the value to the guest.
+ */
+const INJECTABLE = "authorization";
+
 function escapeRegExp(text: string): string {
 	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -67,11 +75,10 @@ function swapInBasic(
 }
 
 /**
- * Replaces each secret's placeholder with its value in every header value of
- * `rawHeaders` (the flat `[name, value, name, value, …]` list Node reads a
- * request into): verbatim anywhere in a value, and inside the decoded
- * credentials of a `Basic` authorization. Names are never changed and nothing
- * else in a value is touched.
+ * Replaces each secret's placeholder with its value in the `Authorization`
+ * headers of `rawHeaders` (the flat `[name, value, name, value, …]` list Node
+ * reads a request into): verbatim anywhere in the value, and inside decoded
+ * `Basic` credentials. Every other header, and every name, goes out as sent.
  *
  * `secrets` is only what may be sent to this request's host; a placeholder for
  * any other secret is left as it is. Each header a value went into is listed
@@ -87,13 +94,13 @@ export function rewriteHeaders(
 	const injected: Injection[] = [];
 	for (let i = 0; i + 1 < rawHeaders.length; i += 2) {
 		const header = rawHeaders[i] as string;
+		const sent = rawHeaders[i + 1] as string;
+		if (header.toLowerCase() !== INJECTABLE) {
+			headers.push(header, sent);
+			continue;
+		}
 		const used = new Set<string>();
-		const value = swapInBasic(
-			swap(rawHeaders[i + 1] as string, used),
-			swap,
-			used,
-		);
-		headers.push(header, value);
+		headers.push(header, swapInBasic(swap(sent, used), swap, used));
 		for (const env of used) injected.push({ header, env });
 	}
 	return { headers, injected };

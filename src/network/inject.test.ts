@@ -60,13 +60,11 @@ test("Basic credentials that are not valid base64 are left exactly as sent", () 
 	assert.deepEqual(injected, []);
 });
 
-test("any other header carrying the placeholder verbatim gets the value too", () => {
-	const { headers, injected } = rewriteHeaders(
-		["X-Api-Key", "playpen-secret-gh-token"],
-		[GH_TOKEN],
-	);
-	assert.deepEqual(headers, ["X-Api-Key", "ghp_real"]);
-	assert.deepEqual(injected, [{ header: "X-Api-Key", env: "GH_TOKEN" }]);
+test("a placeholder in any header but Authorization goes out as it is", () => {
+	const sent = ["X-Api-Key", "playpen-secret-gh-token"];
+	const { headers, injected } = rewriteHeaders(sent, [GH_TOKEN]);
+	assert.deepEqual(headers, sent);
+	assert.deepEqual(injected, []);
 });
 
 test("headers without a placeholder pass through unchanged, names and order included", () => {
@@ -83,31 +81,21 @@ test("headers without a placeholder pass through unchanged, names and order incl
 	assert.deepEqual(injected, []);
 });
 
-test("two placeholders in one request are both replaced, and each is listed with its header", () => {
+test("two secrets' placeholders in one Authorization are both replaced, and each is listed", () => {
 	const { headers, injected } = rewriteHeaders(
-		[
-			"Authorization",
-			"token playpen-secret-gh-token",
-			"X-Npm",
-			"playpen-secret-npm-token",
-		],
+		["Authorization", "token playpen-secret-gh-token playpen-secret-npm-token"],
 		[GH_TOKEN, NPM_TOKEN],
 	);
-	assert.deepEqual(headers, [
-		"Authorization",
-		"token ghp_real",
-		"X-Npm",
-		"npm_real",
-	]);
+	assert.deepEqual(headers, ["Authorization", "token ghp_real npm_real"]);
 	assert.deepEqual(injected, [
 		{ header: "Authorization", env: "GH_TOKEN" },
-		{ header: "X-Npm", env: "NPM_TOKEN" },
+		{ header: "Authorization", env: "NPM_TOKEN" },
 	]);
 });
 
 test("the count of injections is one per header and secret, however often the placeholder repeats in it", () => {
 	const { injected } = rewriteHeaders(
-		["X-Twice", "playpen-secret-gh-token,playpen-secret-gh-token"],
+		["Authorization", "playpen-secret-gh-token,playpen-secret-gh-token"],
 		[GH_TOKEN],
 	);
 	assert.equal(injected.length, 1);

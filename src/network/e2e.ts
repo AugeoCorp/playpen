@@ -15,8 +15,9 @@
  * The instance is created if it does not exist and left stopped at the end.
  *
  * PLAYPEN_E2E_SECRET_HOST names a host that echoes the request's headers as
- * its body at `/headers` (httpbin.org does); with it set, section 5 also
- * checks that a request from the guest reaches it with the real value. The
+ * JSON at `/headers` (httpbin.org does); with it set, section 5 also checks
+ * that a request from the guest reaches it with the real value in
+ * `Authorization`, the one header a value goes into. The
  * helper verifies that host's certificate itself, so where this machine's own
  * egress is TLS-intercepted, run with NODE_EXTRA_CA_CERTS naming that
  * interceptor's CA.
@@ -250,7 +251,7 @@ async function main(): Promise<void> {
 				);
 			} else {
 				await step(
-					`${echoHost} sees the value, the guest only the placeholder`,
+					`${echoHost} gets the value in Authorization, the guest's environment only the placeholder`,
 					valueInjected,
 				);
 			}
@@ -613,8 +614,14 @@ async function valueInjected(): Promise<string | null> {
 			` -H "Authorization: token $${secret.env}" "https://$0/headers"' "$1"`,
 		[echoHost],
 	);
-	if (!echoed.includes(`token ${secret.value}`)) {
-		return `${echoHost} did not echo the value: ${echoed.slice(0, 200)}`;
+	let authorization: unknown;
+	try {
+		authorization = JSON.parse(echoed)?.headers?.Authorization;
+	} catch {
+		return `${echoHost} did not answer with JSON: ${echoed.slice(0, 200)}`;
+	}
+	if (authorization !== `token ${secret.value}`) {
+		return `${echoHost} echoed Authorization as ${JSON.stringify(authorization)}, not the value`;
 	}
 
 	const entries = await gatekeeperLog();
