@@ -275,8 +275,9 @@ function tunnelServer(
 		socket.once("close", () => agent.destroy());
 	});
 	server.on("tlsClientError", (err: NodeJS.ErrnoException) => {
-		// A client hanging up mid-handshake, not a failure worth a line, shows up
-		// here as the handshake timeout, not as ECONNRESET.
+		// A client hanging up mid-handshake is not a failure worth a line. A reset
+		// arrives as ECONNRESET, but a plain close arrives only as the handshake
+		// timeout.
 		const hungUp =
 			err.code === "ECONNRESET" || err.code === "ERR_TLS_HANDSHAKE_TIMEOUT";
 		if (!refusedName && !hungUp) logError(err);
@@ -341,6 +342,12 @@ function tunnelServer(
 			socket.destroy();
 			return;
 		}
+		// A guest hanging up tears the host connection down with it, which is not
+		// a failure worth a line.
+		let guestGone = false;
+		socket.once("close", () => {
+			guestGone = true;
+		});
 		up.on("upgrade", (answer, upSocket, upHead) => {
 			const lines = [`HTTP/1.1 101 ${answer.statusMessage ?? ""}`];
 			for (let i = 0; i + 1 < answer.rawHeaders.length; i += 2) {
@@ -369,13 +376,13 @@ function tunnelServer(
 			lines.push("connection: close");
 			socket.write(`${lines.join("\r\n")}\r\n\r\n`);
 			answer.on("error", (err) => {
-				logError(err);
+				if (!guestGone) logError(err);
 				socket.destroy();
 			});
 			answer.pipe(socket);
 		});
 		up.on("error", (err) => {
-			logError(err);
+			if (!guestGone) logError(err);
 			socket.destroy();
 		});
 		up.end();
