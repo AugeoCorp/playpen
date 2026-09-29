@@ -606,31 +606,29 @@ test("a host that is not a plain hostname fails the load", () => {
 		"`network.secrets[0].hosts[0]` must be a hostname, without a port and not an address";
 	const withHost = (host: unknown) =>
 		secretsError([{ env: "GH_TOKEN", hosts: [host] }]);
-	for (const host of [
-		"localhost:8080",
-		"93.184.216.34",
-		"192.168.1.5:8080",
-		"1.2.3.4.",
-		"*.github.com",
-		"https://github.com",
-		"github",
-		"",
-		443,
-	]) {
-		assert.equal(withHost(host), bad, `host ${JSON.stringify(host)}`);
-	}
+	assert.equal(withHost("localhost:8080"), bad, "a port");
+	assert.equal(withHost("93.184.216.34"), bad, "an address");
+	assert.equal(withHost("192.168.1.5:8080"), bad, "an address with a port");
+	assert.equal(withHost("1.2.3.4."), bad, "an address with a trailing dot");
+	assert.equal(withHost("*.github.com"), bad, "a wildcard");
+	assert.equal(withHost("https://github.com"), bad, "a URL");
+	assert.equal(withHost("github"), bad, "a single label");
+	assert.equal(withHost(""), bad, "an empty string");
+	assert.equal(withHost(443), bad, "a number");
 });
 
 test("the fence's own names are not secret hosts: they stand for this machine", () => {
 	const bad =
 		"`network.secrets[0].hosts[0]` must be a hostname, without a port and not an address";
-	for (const host of [
-		"host.playpen.internal",
-		"probe.playpen.internal",
-		"anything.playpen.internal",
-	]) {
-		assert.equal(secretsError([{ env: "GH_TOKEN", hosts: [host] }]), bad, host);
-	}
+	const withHost = (host: string) =>
+		secretsError([{ env: "GH_TOKEN", hosts: [host] }]);
+	assert.equal(withHost("host.playpen.internal"), bad, "the host alias");
+	assert.equal(withHost("probe.playpen.internal"), bad, "the probe name");
+	assert.equal(
+		withHost("anything.playpen.internal"),
+		bad,
+		"any other name under the domain",
+	);
 });
 
 test("a secret entry carrying a value is refused, not silently stripped of it", () => {
