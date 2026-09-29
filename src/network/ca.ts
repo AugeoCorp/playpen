@@ -1,4 +1,4 @@
-import { generateKeyPairSync, randomBytes } from "node:crypto";
+import { generateKeyPairSync, type KeyObject, randomBytes } from "node:crypto";
 import {
 	mkdir,
 	mkdtemp,
@@ -23,6 +23,28 @@ const CERT_FILE = "ca.crt";
 const VALID_YEARS = 10;
 
 /**
+ * An unsigned certificate for `publicKey`, issued at `issuedAt` and valid
+ * until `notAfter`, with nothing else set: the CA and each leaf add their own
+ * names and extensions.
+ */
+export function newCertificate(
+	publicKey: KeyObject,
+	issuedAt: number,
+	notAfter: Date,
+): forge.pki.Certificate {
+	const cert = forge.pki.createCertificate();
+	cert.publicKey = forge.pki.publicKeyFromPem(
+		publicKey.export({ type: "spki", format: "pem" }).toString(),
+	);
+	// A leading 01 keeps the serial positive; RFC 5280 allows 20 octets.
+	cert.serialNumber = `01${randomBytes(15).toString("hex")}`;
+	// Backdated a minute so a guest with a slightly slow clock accepts it.
+	cert.validity.notBefore = new Date(issuedAt - 60_000);
+	cert.validity.notAfter = notAfter;
+	return cert;
+}
+
+/**
  * Deliberately carries no name constraints: the hosts a project may name in
  * `network.secrets` differ per project and change over time, while this CA is
  * one per install, so a list fixed at creation could not name them.
@@ -32,18 +54,10 @@ function createCa(): Ca {
 		modulusLength: 2048,
 	});
 	const keyPem = privateKey.export({ type: "pkcs1", format: "pem" }).toString();
-	const cert = forge.pki.createCertificate();
-	cert.publicKey = forge.pki.publicKeyFromPem(
-		publicKey.export({ type: "spki", format: "pem" }).toString(),
-	);
-	// A leading 01 keeps the serial positive; RFC 5280 allows 20 octets.
-	cert.serialNumber = `01${randomBytes(15).toString("hex")}`;
-	// Backdated a minute so a guest with a slightly slow clock accepts it.
-	const now = Date.now();
-	cert.validity.notBefore = new Date(now - 60_000);
-	const notAfter = new Date(now);
+	const issuedAt = Date.now();
+	const notAfter = new Date(issuedAt);
 	notAfter.setFullYear(notAfter.getFullYear() + VALID_YEARS);
-	cert.validity.notAfter = notAfter;
+	const cert = newCertificate(publicKey, issuedAt, notAfter);
 	// A fixed name: forge stores a common name as a PrintableString, and a host
 	// name with `_` in it would give Go's parser (gh) a certificate it refuses.
 	const name = [{ name: "commonName", value: "playpen sandbox CA" }];
