@@ -34,6 +34,10 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
   directory into two VMs, which both write it.
 - A sandbox made before the history mount has none: recreate it to get the
   mount; its old history stays on its disk.
+- A sandbox made with the history mount before it became `mapped-xattr` keeps
+  Lima's default model, under which the guest's modes and symlinks are real on
+  the host. `playpen remove --yes && playpen start` gives it the new one and
+  loses no history.
 - Node 26 from nodejs.org and mise are both in the base, verified in a booted
   guest from wiped mise state: `npm test` runs natively (80 pass, nothing
   skipped, no compile-out); a project pinning `.node-version` installs and
@@ -129,13 +133,14 @@ yet vary per sandbox. They are global defaults today.
 - [x] a stale sandbox offers a rebuild instead of only warning
 - [x] a sandbox on an older base than the newest is offered one too
 - [x] `~/.claude/projects` is a host directory, `<data>/history/<sandbox>/`,
-      created `0700` and mounted writable, so transcripts and memory are on the
-      host as they are written and survive a rebuild, `remove`, and a VM that
-      dies. It replaced an archive taken on destroy, which lost history to
-      interrupted unpacks and to VMs stopped outside playpen. Nothing on the
-      host reads inside it: the guest writes it, symlinks included. The guest
-      shows it with the host user's gid, since 9p passes host ids through; Lima
-      gives the guest user the host's uid, so it owns it and can write it.
+      created `0700` and mounted writable with the `mapped-xattr` 9p security
+      model, so transcripts and memory are on the host as they are written and
+      survive a rebuild, `remove`, and a VM that dies. It replaced an archive
+      taken on destroy, which lost history to interrupted unpacks and to VMs
+      stopped outside playpen. Nothing on the host reads inside it: the guest
+      writes it. The guest shows it with the host user's gid, since 9p passes
+      host ids through; Lima gives the guest user the host's uid, so it owns it
+      and can write it.
 - [x] verified on the host: a fresh sandbox clones and boots in 10s, with no
       package installs and no image download
 

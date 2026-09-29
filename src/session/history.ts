@@ -26,8 +26,18 @@ const GUEST_REL = ".claude/projects";
 export const GUEST_MOUNT_POINT = `{{.Home}}/${GUEST_REL}`;
 
 /**
- * The guest writes here freely, symlinks included, so nothing on the host
- * reads what is inside: only Lima's mount and the guest touch it.
+ * Under Lima's default, `none`, a guest `chmod`, setuid bit or `ln -s` is made
+ * for real on the host. Mapped, QEMU keeps modes and link targets in
+ * `user.virtfs.*` xattrs and creates only regular 0600 files and 0700
+ * directories (`hw/9pfs/9p-local.c`), so nothing the guest writes here is a
+ * live link, setuid or executable on the host. The project mount keeps `none`:
+ * sharing it with the host is its purpose.
+ */
+export const SECURITY_MODEL = "mapped-xattr";
+
+/**
+ * The guest writes here freely, so nothing on the host reads what is inside:
+ * only Lima's mount and the guest touch it.
  */
 export function hostDir(sandbox: string): string {
 	assertSandboxName(sandbox);

@@ -214,7 +214,7 @@ function historyDirOf(sb: Sandbox): string {
 	);
 }
 
-test("a new sandbox mounts its own host directory, writable, over the guest's ~/.claude/projects", async (t) => {
+test("a new sandbox mounts its own host directory, writable, over the guest's ~/.claude/projects, with the guest's modes and links kept in xattrs there but not in the project", async (t) => {
 	const { sb, run } = await sandboxFor(t, BOTH);
 	await run();
 	assert.deepEqual(await limaMounts(sb), [
@@ -223,6 +223,7 @@ test("a new sandbox mounts its own host directory, writable, over the guest's ~/
 			location: historyDirOf(sb),
 			mountPoint: "{{.Home}}/.claude/projects",
 			writable: true,
+			"9p": { securityModel: "mapped-xattr" },
 		},
 	]);
 });

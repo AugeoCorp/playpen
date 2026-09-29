@@ -189,6 +189,7 @@ function mountsFor(sb: Sandbox): string {
 			location: history.hostDir(sb.sandbox),
 			mountPoint: history.GUEST_MOUNT_POINT,
 			writable: true,
+			"9p": { securityModel: history.SECURITY_MODEL },
 		},
 	])}`;
 }
