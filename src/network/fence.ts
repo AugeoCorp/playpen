@@ -116,6 +116,12 @@ const helperRecord = ownerSchema.extend({
 	 * `ports`, and until the guest has first been asked.
 	 */
 	unboundPorts: z.array(portForward).optional(),
+	/**
+	 * The names of the secrets this helper was handed at spawn. Never a value,
+	 * which stays in the helper's memory. Absent from a helper older than
+	 * `secrets`.
+	 */
+	secrets: z.array(z.string()).default([]),
 });
 
 export type HelperRecord = z.infer<typeof helperRecord>;
@@ -124,7 +130,10 @@ export async function writeHelper(
 	sandbox: string,
 	record: HelperRecord,
 ): Promise<void> {
-	await writeAtomic(fencePaths(sandbox).helper, `${JSON.stringify(record)}\n`);
+	await writeAtomic(
+		fencePaths(sandbox).helper,
+		`${JSON.stringify(helperRecord.parse(record))}\n`,
+	);
 }
 
 async function readHelper(sandbox: string): Promise<HelperRecord | null> {
@@ -153,7 +162,7 @@ export async function writePolicy(
 ): Promise<boolean> {
 	const paths = fencePaths(sandbox);
 	await ensureFenceDir(sandbox);
-	const next = `${JSON.stringify(policy)}\n`;
+	const next = `${JSON.stringify(policyFile.parse(policy))}\n`;
 	const previous = await readFile(paths.policy, "utf8").catch(() => "");
 	await writeAtomic(paths.policy, next);
 	return next !== previous;
@@ -221,6 +230,7 @@ const helperInput = z.object(
 	{ error: "must hold a JSON object" },
 );
 
+/** What `spawnHelper` writes to the helper's stdin, values and all. */
 export function serializeHeldSecrets(secrets: readonly HeldSecret[]): string {
 	return JSON.stringify({ secrets });
 }
@@ -241,6 +251,20 @@ export function parseHeldSecrets(text: string): HeldSecret[] {
 	const result = helperInput.safeParse(json);
 	if (!result.success) throw new Error(describeIssue(result.error, subject));
 	return result.data.secrets;
+}
+
+/**
+ * The environment the helper is spawned with: this process's own, without the
+ * variables the secrets came from, so a value has no route into the helper or
+ * its children except the pipe.
+ */
+export function helperEnv(
+	env: NodeJS.ProcessEnv,
+	secrets: readonly HeldSecret[],
+): NodeJS.ProcessEnv {
+	const scrubbed = { ...env };
+	for (const { env: name } of secrets) delete scrubbed[name];
+	return scrubbed;
 }
 
 const policyFile = z.object(
@@ -360,14 +384,28 @@ export function cliPath(): string {
 	return join(dirname(fileURLToPath(import.meta.url)), "..", "cli.ts");
 }
 
+export function helperSpawnOptions(
+	logFd: number,
+	secrets: readonly HeldSecret[],
+	env: NodeJS.ProcessEnv = process.env,
+): { detached: true; stdio: ["pipe", number, number]; env: NodeJS.ProcessEnv } {
+	return {
+		detached: true,
+		stdio: ["pipe", logFd, logFd],
+		env: helperEnv(env, secrets),
+	};
+}
+
 /**
  * Detached with its output in helper.log, because it has to outlive the
  * `playpen start` that asked for it: the sandbox stays up after the command
- * that created it returns.
+ * that created it returns. The secrets go in over stdin and the stream is
+ * ended, so the helper knows when it has them all.
  */
 async function spawnHelper(
 	sandbox: string,
 	instance: string,
+	secrets: readonly HeldSecret[],
 ): Promise<ChildProcess> {
 	const paths = fencePaths(sandbox);
 	await ensureFenceDir(sandbox);
@@ -376,8 +414,12 @@ async function spawnHelper(
 		const child = spawn(
 			process.execPath,
 			[cliPath(), "__net-helper", sandbox, instance],
-			{ detached: true, stdio: ["ignore", log.fd, log.fd] },
+			helperSpawnOptions(log.fd, secrets),
 		);
+		// A helper that dies before reading closes the pipe under this write; its
+		// exit is what `bringUp` reports, so the write's own error is not.
+		child.stdin?.on("error", () => {});
+		child.stdin?.end(serializeHeldSecrets(secrets));
 		child.unref();
 		return child;
 	} finally {
@@ -399,6 +441,11 @@ export interface BringUpOptions {
 	sandbox: string;
 	instance: string;
 	policy: Policy;
+	/**
+	 * Handed to a helper this call spawns. A helper already running keeps the
+	 * ones it started with.
+	 */
+	secrets?: readonly HeldSecret[];
 	/** Where helper.log goes while the caller waits; usually stderr. */
 	log: (text: string) => void;
 	timeoutMs?: number;
@@ -424,6 +471,7 @@ const APPLY_WINDOW_MS = 15_000;
  */
 export async function bringUp(opts: BringUpOptions): Promise<void> {
 	const { sandbox, instance } = opts;
+	const secrets = opts.secrets ?? [];
 	const changed = await writePolicy(sandbox, opts.policy);
 	const stamp = await policyStamp(sandbox);
 
@@ -438,7 +486,7 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 
 	const paths = fencePaths(sandbox);
 	let offset = await sizeOf(paths.helperLog);
-	const child = await spawnHelper(sandbox, instance);
+	const child = await spawnHelper(sandbox, instance, secrets);
 
 	let exit: number | null = null;
 	child.on("exit", (code) => {

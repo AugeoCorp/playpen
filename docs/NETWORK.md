@@ -142,19 +142,34 @@ helper.log and in its record, and `playpen start` warns that the host port is
 not at that guest port -- without failing the start. A stdio MCP server is a
 process the guest runs, not a port, so nothing here applies to it.
 
+**Secrets.** A `network.secrets` entry names a variable and the hosts it may be
+used on. The helper has one way in for their values, and in this version
+`playpen start` sends none on it. It spawns the helper with a stdin pipe and
+writes one JSON document to it, `{ "secrets": [{ "env", "value" }] }`, followed
+by end-of-stream; today that is always `{ "secrets": [] }`, and the
+end-of-stream means the helper never waits on a stdin that is not coming. The
+helper reads the document to the end before it serves anything and keeps the
+result in memory. It logs a count and names
+(`holding 2 secrets: GH_TOKEN, NPM_TOKEN`) and never a value. A value is not in
+argv, not in a file, and not in the helper's environment, which is the parent's
+with the granted variables removed. The hosts are not in the document:
+policy.json carries `env` and `hosts` and is the one place they are kept, and it
+is re-read on reload. helper.json carries the names the helper holds.
+
 ## Lifecycle
 
 `playpen start` writes the merged policy (the built-in list plus the project's
 `network.allow`, a `localhost:<host>` for each of its `network.ports`, every
 host named by `network.secrets`, and the ports and secrets themselves) to disk,
 then spawns the helper process detached so it outlives the command that started
-it. The helper starts the gatekeeper and the two relays, brings the VM up inside
-a fresh `bwrap` namespace, and waits for the guest to answer before returning --
-streaming its own log to the terminal in the meantime. If a VM is already
-running and fenced with a live helper, `start` leaves the VM alone but still
-writes the policy, and says so when the file changed. If the VM is up but its
-helper died, `start` reattaches: a new gatekeeper and relay, no new namespace,
-since qemu and the inside relays were never the helper's children to lose.
+it, handing it any secrets over stdin (see "Secrets" above). The helper starts
+the gatekeeper and the two relays, brings the VM up inside a fresh `bwrap`
+namespace, and waits for the guest to answer before returning -- streaming its
+own log to the terminal in the meantime. If a VM is already running and fenced
+with a live helper, `start` leaves the VM alone but still writes the policy, and
+says so when the file changed. If the VM is up but its helper died, `start`
+reattaches: a new gatekeeper and relay, no new namespace, since qemu and the
+inside relays were never the helper's children to lose.
 
 **policy.json is what the gatekeeper decides on**, not the copy the helper
 started with. The helper stats the file on the same few-second pass that watches

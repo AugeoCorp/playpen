@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import {
+	mkdir,
+	mkdtemp,
+	readFile,
+	rm,
+	stat,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
@@ -8,6 +15,7 @@ import {
 	classifyFence,
 	fencePaths,
 	type HeldSecret,
+	helperSpawnOptions,
 	liveHelper,
 	looksLikeQemu,
 	parseHeldSecrets,
@@ -29,6 +37,7 @@ const helper = {
 	ready: true,
 	egress: true,
 	policy: "1:2",
+	secrets: [],
 };
 
 test("a sandbox's sockets and logs live together under the data directory", () => {
@@ -395,6 +404,11 @@ test("the document written to the helper's stdin reads back as the same secrets"
 	);
 });
 
+test("a document with no secrets is still a document, so a helper with none never waits on stdin", () => {
+	assert.equal(serializeHeldSecrets([]), '{"secrets":[]}');
+	assert.deepEqual(parseHeldSecrets('{"secrets":[]}'), []);
+});
+
 /** A stdin document that is `heldToken` with one field replaced. */
 function documentWith(fields: Record<string, unknown>): string {
 	return JSON.stringify({ secrets: [{ ...heldToken, ...fields }] });
@@ -465,4 +479,61 @@ test("a value in a rejected document is not in the message either", () => {
 			return true;
 		},
 	);
+});
+
+test("helper.json is not written for a record whose secrets are more than names, and the refusal does not quote them", async (t) => {
+	await dataDir(t);
+	await mkdir(fencePaths("api-abc123").dir, { recursive: true });
+	const leaky = {
+		...helper,
+		...(await self()),
+		secrets: [heldToken],
+	} as unknown as Parameters<typeof writeHelper>[1];
+	await assert.rejects(writeHelper("api-abc123", leaky), (err: Error) => {
+		assert.match(err.message, /secrets/);
+		assert.equal(err.message.includes(TOKEN), false, err.message);
+		return true;
+	});
+	await assert.rejects(stat(fencePaths("api-abc123").helper));
+});
+
+test("policy.json does not carry a value handed in with a secret's grant", async (t) => {
+	await dataDir(t);
+	const leaky = {
+		allow: ["api.github.com"],
+		mode: "enforce",
+		ports: [],
+		secrets: [{ env: "GH_TOKEN", hosts: ["api.github.com"], value: TOKEN }],
+	} as unknown as Parameters<typeof writePolicy>[1];
+	await writePolicy("api-abc123", leaky);
+	const text = await readFile(fencePaths("api-abc123").policy, "utf8");
+	assert.equal(
+		text.includes(TOKEN),
+		false,
+		`policy.json held the value: ${text}`,
+	);
+	assert.match(text, /GH_TOKEN/);
+});
+
+test("a helper.json from before secrets existed reads as holding none", async (t) => {
+	await dataDir(t);
+	await mkdir(fencePaths("api-abc123").dir, { recursive: true });
+	const { secrets: _, ...older } = { ...helper, ...(await self()) };
+	await writeFile(fencePaths("api-abc123").helper, JSON.stringify(older));
+	assert.deepEqual((await liveHelper("api-abc123"))?.secrets, []);
+});
+
+test("the helper is spawned detached, with a pipe for stdin and helper.log for its output", () => {
+	const { detached, stdio } = helperSpawnOptions(7, [heldToken], {});
+	assert.equal(detached, true);
+	assert.deepEqual(stdio, ["pipe", 7, 7]);
+});
+
+test("the helper is spawned without the variables its secrets came from, and with the rest", () => {
+	const { env } = helperSpawnOptions(7, [heldToken], {
+		GH_TOKEN: TOKEN,
+		PATH: "/usr/bin",
+		HOME: "/home/me",
+	});
+	assert.deepEqual(env, { PATH: "/usr/bin", HOME: "/home/me" });
 });
