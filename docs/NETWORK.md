@@ -550,10 +550,20 @@ re-enabling it restored the 200.
 What has not been run: a host reboot, and any of this on the maintainer's own
 machine.
 
-The interceptor was driven by hand with curl 8.5 (token, `-u` Basic, a 3 MB
-chunked upload, two URLs over one connection, a mismatched server name),
-`openssl s_client`, and Python 3.11's `ssl` with `VERIFY_X509_STRICT`, through
-the real gatekeeper to a local upstream.
+Section 5 came with the interceptor and has not been run against a VM yet. It
+replaces the helper with one holding a made-up value for `allowedHost` (and for
+`PLAYPEN_E2E_SECRET_HOST`, when set), writes the placeholder profile and the CA
+certificate into the guest, and checks that `openssl s_client` in the guest sees
+the playpen CA as the issuer for the secret's host and a different one for
+`registry.npmjs.org`. With the echo host set, a login shell's `curl` sends
+`Authorization: token $PLAYPEN_E2E_TOKEN` there, and the step passes only if the
+host's echo shows the value in `Authorization` (httpbin's `/headers` echoes it,
+which is also the residual risk "Secrets" names), the guest's environment holds
+only the placeholder, and `gatekeeper.log` has the `inject` line and not the
+value. The interceptor itself was driven by hand with curl 8.5 (token, `-u`
+Basic, a 3 MB chunked upload, two URLs over one connection, a mismatched server
+name), `openssl s_client`, and Python 3.11's `ssl` with `VERIFY_X509_STRICT`,
+through the real gatekeeper to a local upstream.
 
 ## Rejected on the way
 

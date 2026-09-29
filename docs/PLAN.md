@@ -90,7 +90,8 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
 - The interceptor that puts `network.secrets` values into requests
   (`docs/NETWORK.md`, "Secrets") is tested against a local HTTPS upstream
   through the real gatekeeper, and was driven by hand with curl,
-  `openssl s_client` and Python's strict `ssl`. It speaks HTTP/1.1 only: HTTP/2
+  `openssl s_client` and Python's strict `ssl`; `src/network/e2e.ts` section 5
+  covers it against a VM but has not been run. It speaks HTTP/1.1 only: HTTP/2
   is not offered, so clients fall back. A value changed in the host environment
   needs `playpen stop && playpen start`, since the helper takes its values only
   when it is spawned. The upstream is verified against Node's bundled CA list
