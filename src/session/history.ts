@@ -1,14 +1,15 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { historyDir } from "../config.ts";
+import { historyDir, limaHome } from "../config.ts";
+import { exists } from "../fs.ts";
 import * as lima from "../lima/client.ts";
 import { assertSandboxName } from "./identity.ts";
 
 /**
  * Claude Code keeps session transcripts and the persistent memory directory in
  * the guest, and nothing syncs them back to the host, so recloning a sandbox
- * would drop both. They are archived out before a sandbox is destroyed and
- * restored into its replacement.
+ * would drop both. They are archived out before a sandbox is destroyed, and
+ * restored at every start into a VM that does not yet hold the archive.
  *
  * The whole directory travels rather than one project's slug: a sandbox serves
  * a single project, so that is already the scope, and it avoids depending on
@@ -20,6 +21,16 @@ const GUEST_REL = ".claude/projects";
 export function archivePath(sandbox: string): string {
 	assertSandboxName(sandbox);
 	return join(historyDir(), `${sandbox}.tar`);
+}
+
+/**
+ * Present when this VM holds the host copy. In the Lima instance's own
+ * directory, so deleting or recloning the instance drops it and a new clone
+ * never reads as holding it. On the host because the guest is untrusted: a
+ * marker it could write would let it replace the copy.
+ */
+function holdsCopyMarker(instance: string): string {
+	return join(limaHome(), instance, "playpen-holds-history");
 }
 
 /** Never throws: losing history is bad, but blocking a delete over it is worse. */
@@ -55,7 +66,7 @@ export async function archive(
 
 /**
  * Unpacks the archive on stdin into the guest's home, readable only by its
- * owner. Printed for the user to run as well, so it is one line of plain sh.
+ * owner.
  *
  * `--keep-newer-files` so an archive never replaces a file the guest has
  * written since it was taken, such as a newer MEMORY.md.
@@ -70,40 +81,36 @@ export const UNPACK =
 	"cd && umask 077 && tar --keep-newer-files --keep-directory-symlink -xf -";
 
 /**
- * Kept after restoring, so it stays the last known history if this one is lost.
+ * Runs on every start. Once this VM holds the copy it sends the guest nothing,
+ * so transcripts deleted in the guest stay deleted; until then each start
+ * tries again.
  *
- * Never throws: by now the old sandbox is gone and the new one is built, so a
- * failure here must not fail the start. The warning says how to finish by hand.
+ * Never throws: by now the sandbox is up, and a failure here must not fail the
+ * start.
  */
 export async function restore(
 	instance: string,
 	sandbox: string,
-): Promise<boolean> {
+): Promise<void> {
 	const path = archivePath(sandbox);
-	let tar: Buffer;
-	try {
-		tar = await readFile(path);
-	} catch {
-		return false;
-	}
-
+	const marker = holdsCopyMarker(instance);
 	let failure: string;
 	try {
-		const result = await lima.runScript(instance, UNPACK, { input: tar });
-		if (result.code === 0) return true;
+		if ((await exists(marker)) || !(await exists(path))) return;
+		const result = await lima.runScript(instance, UNPACK, {
+			input: await readFile(path),
+		});
+		if (result.code === 0) {
+			await writeFile(marker, "");
+			console.error(`restored Claude history from ${path}`);
+			return;
+		}
 		failure = result.stderr.trim() || `exit ${result.code}`;
 	} catch (err) {
 		failure = err instanceof Error ? err.message : String(err);
 	}
 	console.error(`warning: could not restore Claude history (${failure})`);
 	console.error(
-		`  it is in ${path}, which the next rebuild or remove of this sandbox may replace.`,
+		`  it stays in ${path}, and the next start of this sandbox tries again.`,
 	);
-	console.error(`  restore it now, from the project directory:`);
-	console.error(`  playpen run -- sh -c ${shQuote(UNPACK)} < ${shQuote(path)}`);
-	return false;
-}
-
-function shQuote(value: string): string {
-	return `'${value.replaceAll("'", `'\\''`)}'`;
 }

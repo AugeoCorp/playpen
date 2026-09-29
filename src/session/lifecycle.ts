@@ -375,6 +375,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 			// started takes effect without a restart.
 			await startFenced(sb, template);
 			await applyMasks(sb, template.masks);
+			await history.restore(sb.instance, sb.sandbox);
 			await store.touch(sb.sandbox);
 			return { created: false, setupOk: true, setup: template.setup };
 		}
@@ -412,9 +413,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 		throw err;
 	}
 	const masked = await applyMasks(sb, current.masks);
-	if (await history.restore(sb.instance, sb.sandbox)) {
-		console.error(`restored Claude history from the previous sandbox`);
-	}
+	await history.restore(sb.instance, sb.sandbox);
 
 	// Recorded before setup, not after: setup can run for minutes, and an
 	// instance that exists with no record is one `start` will neither finish nor
