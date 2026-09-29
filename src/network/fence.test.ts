@@ -1,13 +1,24 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import {
+	mkdir,
+	mkdtemp,
+	readFile,
+	rm,
+	stat,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
+import { text } from "node:stream/consumers";
 import { type TestContext, test } from "node:test";
 import { self } from "../session/proc.ts";
 import {
 	classifyFence,
 	fencePaths,
 	type HeldSecret,
+	handOver,
+	helperSpawnOptions,
 	liveHelper,
 	looksLikeQemu,
 	parseHeldSecrets,
@@ -29,6 +40,7 @@ const helper = {
 	ready: true,
 	egress: true,
 	policy: "1:2",
+	secrets: [],
 };
 
 test("a sandbox's sockets and logs live together under the data directory", () => {
@@ -395,6 +407,25 @@ test("the document written to the helper's stdin reads back as the same secrets"
 	);
 });
 
+test("a project with no secrets sends an empty list, which reads back as none", () => {
+	assert.equal(serializeHeldSecrets([]), '{"secrets":[]}');
+	assert.deepEqual(parseHeldSecrets('{"secrets":[]}'), []);
+});
+
+test("the helper's stdin is ended after the document, so a helper reading to the end stops waiting", async () => {
+	const stdin = new PassThrough();
+	handOver(stdin, [heldToken]);
+	assert.equal(
+		stdin.writableEnded,
+		true,
+		"the stream was left open, so a helper reading to its end would wait forever",
+	);
+	assert.equal(
+		await text(stdin),
+		`{"secrets":[{"env":"GH_TOKEN","value":"${TOKEN}"}]}`,
+	);
+});
+
 /** A stdin document that is `heldToken` with one field replaced. */
 function documentWith(fields: Record<string, unknown>): string {
 	return JSON.stringify({ secrets: [{ ...heldToken, ...fields }] });
@@ -468,4 +499,75 @@ test("a value in a rejected document is not in the message either", () => {
 			return true;
 		},
 	);
+});
+
+test("helper.json is not written for a record whose secrets are more than names, and the refusal does not quote them", async (t) => {
+	await dataDir(t);
+	await mkdir(fencePaths("api-abc123").dir, { recursive: true });
+	const leaky = {
+		...helper,
+		...(await self()),
+		secrets: [heldToken],
+	} as unknown as Parameters<typeof writeHelper>[1];
+	await assert.rejects(writeHelper("api-abc123", leaky), (err: Error) => {
+		assert.match(err.message, /secrets/);
+		assert.equal(err.message.includes(TOKEN), false, err.message);
+		return true;
+	});
+	await assert.rejects(stat(fencePaths("api-abc123").helper));
+});
+
+test("policy.json does not carry a value handed in with a secret's grant", async (t) => {
+	await dataDir(t);
+	const leaky = {
+		allow: ["api.github.com"],
+		mode: "enforce",
+		ports: [],
+		secrets: [{ env: "GH_TOKEN", hosts: ["api.github.com"], value: TOKEN }],
+	} as unknown as Parameters<typeof writePolicy>[1];
+	await writePolicy("api-abc123", leaky);
+	const text = await readFile(fencePaths("api-abc123").policy, "utf8");
+	assert.equal(
+		text.includes(TOKEN),
+		false,
+		`policy.json held the value: ${text}`,
+	);
+	assert.match(text, /GH_TOKEN/);
+});
+
+test("a helper.json from before secrets existed reads as holding none", async (t) => {
+	await dataDir(t);
+	await mkdir(fencePaths("api-abc123").dir, { recursive: true });
+	const { secrets: _, ...older } = { ...helper, ...(await self()) };
+	await writeFile(fencePaths("api-abc123").helper, JSON.stringify(older));
+	assert.deepEqual((await liveHelper("api-abc123"))?.secrets, []);
+});
+
+test("the helper is spawned detached, with a pipe for stdin and helper.log for its output", () => {
+	const { detached, stdio } = helperSpawnOptions(
+		7,
+		{ secrets: [] },
+		[heldToken],
+		{},
+	);
+	assert.equal(detached, true);
+	assert.deepEqual(stdio, ["pipe", 7, 7]);
+});
+
+test("the helper is spawned without the variables its secrets came from, and with the rest", () => {
+	const { env } = helperSpawnOptions(7, { secrets: [] }, [heldToken], {
+		GH_TOKEN: TOKEN,
+		PATH: "/usr/bin",
+		HOME: "/home/me",
+	});
+	assert.deepEqual(env, { PATH: "/usr/bin", HOME: "/home/me" });
+});
+
+test("a helper handed no values is still spawned without the variables its policy grants", () => {
+	const policy = { secrets: [{ env: "GH_TOKEN", hosts: ["api.github.com"] }] };
+	const { env } = helperSpawnOptions(7, policy, [], {
+		GH_TOKEN: TOKEN,
+		PATH: "/usr/bin",
+	});
+	assert.deepEqual(env, { PATH: "/usr/bin" });
 });

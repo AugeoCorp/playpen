@@ -1,5 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { unlink } from "node:fs/promises";
+import { text as readText } from "node:stream/consumers";
 import { exists, readAppended, sizeOrZero, writeAtomic } from "../fs.ts";
 import * as lima from "../lima/client.ts";
 import { self } from "../session/proc.ts";
@@ -10,9 +11,11 @@ import {
 	type FencePaths,
 	fencePaths,
 	fenceStatus,
+	type HeldSecret,
 	type HelperRecord,
 	killFenceLeftovers,
 	liveHelper,
+	parseHeldSecrets,
 	policyStamp,
 	readPolicy,
 	removeSocket,
@@ -146,6 +149,23 @@ function jsonLineAppender(path: string): (entry: LogEntry) => void {
 	};
 }
 
+/**
+ * Everything on stdin, to its end: the spawning `playpen start` closes the
+ * stream once it has written the document, so this never waits on a writer
+ * that is not coming.
+ */
+export async function readHeldSecrets(
+	input: AsyncIterable<string | Uint8Array>,
+): Promise<HeldSecret[]> {
+	return parseHeldSecrets(await readText(input));
+}
+
+/** Names and a count, never a value: this line lands in helper.log. */
+export function describeHeld(secrets: readonly HeldSecret[]): string {
+	const names = secrets.map(({ env }) => env).join(", ");
+	return `holding ${secrets.length} secret${secrets.length === 1 ? "" : "s"}: ${names}`;
+}
+
 function socatListen(path: string, target: string): ChildProcess {
 	return spawnSocat(unixListenAddress(path), target);
 }
@@ -155,6 +175,16 @@ export async function runHelper(
 	instance: string,
 ): Promise<number> {
 	const paths = fencePaths(sandbox);
+	// First, so the values are held before anything else can fail or log.
+	let held: HeldSecret[];
+	try {
+		held = await readHeldSecrets(process.stdin);
+	} catch (err) {
+		say(`cannot read the secrets from stdin: ${err}`);
+		return 1;
+	}
+	if (held.length > 0) say(describeHeld(held));
+
 	// Stamp first: a policy.json rewritten between the two reads then differs
 	// from the stamp and is reloaded, rather than read once and taken as old.
 	const stamp = await policyStamp(sandbox);
@@ -209,7 +239,9 @@ export async function runHelper(
 				sandbox,
 				instance,
 			],
-			{ stdio: "inherit" },
+			// Not stdin: it is the pipe the secrets came in on, and nothing under
+			// bwrap has a use for it.
+			{ stdio: ["ignore", "inherit", "inherit"] },
 		);
 	}
 
@@ -219,6 +251,7 @@ export async function runHelper(
 		ready: false,
 		egress: false,
 		policy: stamp,
+		secrets: held.map(({ env }) => env),
 	};
 	const report = async (patch: Partial<HelperRecord>): Promise<void> => {
 		record = { ...record, ...patch };

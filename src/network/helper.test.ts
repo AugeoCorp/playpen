@@ -1,6 +1,17 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Readable } from "node:stream";
 import { test } from "node:test";
-import { portsScript, unboundIn } from "./helper.ts";
+import { cliPath } from "./fence.ts";
+import {
+	describeHeld,
+	portsScript,
+	readHeldSecrets,
+	unboundIn,
+} from "./helper.ts";
 
 /** The units a script stops, in order, glob included. */
 function stops(script: string): string[] {
@@ -110,4 +121,80 @@ test("an unbound line for a port not asked for is ignored", () => {
 		unboundIn([{ host: 5000, guest: 4321 }], "unbound 22\nunbound 4321x\n"),
 		[],
 	);
+});
+
+const TOKEN = "ghp_correct-horse-battery-staple";
+
+const document = JSON.stringify({
+	secrets: [
+		{ env: "GH_TOKEN", value: TOKEN },
+		{ env: "NPM_TOKEN", value: "npm_abc" },
+	],
+});
+
+test("the helper reads its secrets from a document on stdin", async () => {
+	const held = await readHeldSecrets(Readable.from([document]));
+	assert.deepEqual(held, [
+		{ env: "GH_TOKEN", value: TOKEN },
+		{ env: "NPM_TOKEN", value: "npm_abc" },
+	]);
+});
+
+test("the helper's log line for its secrets is a count and names", async () => {
+	const held = await readHeldSecrets(Readable.from([document]));
+	assert.equal(describeHeld(held), "holding 2 secrets: GH_TOKEN, NPM_TOKEN");
+	assert.equal(describeHeld(held.slice(0, 1)), "holding 1 secret: GH_TOKEN");
+});
+
+/**
+ * `playpen __net-helper` as `spawnHelper` runs it, with nothing else set up.
+ * With no policy.json to read it stops on its own soon after logging; the
+ * timeout is only there so a helper that starts serving fails the test rather
+ * than hanging it.
+ */
+function runHelperProcess(stdin: string) {
+	const root = mkdtempSync(join(tmpdir(), "playpen-helper-"));
+	try {
+		return spawnSync(
+			process.execPath,
+			[cliPath(), "__net-helper", "api-abc123", "playpen-api-abc123"],
+			{
+				input: stdin,
+				encoding: "utf8",
+				timeout: 10_000,
+				env: {
+					...process.env,
+					XDG_DATA_HOME: join(root, "data"),
+					LIMA_HOME: join(root, "lima"),
+				},
+			},
+		);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+}
+
+test("a helper handed a value says how many secrets it holds and never says the value", () => {
+	const ran = runHelperProcess(document);
+	const log = `${ran.stdout}${ran.stderr}`;
+	assert.equal(ran.signal, null, `the helper was killed:\n${log}`);
+	assert.match(log, /holding 2 secrets: GH_TOKEN, NPM_TOKEN/);
+	assert.equal(log.includes(TOKEN), false, `the log held the value:\n${log}`);
+	assert.equal(log.includes("npm_abc"), false, `the log held a value:\n${log}`);
+});
+
+test("a helper handed an empty stdin exits, saying its stdin is not JSON", () => {
+	const ran = runHelperProcess("");
+	const log = `${ran.stdout}${ran.stderr}`;
+	assert.equal(ran.status, 1, log);
+	assert.match(log, /the helper's stdin is not JSON/);
+});
+
+test("a helper handed a malformed document exits naming the key and without the value", () => {
+	const bad = JSON.stringify({ secrets: [{ env: "gh token", value: TOKEN }] });
+	const ran = runHelperProcess(bad);
+	const log = `${ran.stdout}${ran.stderr}`;
+	assert.equal(ran.status, 1, log);
+	assert.match(log, /`secrets\[0\]\.env` must be an environment variable name/);
+	assert.equal(log.includes(TOKEN), false, `the log held the value:\n${log}`);
 });
