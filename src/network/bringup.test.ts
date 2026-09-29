@@ -137,6 +137,7 @@ function start(timeoutMs: number): Promise<void> {
 		sandbox: SANDBOX,
 		instance: INSTANCE,
 		policy: NOTHING_ALLOWED,
+		mounts: { project: tmpdir(), masked: [] },
 		log: () => {},
 		timeoutMs,
 	});

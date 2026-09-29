@@ -9,17 +9,22 @@
  *
  *   PLAYPEN_E2E_TUN2PROXY=/path/to/tun2proxy-bin \
  *   PLAYPEN_E2E_TEMPLATE=/path/to/vm.yaml \
+ *   PLAYPEN_E2E_PROJECT=/path/the/template/mounts \
  *   XDG_DATA_HOME=$HOME/.local/share \
  *   node src/network/e2e.ts
  *
  * The instance is created if it does not exist and left stopped at the end.
+ * PLAYPEN_E2E_PROJECT is optional: a writable host directory the template
+ * mounts at the same path in the guest. Without it the masked-file step is
+ * skipped; with it, the script writes and removes a `secret.txt` there.
  */
-import { readFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { limaHome } from "../config.ts";
 import { exists } from "../fs.ts";
+import { maskScript } from "../image/render.ts";
 import * as lima from "../lima/client.ts";
 import { instanceName } from "../session/identity.ts";
 import { capture } from "../sh.ts";
@@ -42,7 +47,13 @@ const template = process.env.PLAYPEN_E2E_TEMPLATE ?? "";
 const tun2proxy = process.env.PLAYPEN_E2E_TUN2PROXY ?? "";
 const allowedHost = process.env.PLAYPEN_E2E_ALLOWED ?? "nodejs.org";
 const deniedHost = process.env.PLAYPEN_E2E_DENIED ?? "example.com";
+const project = process.env.PLAYPEN_E2E_PROJECT ?? "";
 const paths = fencePaths(sandbox);
+
+/** What the host holds at `secret.txt`, which the guest must never read. */
+const SECRET = "the host's secret\n";
+const SECRET_FILE = "secret.txt";
+const masked = project === "" ? [] : [SECRET_FILE];
 
 /**
  * Argv substrings that identify a process as belonging to this sandbox's
@@ -151,6 +162,8 @@ async function up(
 			ports,
 			secrets: [],
 		},
+		// mounts.json needs some project even when the masked-file step is skipped.
+		mounts: { project: project === "" ? "/" : project, masked },
 		log: (text) => process.stderr.write(text),
 	});
 }
@@ -161,6 +174,8 @@ async function main(): Promise<void> {
 		process.exit(2);
 	}
 	console.log(`sandbox ${sandbox} (${instance}), runtime dir ${paths.dir}`);
+	// Before the first start: the host half of a mask is fixed when qemu is.
+	if (project !== "") await writeFile(join(project, SECRET_FILE), SECRET);
 
 	try {
 		console.log("\n1. the sandbox comes up behind the gatekeeper");
@@ -173,6 +188,16 @@ async function main(): Promise<void> {
 			"and still works once that socket's master is killed",
 			overControl,
 		);
+
+		console.log("\n2b. what the guest sees of a masked host file");
+		if (project === "") {
+			console.log("  skip  PLAYPEN_E2E_PROJECT is unset");
+		} else {
+			await step(
+				"the host's file is empty in the guest, and writes stay in the guest",
+				maskedFile,
+			);
+		}
 
 		console.log("\n3. what the guest can reach");
 		await step("tun2proxy routes the guest at the gatekeeper", startTun2proxy);
@@ -199,6 +224,7 @@ async function main(): Promise<void> {
 		console.log("\n5. stopping the VM from outside");
 		await step("the helper tears the fence down and exits", stopped);
 	} finally {
+		if (project !== "") await rm(join(project, SECRET_FILE), { force: true });
 		console.log("\n6. leftover processes for this sandbox");
 		try {
 			await step(
@@ -212,6 +238,44 @@ async function main(): Promise<void> {
 
 	console.log(`\n${passed} passed, ${failed} failed`);
 	process.exitCode = failed === 0 ? 0 : 1;
+}
+
+/**
+ * The first read comes before the guest applies its own mask, so an empty
+ * answer can only be the placeholder the helper bound under the share. The
+ * write is as root, which can also unmount the mask: what matters is that
+ * neither that nor the write reaches the host's bytes.
+ */
+async function maskedFile(): Promise<string | null> {
+	const target = join(project, SECRET_FILE);
+	const bare = await guest('cat "$1"', [target]);
+	if (bare !== "") return `before the guest's mask, the guest read "${bare}"`;
+
+	await guest(maskScript(project, masked), [], true);
+	const mounted = await guest('cat "$1"', [target]);
+	if (mounted !== "")
+		return `with the guest's mask, the guest read "${mounted}"`;
+
+	await guest('printf %s "from the guest" > "$1"', [target], true);
+	const back = await guest('cat "$1"', [target]);
+	if (back !== "from the guest") return `the guest reads back "${back}"`;
+
+	// The attack the host-side bind exists for. A failed umount prints a word,
+	// so it cannot pass as the empty answer this wants.
+	const unmounted = await guest(
+		'umount "$1" || echo "umount failed"; cat "$1"',
+		[target],
+		true,
+	);
+	if (unmounted !== "")
+		return `after unmounting its own mask, the guest read "${unmounted}"`;
+
+	const host = await readFile(target, "utf8");
+	return wanted(
+		"the host's file",
+		JSON.stringify(SECRET),
+		JSON.stringify(host),
+	);
 }
 
 async function running(pattern: string): Promise<boolean> {

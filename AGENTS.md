@@ -28,7 +28,10 @@ you could not.
 
 ## Do not relitigate
 
-- A mask is not a privacy control. Never call `masked` entries hidden.
+- A mask keeps the host's contents out of the VM only through the host-side bind
+  in the helper's `bwrap`, and only until the host path is replaced while the VM
+  runs. The guest-side mount alone never did, so never call the guest side a
+  privacy control.
 - Project config runs on the host only via `loadTrustedConfig` in
   `src/session/trust.ts`. It executes a snapshot of the approved import graph,
   never the project file. Approvals live outside the mount.

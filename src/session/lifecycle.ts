@@ -221,6 +221,10 @@ async function giveCloneItsMount(sb: Sandbox): Promise<void> {
 /**
  * Applied on every start, because a bind mount does not survive a reboot and
  * the mask set can change without the sandbox being rebuilt.
+ *
+ * This is the guest half; the host half is the placeholder the fence's helper
+ * binds over the same paths in qemu's mount table, which is in place before the
+ * guest boots and so before this runs.
  */
 async function applyMasks(
 	sb: Sandbox,
@@ -335,27 +339,36 @@ export interface Running {
  */
 async function startFenced(sb: Sandbox, template: Template): Promise<void> {
 	const { allow, mode, ports, secrets } = template.network;
-	await fenced(sb, {
-		// A port or a secret's host is a grant, so writing it once is enough.
-		allow: [
-			...BUILTIN_ALLOW,
-			...allow,
-			...ports.map(({ host }) => `localhost:${host}`),
-			...secrets.flatMap(({ hosts }) => hosts),
-		],
-		mode,
-		ports,
-		secrets,
-	});
+	await fenced(
+		sb,
+		{
+			// A port or a secret's host is a grant, so writing it once is enough.
+			allow: [
+				...BUILTIN_ALLOW,
+				...allow,
+				...ports.map(({ host }) => `localhost:${host}`),
+				...secrets.flatMap(({ hosts }) => hosts),
+			],
+			mode,
+			ports,
+			secrets,
+		},
+		template.masks,
+	);
 	await warnWithoutEgress(sb);
 	await warnUnboundPorts(sb);
 }
 
-function fenced(sb: Sandbox, policy: Policy): Promise<void> {
+function fenced(
+	sb: Sandbox,
+	policy: Policy,
+	masked: readonly string[],
+): Promise<void> {
 	return bringUp({
 		sandbox: sb.sandbox,
 		instance: sb.instance,
 		policy,
+		mounts: { project: sb.cwd, masked: [...masked] },
 		log: (text) => process.stderr.write(text),
 	});
 }

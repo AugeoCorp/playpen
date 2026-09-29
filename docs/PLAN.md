@@ -9,14 +9,15 @@ not be inverted are in `AGENTS.md`. The network fence's mechanism is in
 Works end to end on Bazzite, Lima 2.2.0, Node 24. Baking the base takes ~75s
 once; a sandbox then clones from it and boots in 10s. Restart ~20s.
 
-| Area                                                               | State                  |
-| ------------------------------------------------------------------ | ---------------------- |
-| `start` `shell` `run` `list` `stop` `remove` `doctor` `image show` | done                   |
-| `playpen claude` with `~/.claude` allowlist sync and `--no-auth`   | done                   |
-| `playpen.config.ts` masks, trust gate on config execution          | done, verified on host |
-| `image build`, base image + clone                                  | done, verified on host |
-| `completion bash\|zsh`, generated from the citty command tree      | done; zsh unverified   |
-| network fence (mechanism in `docs/NETWORK.md`)                     | done, see below        |
+| Area                                                               | State                                                        |
+| ------------------------------------------------------------------ | ------------------------------------------------------------ |
+| `start` `shell` `run` `list` `stop` `remove` `doctor` `image show` | done                                                         |
+| `playpen claude` with `~/.claude` allowlist sync and `--no-auth`   | done                                                         |
+| `playpen.config.ts` masks, trust gate on config execution          | done, verified on host                                       |
+| `masked` also hides the host's contents (host-side bind)           | done, e2e and hand run on a VM (no KVM), boot check included |
+| `image build`, base image + clone                                  | done, verified on host                                       |
+| `completion bash\|zsh`, generated from the citty command tree      | done; zsh unverified                                         |
+| network fence (mechanism in `docs/NETWORK.md`)                     | done, see below                                              |
 
 ## Known problems
 
@@ -128,8 +129,13 @@ in, so provisioning stays skipped.
 
 Masks therefore cannot be a provision entry -- nothing can add one to a clone.
 They run from the host over `limactl shell` after every start, which they had to
-do anyway since a bind does not survive a reboot. Changing `masked` now takes
-effect on the next `start` without a rebuild.
+do anyway since a bind does not survive a reboot. That is the guest half of a
+mask. The host half is the helper binding an empty read-only placeholder over
+each masked path in qemu's mount table (`docs/NETWORK.md`, Lifecycle), which is
+what keeps the host's contents out of the VM while the host path is not replaced
+under it; the helper detects a replace and stops the sandbox. It needs a fresh
+VM start. Changing `masked` now takes effect on the next `start` without a
+rebuild.
 
 Consequence: cpus, memory, disk and mountType come from the base, so they cannot
 yet vary per sandbox. They are global defaults today.

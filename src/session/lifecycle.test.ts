@@ -15,6 +15,7 @@ import { dirname, join } from "node:path";
 import { mock, type TestContext, test } from "node:test";
 import { baseImage } from "../image/base.ts";
 import { imageHash } from "../image/render.ts";
+import type { Mounts } from "../network/fence.ts";
 import type { Policy, PortForward } from "../network/policy.ts";
 import { baseInstanceName } from "./identity.ts";
 import type { Sandbox } from "./lifecycle.ts";
@@ -34,6 +35,8 @@ let exists = false;
 let status: "Running" | "Stopped" = "Running";
 /** The policy the sandbox was brought up behind, as the fence was handed it. */
 let fencedWith: Policy | null = null;
+/** The project and masks the sandbox was brought up with, as the fence was handed them. */
+let fencedMounts: Mounts | null = null;
 /** What the fake fence reports for a running VM; a test overrides it. */
 let fenceState:
 	| "sealed"
@@ -79,8 +82,9 @@ mock.module("../network/fence.ts", {
 		// Like the real one: the policy is written whatever state the fence is
 		// in, and a sandbox that is already up behind a gatekeeper is left where
 		// it is rather than started a second time.
-		async bringUp(opts: { policy: Policy }) {
+		async bringUp(opts: { policy: Policy; mounts: Mounts }) {
 			fencedWith = opts.policy;
+			fencedMounts = opts.mounts;
 			const up = fenceState === "sealed" || fenceState === "sealed-no-egress";
 			if (fenced && up) {
 				calls.push("leave the fence alone");
@@ -160,6 +164,7 @@ async function sandboxFor(
 	calls.length = 0;
 	exists = false;
 	fencedWith = null;
+	fencedMounts = null;
 	fenceState = "sealed";
 	helperEgress = true;
 	helperUnbound = [];
@@ -335,6 +340,18 @@ test("a sandbox already running is handed the project's policy again, so a tight
 		mode: "enforce",
 		ports: [],
 		secrets: [],
+	});
+});
+
+test("the fence is handed the project and the masks, so the host half can hide them", async (t) => {
+	const { sb, run } = await sandboxFor(
+		t,
+		'export default { masked: ["node_modules", ".env"] };',
+	);
+	await run();
+	assert.deepEqual(fencedMounts, {
+		project: sb.cwd,
+		masked: ["node_modules", ".env"],
 	});
 });
 

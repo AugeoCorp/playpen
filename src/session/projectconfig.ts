@@ -73,18 +73,26 @@ export interface NetworkConfig {
 export interface PlaypenConfig {
 	/**
 	 * Project-relative paths, directories or files, given guest-local storage
-	 * instead of the 9p share.
-	 *
-	 * Two reasons, neither of them privacy: the 9p share is slow, and host and
+	 * instead of the 9p share. Three reasons: the 9p share is slow; host and
 	 * guest frequently need different contents at the same path — native modules
-	 * and toolchain builds are per-platform, so one copy cannot serve both.
+	 * and toolchain builds are per-platform, so one copy cannot serve both; and
+	 * the host's contents, such as a `.env`, stay out of the guest.
 	 *
-	 * Masked, not hidden: the host's copy stays mounted underneath, and the
-	 * guest has passwordless root and can unmount the mask. Keep secrets outside
-	 * the project directory.
+	 * The guest gets its own writable, persistent copy, empty at first. The
+	 * host's contents stay out of the share, even from a guest that unmounts its
+	 * own mask, while the host path is not replaced under a running VM: the
+	 * fence's helper binds an empty read-only placeholder over the path where
+	 * qemu serves it. Editing it in place is safe; replacing it (rename-over
+	 * save, `sed -i`, `git checkout`), while the VM boots or after, is detected
+	 * by the helper, which stops the sandbox, or cuts off its network and exits
+	 * if it cannot. The bind is made when the VM starts, so an entry added to a
+	 * running sandbox keeps the host's contents out only after
+	 * `playpen stop && playpen start`.
 	 *
 	 * A path missing on the host is created by the guest as an empty directory:
-	 * create a masked file on the host first.
+	 * create a masked file on the host first (`touch .env`). A symlink, a path
+	 * under one or under a file, or a nested path whose parent is gone refuses
+	 * the start.
 	 *
 	 * One concrete relative path per entry; a bind mount needs a single target,
 	 * so globs are unsupported.
