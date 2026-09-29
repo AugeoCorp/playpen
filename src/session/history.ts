@@ -16,6 +16,65 @@ import { assertSandboxName } from "./identity.ts";
  */
 const GUEST_REL = ".claude/projects";
 
+/**
+ * Where Lima mounts the host's history directory. Lima expands `{{.Home}}` to
+ * the guest user's home when it loads the instance (`executeGuestTemplate` in
+ * its limayaml package), so the guest's user name and home layout -- which
+ * Lima derives from the host user and has changed between releases -- are
+ * never worked out here.
+ */
+export const GUEST_MOUNT_POINT = `{{.Home}}/${GUEST_REL}`;
+
+/**
+ * The guest writes here freely, symlinks included, so nothing on the host
+ * reads what is inside: only Lima's mount and the guest touch it.
+ */
+export function hostDir(sandbox: string): string {
+	assertSandboxName(sandbox);
+	return join(historyDir(), sandbox);
+}
+
+/**
+ * Before every boot, since Lima creates a missing mount location itself, and
+ * makes it 0755 (`os.MkdirAll` in its qemu driver).
+ */
+export async function makeHostDir(sandbox: string): Promise<string> {
+	const dir = hostDir(sandbox);
+	await mkdir(dir, { recursive: true, mode: 0o700 });
+	return dir;
+}
+
+/**
+ * Once per boot. cloud-init creates a mount point's missing parents as root
+ * (`util.ensure_dir` in its cc_mounts module), so on a fresh clone the guest
+ * user would not own `~/.claude`, and Claude Code could write nothing but
+ * history.
+ */
+const SETTLE = [
+	"set -euo pipefail",
+	'claude="$HOME/.claude"',
+	'[ -O "$claude" ] || sudo chown "$(id -u):$(id -g)" "$claude"',
+	'if ! mountpoint -q "$claude/projects"; then',
+	'  echo "$claude/projects is not mounted from the host" >&2',
+	"  exit 1",
+	"fi",
+].join("\n");
+
+/** Never throws: a sandbox whose history is not settled still runs. */
+export async function settle(instance: string): Promise<void> {
+	let failure: string | null;
+	try {
+		const result = await lima.runScript(instance, SETTLE);
+		failure =
+			result.code === 0 ? null : result.stderr.trim() || `exit ${result.code}`;
+	} catch (err) {
+		failure = err instanceof Error ? err.message : String(err);
+	}
+	if (failure !== null) {
+		console.error(`warning: Claude history is not on the host (${failure})`);
+	}
+}
+
 /** Joined into a path that is written and read, so it is checked like `store`'s. */
 export function archivePath(sandbox: string): string {
 	assertSandboxName(sandbox);

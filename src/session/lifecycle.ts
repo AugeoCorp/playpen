@@ -180,27 +180,74 @@ async function writeTemplate(sb: Sandbox, template: Template): Promise<void> {
  */
 const NO_MOUNTS = /"?mounts"?\s*:\s*\[\s*\]/g;
 
+function mountsFor(sb: Sandbox): string {
+	// JSON is valid YAML in either style, and quotes the paths correctly.
+	return `"mounts": ${JSON.stringify([
+		{ location: sb.cwd, writable: true },
+		{
+			location: history.hostDir(sb.sandbox),
+			mountPoint: history.GUEST_MOUNT_POINT,
+			writable: true,
+		},
+	])}`;
+}
+
+/** What a sandbox created before the history mount was given. */
+function projectOnlyMounts(sb: Sandbox): string {
+	return `"mounts": ${JSON.stringify([{ location: sb.cwd, writable: true }])}`;
+}
+
 /**
  * A clone carries the base's instance config, which Lima has resolved: `base:`
  * consumed, the concrete `images:` list spliced in. Lima rejects a config that
  * still has `base:` and no `images:`, so playpen's own rendered template cannot
- * replace it -- only the empty `mounts` the base left behind is rewritten.
+ * replace it -- only the `mounts` the base left empty is rewritten.
+ *
+ * A sandbox made before the history mount existed has the project's mount
+ * alone, which playpen wrote and so can match exactly. It gets the history
+ * mount here too, in place, on its next boot: Lima reads lima.yaml on every
+ * start. Its rendered template is left as it was, so `changedTemplate` does
+ * not offer a rebuild for this -- a rebuild would delete the guest's own copy
+ * of its history before the mount could take it over.
  *
  * Provisioning stays skipped either way: the guard markers are on the cloned
  * disk and the image hash has not changed.
  */
-async function giveCloneItsMount(sb: Sandbox): Promise<void> {
+async function giveInstanceItsMounts(sb: Sandbox): Promise<void> {
+	await history.makeHostDir(sb.sandbox);
 	const path = join(limaHome(), sb.instance, "lima.yaml");
 	const yaml = await readFile(path, "utf8");
-	const found = yaml.match(NO_MOUNTS)?.length ?? 0;
-	if (found !== 1) {
+	const mounts = mountsFor(sb);
+	if (yaml.includes(mounts)) return;
+	const empty = yaml.match(NO_MOUNTS)?.length ?? 0;
+	const projectOnly = yaml.split(projectOnlyMounts(sb)).length - 1;
+	if (empty + projectOnly !== 1) {
 		throw new Error(
-			`cloned ${path} has ${found} empty \`mounts\` to fill in, expected 1`,
+			`${path} has ${empty + projectOnly} \`mounts\` playpen wrote to fill in, expected 1`,
 		);
 	}
-	// JSON is valid YAML in either style, and quotes the path correctly.
-	const mounts = JSON.stringify([{ location: sb.cwd, writable: true }]);
-	await writeFile(path, yaml.replace(NO_MOUNTS, `"mounts": ${mounts}`), "utf8");
+	const filled =
+		empty === 1
+			? yaml.replace(NO_MOUNTS, () => mounts)
+			: yaml.replace(projectOnlyMounts(sb), () => mounts);
+	await writeFile(path, filled, "utf8");
+}
+
+/**
+ * Not fatal: the sandbox still works, with Claude history kept in the guest as
+ * before. Said, because that history is now lost when the sandbox is removed.
+ */
+async function mountHistoryOnExisting(sb: Sandbox): Promise<void> {
+	try {
+		await giveInstanceItsMounts(sb);
+	} catch (err) {
+		console.error(
+			`warning: Claude history is not mounted from the host (${err instanceof Error ? err.message : err})`,
+		);
+		console.error(
+			`  it stays in the guest, and \`playpen remove\` deletes it with the VM`,
+		);
+	}
 }
 
 /**
@@ -368,6 +415,8 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 						`  stop it and start it again: playpen stop --force && playpen start`,
 				);
 			}
+			const booting = !lima.isRunning(existing);
+			if (booting) await mountHistoryOnExisting(sb);
 			// In every other state, including a sandbox that is already up: a
 			// stopped VM is started, one that survived its helper gets another
 			// gatekeeper, and a running one has its policy rewritten, which is
@@ -375,6 +424,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 			// started takes effect without a restart.
 			await startFenced(sb, template);
 			await applyMasks(sb, template.masks);
+			if (booting) await history.settle(sb.instance);
 			await store.touch(sb.sandbox);
 			return { created: false, setupOk: true, setup: template.setup };
 		}
@@ -399,7 +449,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 	// it, see nothing stale, and try to start the broken instance forever.
 	await lima.clone(base.instance, sb.instance);
 	try {
-		await giveCloneItsMount(sb);
+		await giveInstanceItsMounts(sb);
 		await startFenced(sb, current);
 	} catch (err) {
 		await lima
@@ -412,6 +462,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 		throw err;
 	}
 	const masked = await applyMasks(sb, current.masks);
+	await history.settle(sb.instance);
 	if (await history.restore(sb.instance, sb.sandbox)) {
 		console.error(`restored Claude history from the previous sandbox`);
 	}
