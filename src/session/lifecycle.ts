@@ -1,7 +1,7 @@
 import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { defaults, limaHome, templatesDir } from "../config.ts";
-import { replaceDurably } from "../fs.ts";
+import { writeAtomic } from "../fs.ts";
 import { ensureBase, findBase } from "../image/bake.ts";
 import { baseImage } from "../image/base.ts";
 import { maskScript, render, serialize } from "../image/render.ts";
@@ -215,15 +215,6 @@ function limaYaml(sb: Sandbox): string {
 }
 
 /**
- * False for a sandbox that may still hold Claude history on its own disk,
- * whatever its lima.yaml says: one made before the history mount, until a
- * start has moved that history to the host and checked it there.
- */
-export function historyOnHost(sb: Sandbox): Promise<boolean> {
-	return history.onHost(sb.instance);
-}
-
-/**
  * A clone carries the base's instance config, which Lima has resolved: `base:`
  * consumed, the concrete `images:` list spliced in. Lima rejects a config that
  * still has `base:` and no `images:`, so playpen's own rendered template cannot
@@ -255,7 +246,7 @@ async function giveInstanceItsMounts(sb: Sandbox): Promise<void> {
 		empty === 1
 			? yaml.replace(NO_MOUNTS, () => mounts)
 			: yaml.replace(projectOnlyMounts(sb), () => mounts);
-	await replaceDurably(path, filled);
+	await writeAtomic(path, filled);
 }
 
 /**
@@ -428,7 +419,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 		template = await renderTemplate(sb);
 		const reason =
 			(await changedTemplate(sb, template)) ?? (await outdatedBase(sb));
-		if (reason !== null && !(await historyOnHost(sb))) {
+		if (reason !== null && !(await history.onHost(sb.instance))) {
 			console.error(reason);
 			console.error(
 				`  no rebuild is offered until its Claude history is safely on the host; a start with the history directory mounted moves it there`,
@@ -609,7 +600,7 @@ const MOVE_HISTORY_FIRST = [
 
 /** For the `remove` prompt: what happens to Claude history if it goes ahead. */
 export async function historyNotice(sb: Sandbox): Promise<string> {
-	if (!(await lima.get(sb.instance)) || (await historyOnHost(sb)))
+	if (!(await lima.get(sb.instance)) || (await history.onHost(sb.instance)))
 		return "Claude transcripts and memory are on the host and stay for the next start.";
 	return `Claude transcripts and memory may still be on the VM's disk only;\n  ${MOVE_HISTORY_FIRST}.`;
 }
@@ -625,7 +616,7 @@ export async function destroy(
 ): Promise<void> {
 	const existing = await lima.get(sb.instance);
 	if (existing) {
-		if (!opts.discardHistory && !(await historyOnHost(sb)))
+		if (!opts.discardHistory && !(await history.onHost(sb.instance)))
 			throw new Error(
 				`${sb.sandbox} may still hold Claude history on its disk that is not on the host.\n  ${MOVE_HISTORY_FIRST}.`,
 			);

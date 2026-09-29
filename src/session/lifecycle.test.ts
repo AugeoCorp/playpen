@@ -365,8 +365,8 @@ test("a sandbox already running without its history on the host is asked to move
 	await run();
 	assert.ok(calls.includes("settle history"), calls.join(", "));
 	assert.equal(settleArgs[0], "takeover");
-	const { historyOnHost } = await import("./lifecycle.ts");
-	assert.equal(await historyOnHost(sb), true);
+	const { onHost } = await import("./history.ts");
+	assert.equal(await onHost(sb.instance), true);
 });
 
 test("lima.yaml is replaced whole rather than rewritten in place, so a reader holding the old one never sees it half-written", async (t) => {
@@ -474,8 +474,8 @@ test("a sandbox whose mounts playpen did not write still starts, with a warning 
 		/`playpen remove --yes --discard-history` deletes it with the VM/,
 	);
 	assert.deepEqual(asked, [], "offered a rebuild with its history unmoved");
-	const { historyOnHost } = await import("./lifecycle.ts");
-	assert.equal(await historyOnHost(sb), false);
+	const { onHost } = await import("./history.ts");
+	assert.equal(await onHost(sb.instance), false);
 });
 
 test("a sandbox that boots without its history mount no longer counts as having its history on the host", async (t) => {
@@ -489,24 +489,24 @@ test("a sandbox that boots without its history mount no longer counts as having 
 	status = "Stopped";
 	t.mock.method(console, "error", () => {});
 	await run();
-	const { historyOnHost } = await import("./lifecycle.ts");
-	assert.equal(await historyOnHost(sb), false);
+	const { onHost } = await import("./history.ts");
+	assert.equal(await onHost(sb.instance), false);
 });
 
 test("a sandbox's history counts as on the host only after a start has moved it there", async (t) => {
 	const { sb, run } = await sandboxFor(t, BOTH);
-	const { historyOnHost } = await import("./lifecycle.ts");
+	const { onHost } = await import("./history.ts");
 	await stoppedWithProjectMountOnly(sb);
-	assert.equal(await historyOnHost(sb), false, "before its first boot");
+	assert.equal(await onHost(sb.instance), false, "before its first boot");
 	await run();
-	assert.equal(await historyOnHost(sb), true, "after it");
+	assert.equal(await onHost(sb.instance), true, "after it");
 });
 
 test("a new sandbox's history counts as on the host once its first boot has checked the mount", async (t) => {
 	const { sb, run } = await sandboxFor(t, BOTH);
 	await run();
-	const { historyOnHost } = await import("./lifecycle.ts");
-	assert.equal(await historyOnHost(sb), true);
+	const { onHost } = await import("./history.ts");
+	assert.equal(await onHost(sb.instance), true);
 });
 
 /** An archive as the archive-on-destroy scheme left it; its bytes are opaque here. */
@@ -557,8 +557,8 @@ test("an old archive that fails to import does not keep the guest's own history 
 	importExit = 2;
 	t.mock.method(console, "error", () => {});
 	await run();
-	const { historyOnHost } = await import("./lifecycle.ts");
-	assert.equal(await historyOnHost(sb), true);
+	const { onHost } = await import("./history.ts");
+	assert.equal(await onHost(sb.instance), true);
 });
 
 test("a whole script that fails leaves the history counted as not moved", async (t) => {
@@ -567,8 +567,8 @@ test("a whole script that fails leaves the history counted as not moved", async 
 	settleExit = 1;
 	t.mock.method(console, "error", () => {});
 	await run();
-	const { historyOnHost } = await import("./lifecycle.ts");
-	assert.equal(await historyOnHost(sb), false);
+	const { onHost } = await import("./history.ts");
+	assert.equal(await onHost(sb.instance), false);
 });
 
 test("files with two copies are named, with where the one not in place went", async (t) => {
