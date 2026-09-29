@@ -72,11 +72,13 @@ const ROUTING = new Set([
 	"x-original-url",
 ]);
 
-function withoutHopByHop(raw: readonly string[]): string[] {
+function withoutHopByHop(raw: readonly string[], upgrade: boolean): string[] {
 	const kept: string[] = [];
 	for (let i = 0; i + 1 < raw.length; i += 2) {
 		const name = raw[i] as string;
-		if (HOP_BY_HOP.has(name.toLowerCase())) continue;
+		const lower = name.toLowerCase();
+		const carriesUpgrade = lower === "connection" || lower === "upgrade";
+		if (HOP_BY_HOP.has(lower) && !(upgrade && carriesUpgrade)) continue;
 		kept.push(name, raw[i + 1] as string);
 	}
 	return kept;
@@ -163,8 +165,8 @@ function tunnelServer(
 	 * Node checks only the first of several, and a front end may route on the
 	 * last, or on a header that overrides it.
 	 */
-	const forwardedHeaders = (req: IncomingMessage) => {
-		const kept = withoutHopByHop(req.rawHeaders);
+	const forwardedHeaders = (req: IncomingMessage, upgrade: boolean) => {
+		const kept = withoutHopByHop(req.rawHeaders, upgrade);
 		const headers = ["Host", host];
 		for (let i = 0; i + 1 < kept.length; i += 2) {
 			const name = kept[i] as string;
@@ -174,9 +176,9 @@ function tunnelServer(
 		return headers;
 	};
 
-	const upstream = (req: IncomingMessage) => {
+	const upstream = (req: IncomingMessage, upgrade: boolean) => {
 		const { headers, injected } = rewriteHeaders(
-			forwardedHeaders(req),
+			forwardedHeaders(req, upgrade),
 			secrets,
 		);
 		const logInjected = () => {
@@ -223,6 +225,9 @@ function tunnelServer(
 			done(new Error(reason));
 		},
 		ALPNProtocols: ["http/1.1"],
+		// Node's default, 300 s for the whole request, would cut off a large
+		// upload over a slow link.
+		requestTimeout: 0,
 	});
 
 	server.on("connection", (socket: Socket) => {
@@ -237,12 +242,12 @@ function tunnelServer(
 			res.writeHead(421, { connection: "close" }).end();
 			return;
 		}
-		const up = upstream(req);
+		const up = upstream(req, false);
 		up.on("response", (answer) => {
 			res.writeHead(
 				answer.statusCode ?? 502,
 				answer.statusMessage,
-				withoutHopByHop(answer.rawHeaders),
+				withoutHopByHop(answer.rawHeaders, false),
 			);
 			answer.pipe(res);
 		});
@@ -252,6 +257,50 @@ function tunnelServer(
 			else res.writeHead(502, { connection: "close" }).end();
 		});
 		req.pipe(up);
+	});
+
+	server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+		if (misdirected(req)) {
+			socket.end(
+				"HTTP/1.1 421 Misdirected Request\r\nconnection: close\r\n\r\n",
+			);
+			return;
+		}
+		const up = upstream(req, true);
+		up.on("upgrade", (answer, upSocket, upHead) => {
+			const lines = [`HTTP/1.1 101 ${answer.statusMessage ?? ""}`];
+			for (let i = 0; i + 1 < answer.rawHeaders.length; i += 2) {
+				lines.push(`${answer.rawHeaders[i]}: ${answer.rawHeaders[i + 1]}`);
+			}
+			socket.write(`${lines.join("\r\n")}\r\n\r\n`);
+			if (upHead.length > 0) socket.write(upHead);
+			if (head.length > 0) upSocket.write(head);
+			upSocket.pipe(socket).pipe(upSocket);
+			upSocket.on("error", () => socket.destroy());
+			socket.on("error", () => upSocket.destroy());
+			socket.on("close", () => upSocket.destroy());
+		});
+		// The host declined the upgrade: its answer goes back, and the tunnel
+		// closes behind it.
+		up.on("response", (answer) => {
+			const lines = [
+				`HTTP/1.1 ${answer.statusCode} ${answer.statusMessage ?? ""}`,
+			];
+			const kept = withoutHopByHop(answer.rawHeaders, false);
+			for (let i = 0; i + 1 < kept.length; i += 2) {
+				// Decoded below, and ended by the close instead.
+				if (kept[i]?.toLowerCase() === "transfer-encoding") continue;
+				lines.push(`${kept[i]}: ${kept[i + 1]}`);
+			}
+			lines.push("connection: close");
+			socket.write(`${lines.join("\r\n")}\r\n\r\n`);
+			answer.pipe(socket);
+		});
+		up.on("error", (err) => {
+			logError(err);
+			socket.destroy();
+		});
+		up.end();
 	});
 
 	return server;
