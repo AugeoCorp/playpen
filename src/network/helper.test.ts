@@ -140,13 +140,6 @@ test("the helper reads its secrets from a document on stdin", async () => {
 	]);
 });
 
-test("a helper handed nothing at all refuses to start rather than serving with no answer", async () => {
-	await assert.rejects(
-		readHeldSecrets(Readable.from([])),
-		/the helper's stdin is not JSON/,
-	);
-});
-
 test("the helper's log line for its secrets is a count and names", async () => {
 	const held = await readHeldSecrets(Readable.from([document]));
 	assert.equal(describeHeld(held), "holding 2 secrets: GH_TOKEN, NPM_TOKEN");
@@ -188,6 +181,13 @@ test("a helper handed a value says how many secrets it holds and never says the 
 	assert.match(log, /holding 2 secrets: GH_TOKEN, NPM_TOKEN/);
 	assert.equal(log.includes(TOKEN), false, `the log held the value:\n${log}`);
 	assert.equal(log.includes("npm_abc"), false, `the log held a value:\n${log}`);
+});
+
+test("a helper handed an empty stdin exits, saying its stdin is not JSON", () => {
+	const ran = runHelperProcess("");
+	const log = `${ran.stdout}${ran.stderr}`;
+	assert.equal(ran.status, 1, log);
+	assert.match(log, /the helper's stdin is not JSON/);
 });
 
 test("a helper handed a malformed document exits naming the key and without the value", () => {

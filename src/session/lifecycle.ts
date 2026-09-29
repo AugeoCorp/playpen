@@ -10,6 +10,7 @@ import {
 	fenceStatus,
 	type HeldSecret,
 	liveHelper,
+	readPolicy,
 } from "../network/fence.ts";
 import {
 	BUILTIN_ALLOW,
@@ -553,6 +554,10 @@ export async function stop(sb: Sandbox): Promise<void> {
  * socket, and a guest that is about to be deleted is the last one to hand the
  * network to. Best effort throughout -- a sandbox too broken to boot must
  * still be deletable.
+ *
+ * The policy keeps the `secrets` grants the sandbox was last started with. They
+ * allow nothing, since hosts come only from `allow`, but they keep the granted
+ * variables out of the helper's environment, as on any other start.
  */
 async function saveHistory(sb: Sandbox, running: boolean): Promise<void> {
 	try {
@@ -561,7 +566,13 @@ async function saveHistory(sb: Sandbox, running: boolean): Promise<void> {
 		if (!running && !(await store.load(sb.sandbox))) return;
 		if (!running) {
 			console.error(`starting it briefly to save Claude history`);
-			await fenced(sb, { allow: [], mode: "enforce", ports: [], secrets: [] });
+			const last = await readPolicy(sb.sandbox).catch(() => null);
+			await fenced(sb, {
+				allow: [],
+				mode: "enforce",
+				ports: [],
+				secrets: last?.secrets ?? [],
+			});
 		}
 		await history.archive(sb.instance, sb.sandbox);
 	} catch (err) {

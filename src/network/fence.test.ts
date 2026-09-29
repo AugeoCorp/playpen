@@ -9,12 +9,15 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
+import { text } from "node:stream/consumers";
 import { type TestContext, test } from "node:test";
 import { self } from "../session/proc.ts";
 import {
 	classifyFence,
 	fencePaths,
 	type HeldSecret,
+	handOver,
 	helperSpawnOptions,
 	liveHelper,
 	looksLikeQemu,
@@ -405,9 +408,23 @@ test("the document written to the helper's stdin reads back as the same secrets"
 	);
 });
 
-test("a document with no secrets is still a document, so a helper with none never waits on stdin", () => {
+test("a project with no secrets sends an empty list, which reads back as none", () => {
 	assert.equal(serializeHeldSecrets([]), '{"secrets":[]}');
 	assert.deepEqual(parseHeldSecrets('{"secrets":[]}'), []);
+});
+
+test("the helper's stdin is ended after the document, so a helper reading to the end stops waiting", async () => {
+	const stdin = new PassThrough();
+	handOver(stdin, [heldToken]);
+	assert.equal(
+		stdin.writableEnded,
+		true,
+		"the stream was left open, so a helper reading to its end would wait forever",
+	);
+	assert.equal(
+		await text(stdin),
+		`{"secrets":[{"env":"GH_TOKEN","value":"${TOKEN}"}]}`,
+	);
 });
 
 /** A stdin document that is `heldToken` with one field replaced. */
@@ -469,6 +486,9 @@ test("stdin that is not JSON is refused without quoting what was on it", () => {
 			return true;
 		},
 	);
+});
+
+test("an empty stdin is refused as not JSON", () => {
 	assert.throws(() => parseHeldSecrets(""), /the helper's stdin is not JSON/);
 });
 
@@ -556,16 +576,30 @@ test("a name the config lists twice is reported once", () => {
 });
 
 test("the helper is spawned detached, with a pipe for stdin and helper.log for its output", () => {
-	const { detached, stdio } = helperSpawnOptions(7, [heldToken], {});
+	const { detached, stdio } = helperSpawnOptions(
+		7,
+		{ secrets: [] },
+		[heldToken],
+		{},
+	);
 	assert.equal(detached, true);
 	assert.deepEqual(stdio, ["pipe", 7, 7]);
 });
 
 test("the helper is spawned without the variables its secrets came from, and with the rest", () => {
-	const { env } = helperSpawnOptions(7, [heldToken], {
+	const { env } = helperSpawnOptions(7, { secrets: [] }, [heldToken], {
 		GH_TOKEN: TOKEN,
 		PATH: "/usr/bin",
 		HOME: "/home/me",
 	});
 	assert.deepEqual(env, { PATH: "/usr/bin", HOME: "/home/me" });
+});
+
+test("a helper handed no values is still spawned without the variables its policy grants", () => {
+	const policy = { secrets: [{ env: "GH_TOKEN", hosts: ["api.github.com"] }] };
+	const { env } = helperSpawnOptions(7, policy, [], {
+		GH_TOKEN: TOKEN,
+		PATH: "/usr/bin",
+	});
+	assert.deepEqual(env, { PATH: "/usr/bin" });
 });
