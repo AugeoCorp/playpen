@@ -15,10 +15,10 @@ const RENEW_MS = DAY_MS;
 export type ContextFor = (host: string) => SecureContext;
 
 /**
- * Server certificates for any host, signed by the install's CA, which the
- * guest trusts. One key serves every host for the life of the process; one
- * certificate per host is minted on first use and reused until it nears its
- * end.
+ * Server certificates for the hosts the interceptor terminates TLS for, signed
+ * by the install's CA. One key serves every host for the life of the process;
+ * one certificate per host is minted on first use and reused until it nears
+ * its end.
  */
 export function leafMinter(ca: Ca, now: () => number = Date.now): ContextFor {
 	// Taken apart here so that what the minter keeps is the parsed key, which
