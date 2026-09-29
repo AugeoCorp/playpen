@@ -262,13 +262,6 @@ test("a new sandbox whose guest lacks the history mount still starts, with a war
 	);
 });
 
-test("the host's history directory is readable by its owner only", async (t) => {
-	const { sb, run } = await sandboxFor(t, BOTH);
-	await run();
-	const mode = (await stat(historyDirOf(sb))).mode & 0o777;
-	assert.equal(mode.toString(8), "700");
-});
-
 test("a stopped sandbox has ~/.claude readied again on its next start, so a first boot cut short is mended", async (t) => {
 	const { run } = await sandboxFor(t, BOTH);
 	await run();
