@@ -1,10 +1,12 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import {
 	chmod,
+	lstat,
 	mkdir,
 	open,
 	readFile,
 	readlink,
+	realpath,
 	stat,
 	unlink,
 } from "node:fs/promises";
@@ -51,6 +53,7 @@ export interface FencePaths {
 	control: string;
 	helper: string;
 	policy: string;
+	mounts: string;
 	gatekeeperLog: string;
 	helperLog: string;
 	/** Written by the inside half once the VM is up; holds its ssh port. */
@@ -66,6 +69,7 @@ export function fencePaths(sandbox: string): FencePaths {
 		control: join(dir, "control.sock"),
 		helper: join(dir, "helper.json"),
 		policy: join(dir, "policy.json"),
+		mounts: join(dir, "mounts.json"),
 		gatekeeperLog: join(dir, "gatekeeper.log"),
 		helperLog: join(dir, "helper.log"),
 		ready: join(dir, "ready"),
@@ -200,6 +204,93 @@ export async function readPolicy(sandbox: string): Promise<Policy> {
 	const result = policyFile.safeParse(JSON.parse(await readFile(path, "utf8")));
 	if (!result.success) throw new Error(describeIssue(result.error, path));
 	return result.data;
+}
+
+export interface Mounts {
+	/** Absolute, real path of the project directory the guest shares. */
+	project: string;
+	/** Validated `masked` entries, relative to `project`. */
+	masked: string[];
+}
+
+const mountsFile = z.strictObject({
+	project: z.string().min(1),
+	masked: z.array(z.string().min(1)),
+});
+
+export async function writeMounts(
+	sandbox: string,
+	mounts: Mounts,
+): Promise<void> {
+	await ensureFenceDir(sandbox);
+	await writeAtomic(fencePaths(sandbox).mounts, `${JSON.stringify(mounts)}\n`);
+}
+
+/**
+ * Throws rather than reading a bad file as "mask nothing": an unreadable mask
+ * list must stop the sandbox coming up, never expose the project.
+ */
+export async function readMounts(sandbox: string): Promise<Mounts> {
+	const path = fencePaths(sandbox).mounts;
+	const result = mountsFile.safeParse(JSON.parse(await readFile(path, "utf8")));
+	if (!result.success) throw new Error(describeIssue(result.error, path));
+	return result.data;
+}
+
+export type MaskKind =
+	| "dir"
+	| "file"
+	| "missing"
+	| "parent-missing"
+	| "symlink"
+	| "under-symlink";
+
+/**
+ * What is on the host at a masked entry, without following it. Only a `dir` or
+ * a `file` can have a placeholder bound over it: bwrap would create a missing
+ * path on the host's disk, and a symlink, or a path through one, may lead
+ * outside the project. A guest can leave a nested entry symlinked, or without
+ * a parent, by renaming that parent: only the bound path itself is protected
+ * from a rename. A missing leaf under a parent that is there is what a fresh
+ * clone looks like before the guest creates it.
+ */
+export async function maskKind(
+	project: string,
+	entry: string,
+): Promise<MaskKind> {
+	const path = join(project, entry);
+	let parent: string;
+	try {
+		parent = await realpath(dirname(path));
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException).code;
+		if (code === "ENOENT" || code === "ENOTDIR") return "parent-missing";
+		throw err;
+	}
+	if (parent !== join(await realpath(project), dirname(entry))) {
+		return "under-symlink";
+	}
+	try {
+		const info = await lstat(path);
+		if (info.isSymbolicLink()) return "symlink";
+		return info.isDirectory() ? "dir" : "file";
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException).code;
+		if (code === "ENOENT" || code === "ENOTDIR") return "missing";
+		throw err;
+	}
+}
+
+/**
+ * Whether `entry` lies under another entry of `masked`. That entry's
+ * placeholder already hides it, and bwrap cannot create a bind target inside
+ * the read-only placeholder directory, whichever order the two are bound in.
+ */
+export function underMaskedDir(
+	entry: string,
+	masked: readonly string[],
+): boolean {
+	return masked.some((other) => entry.startsWith(`${other}/`));
 }
 
 export type FenceState =
