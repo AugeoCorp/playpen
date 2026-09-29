@@ -1,6 +1,6 @@
 import { defineCommand } from "citty";
 import * as leases from "../session/leases.ts";
-import { destroy, identify } from "../session/lifecycle.ts";
+import { destroy, historyNotice, identify } from "../session/lifecycle.ts";
 import { withLock } from "../session/lock.ts";
 
 export default defineCommand({
@@ -29,18 +29,14 @@ export default defineCommand({
 			console.error(`This deletes VM ${sb.instance}.`);
 			console.error(`${sb.cwd} is a host mount and is not affected.`);
 			console.error(`Installed packages and other guest-local state are lost.`);
-			console.error(
-				`Claude transcripts and memory are saved, and restored by the next start.`,
-			);
+			for (const line of await historyNotice(sb)) console.error(line);
 			console.error(`Re-run with --yes to proceed.`);
 			process.exitCode = 1;
 			return;
 		}
 
 		// Checked and destroyed under one lock: unlocked, a session attaching in
-		// between would have its guest disk deleted underneath it, which is what
-		// the gate exists to prevent. Worse than stopping, so it is gated on a
-		// live lease rather than on removal itself.
+		// between would have its guest disk deleted underneath it.
 		const deleted = await withLock(sb.sandbox, async () => {
 			const others = await leases.live(sb.sandbox);
 			if (others.length > 0 && !args.force) {

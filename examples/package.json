@@ -1,0 +1,12 @@
+{
+	"name": "examples",
+	"version": "1.0.0",
+	"description": "`playpen.config.ts` here shows every key with a note on what it does. Copy it to your project's root and keep the parts that apply; the rules behind each key are in the main README under Config.",
+	"license": "ISC",
+	"author": "",
+	"type": "commonjs",
+	"main": "index.js",
+	"scripts": {
+		"test": "echo \"Error: no test specified\" && exit 1"
+	}
+}
