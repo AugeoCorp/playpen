@@ -24,12 +24,16 @@ interface LogLine {
 }
 
 /**
- * A verdict on a `CONNECT`; or, inside a tunnel the interceptor holds, a value
- * put into a request (`inject`, naming the header and the variable, never the
- * value) or a TLS or upstream failure (`error`, the message alone).
+ * A verdict on a `CONNECT`; a `note` from the interceptor on one it allowed,
+ * such as a secret the policy names that the helper does not hold; or, inside
+ * a tunnel the interceptor holds, a value put into a request (`inject`, naming
+ * the header and the variable, never the value) or a TLS or upstream failure
+ * (`error`, the message alone).
  */
 export type LogEntry =
-	| (LogLine & { verdict: "allow" | "deny" | "probe" | "report" | "error" })
+	| (LogLine & {
+			verdict: "allow" | "deny" | "probe" | "report" | "note" | "error";
+	  })
 	| (LogLine & { verdict: "inject"; header: string; env: string });
 
 /**

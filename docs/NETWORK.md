@@ -372,8 +372,11 @@ the one the entry names exactly: `api.github.com` does not cover
 `uploads.api.github.com`, though the allow entry it implies does. `secrets` is
 read from the current policy on each `CONNECT`, like `allow`, so a reload adds
 or drops interception for new tunnels without a restart; a tunnel already open
-keeps what it started with. Every other `CONNECT` -- another host, another port
-on the same host -- and every plain-HTTP request is piped as before.
+keeps what it started with. A secret a reload adds is intercepted for only if
+the helper already holds its variable, since values arrive only at spawn; one it
+does not hold is piped, placeholder and all, with a `note` line saying so (see
+below). Every other `CONNECT` -- another host, another port on the same host --
+and every plain-HTTP request is piped as before.
 
 **What happens in the tunnel.** The gatekeeper answers the `CONNECT` itself and
 hands the tunnel to a server made for that one host
@@ -429,8 +432,11 @@ A wrong server name, `Host` or request target is a `deny` line saying what was
 asked for. A client that sends no server name is refused in the handshake too,
 but that shows up as an `error` line (OpenSSL's "no suitable signature
 algorithm"), since there was no name to check. Any other TLS or upstream failure
-is an `error` line with the message alone. No line carries a value, and nothing
-logs a body.
+is an `error` line with the message alone. A `CONNECT` to port 443 of a host
+that names a secret the helper does not hold gets a `note` line, so an audit
+shows why a request went out with the placeholder:
+`secret GH_TOKEN is named for this host but this helper does not hold it; piped`.
+No line carries a value, and nothing logs a body.
 
 **What it does not do.** HTTP/2: only `http/1.1` is offered, which gh, git, curl
 and Node fall back to. A client that sends no server name is refused, as above.

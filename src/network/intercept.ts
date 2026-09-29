@@ -85,27 +85,38 @@ function withoutHopByHop(raw: readonly string[], upgrade: boolean): string[] {
 }
 
 /**
- * The held secrets `policy` lets go to `host`: an exact match on a name its
+ * The variables `policy` lets go to `host`: an exact match on a name its
  * `secrets` lists, since a secret is meant for that host and not for
  * everything under it.
  */
-function secretsFor(
-	policy: Policy,
-	held: readonly HeldSecret[],
-	host: string,
-): HeldSecret[] {
-	const granted = new Set(
+function grantedTo(policy: Policy, host: string): Set<string> {
+	return new Set(
 		policy.secrets
 			.filter((grant) => grant.hosts.some((h) => parseSecretHost(h) === host))
 			.map((grant) => grant.env),
 	);
-	return held.filter((secret) => granted.has(secret.env));
 }
 
 export function interceptor(opts: InterceptorOptions): Interceptor {
 	return (policy, target, lookup) => {
 		if (target.port !== TLS_PORT) return null;
-		const secrets = secretsFor(policy, opts.held, target.host);
+		const granted = grantedTo(policy, target.host);
+		const secrets = opts.held.filter((secret) => granted.has(secret.env));
+		// A grant added to the config after this helper was spawned: its
+		// placeholder reaches the host, which a user would otherwise see only as
+		// a 401.
+		const heldNames = new Set(secrets.map((secret) => secret.env));
+		for (const env of granted) {
+			if (heldNames.has(env)) continue;
+			const outcome =
+				secrets.length === 0 ? "piped" : "its placeholder goes out as it is";
+			opts.log({
+				time: new Date().toISOString(),
+				...target,
+				verdict: "note",
+				reason: `secret ${env} is named for this host but this helper does not hold it; ${outcome}`,
+			});
+		}
 		if (secrets.length === 0) return null;
 		return tunnelServer(opts, target, secrets, lookup);
 	};

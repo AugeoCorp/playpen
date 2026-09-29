@@ -676,12 +676,49 @@ test("a subdomain of a secret's host is piped: a secret is for the host it names
 	await assertPiped(port, log, "sub.api.example:443");
 });
 
-test("a secret the policy names but the helper does not hold is not intercepted for", async (t) => {
+test("a secret the policy names but the helper does not hold is piped, and a note says why", async (t) => {
 	const { port, log } = await gatekeeperWith(t, {
 		policy: () => secretPolicy(),
 		held: [{ env: "NPM_TOKEN", value: "npm_real" }],
 	});
-	await assertPiped(port, log, "api.example:443");
+
+	await assert.rejects(tunnel(port, "api.example:443"), { message: "closed" });
+
+	assert.deepEqual(
+		log.map((e) => e.verdict),
+		["allow", "note", "deny"],
+	);
+	assert.equal(
+		log[1]?.reason,
+		"secret GH_TOKEN is named for this host but this helper does not hold it; piped",
+	);
+	assert.match(log[2]?.reason ?? "", /an address of this machine/);
+});
+
+test("a secret named but not held beside one that is held is noted, and the tunnel is still intercepted", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port, log } = await gatekeeperWith(t, {
+		policy: () => ({
+			...secretPolicy(),
+			secrets: [
+				{ env: "GH_TOKEN", hosts: ["api.example"] },
+				{ env: "NPM_TOKEN", hosts: ["api.example"] },
+			],
+		}),
+		upstreamPort: upstream.port,
+	});
+
+	await send(clientThrough(t, port, "api.example:443"), {
+		headers: { authorization: `token ${PLACEHOLDER}` },
+	});
+
+	assert.equal(upstream.received[0]?.authorization, "token ghp_real_value");
+	assert.deepEqual(
+		log.filter((e) => e.verdict === "note").map((e) => e.reason),
+		[
+			"secret NPM_TOKEN is named for this host but this helper does not hold it; its placeholder goes out as it is",
+		],
+	);
 });
 
 test("a secret dropped from the policy stops being intercepted for on the next tunnel", async (t) => {
