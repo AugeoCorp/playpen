@@ -255,22 +255,18 @@ function said(warnings: { mock: { calls: { arguments: unknown[] }[] } }) {
 	return warnings.mock.calls.map((c) => String(c.arguments[0]));
 }
 
-test("destroying a stopped sandbox boots it inside the fence with nothing allowed, to save its history", async (t) => {
+test("destroying a stopped sandbox deletes it without booting it", async (t) => {
 	const { sb, run } = await sandboxFor(t, BOTH);
 	await run();
 	const { destroy } = await import("./lifecycle.ts");
 	status = "Stopped";
 	fenced = false;
-	fencedWith = null;
 	calls.length = 0;
+
 	await destroy(sb);
-	assert.deepEqual(fencedWith, {
-		allow: [],
-		mode: "enforce",
-		ports: [],
-		secrets: [],
-	});
-	assert.equal(calls[0], "start behind the gatekeeper");
+
+	assert.deepEqual(calls, []);
+	assert.equal(exists, false);
 });
 
 test("a new sandbox still starts when its history cannot be put back, and the warning says where it is and that the next start tries again", async (t) => {
@@ -326,6 +322,63 @@ test("history that could not be restored is restored by the next start of the sa
 	await run();
 
 	assert.deepEqual(restored, ["saved transcripts"]);
+});
+
+test("stopping a sandbox that never got its history back leaves the host's copy alone, and says so", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await hostHolds(sb, "saved transcripts");
+	restoreFails = new Error("write EPIPE");
+	const warnings = t.mock.method(console, "error", () => {});
+	await run();
+	guestHistory = "only what this sandbox wrote";
+	const { stop } = await import("./lifecycle.ts");
+
+	await stop(sb);
+
+	assert.equal(await readFile(hostCopy(sb), "utf8"), "saved transcripts");
+	assert.ok(
+		said(warnings).some((line) =>
+			line.startsWith("warning: Claude history not saved"),
+		),
+		`expected a warning that history was not saved, got:\n${said(warnings).join("\n")}`,
+	);
+	assert.ok(calls.includes("stop"), `expected a stop in ${calls.join(", ")}`);
+});
+
+test("stopping a sandbox that got its history back replaces the host's copy, and keeps the one before as <sandbox>.prev.tar", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await hostHolds(sb, "saved transcripts");
+	await run();
+	guestHistory = "saved transcripts and today's";
+	const { stop } = await import("./lifecycle.ts");
+
+	await stop(sb);
+
+	assert.equal(
+		await readFile(hostCopy(sb), "utf8"),
+		"saved transcripts and today's",
+	);
+	assert.equal(
+		await readFile(hostCopy(sb, ".prev.tar"), "utf8"),
+		"saved transcripts",
+	);
+});
+
+test("history is saved at the first stop of a sandbox the host has none for, and the next start does not put it back", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await run();
+	guestHistory = "first transcripts";
+	const { stop } = await import("./lifecycle.ts");
+	await stop(sb);
+	status = "Stopped";
+	fenced = false;
+	calls.length = 0;
+
+	await run();
+
+	assert.equal(await readFile(hostCopy(sb), "utf8"), "first transcripts");
+	assert.deepEqual(restored, []);
+	assert.equal(calls.includes("restore history"), false, calls.join(", "));
 });
 
 test("history restored once is not sent to the same sandbox again", async (t) => {

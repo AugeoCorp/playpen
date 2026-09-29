@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { link, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { historyDir, limaHome } from "../config.ts";
 import { exists } from "../fs.ts";
@@ -8,8 +8,12 @@ import { assertSandboxName } from "./identity.ts";
 /**
  * Claude Code keeps session transcripts and the persistent memory directory in
  * the guest, and nothing syncs them back to the host, so recloning a sandbox
- * would drop both. They are archived out before a sandbox is destroyed, and
- * restored at every start into a VM that does not yet hold the archive.
+ * would drop both. The host keeps one copy per sandbox, saved at every stop and
+ * restored at every start into a VM that does not yet hold it.
+ *
+ * The copy is replaced only by a VM known to hold it: one it was restored
+ * into, or one it was saved from. A VM whose restore failed would otherwise
+ * replace it with history that never included it.
  *
  * The whole directory travels rather than one project's slug: a sandbox serves
  * a single project, so that is already the scope, and it avoids depending on
@@ -23,6 +27,11 @@ export function archivePath(sandbox: string): string {
 	return join(historyDir(), `${sandbox}.tar`);
 }
 
+function previousPath(sandbox: string): string {
+	assertSandboxName(sandbox);
+	return join(historyDir(), `${sandbox}.prev.tar`);
+}
+
 /**
  * Present when this VM holds the host copy. In the Lima instance's own
  * directory, so deleting or recloning the instance drops it and a new clone
@@ -33,7 +42,24 @@ function holdsCopyMarker(instance: string): string {
 	return join(limaHome(), instance, "playpen-holds-history");
 }
 
-/** Never throws: losing history is bad, but blocking a delete over it is worse. */
+/**
+ * Written beside the copy and renamed over it, so a failure part way leaves
+ * the old copy whole. The old one becomes `<sandbox>.prev.tar`.
+ */
+async function replaceCopy(sandbox: string, tar: Buffer): Promise<void> {
+	const path = archivePath(sandbox);
+	const previous = previousPath(sandbox);
+	const temp = `${path}.${process.pid}.tmp`;
+	await mkdir(historyDir(), { recursive: true });
+	await writeFile(temp, tar);
+	await rm(previous, { force: true });
+	await link(path, previous).catch((err: NodeJS.ErrnoException) => {
+		if (err.code !== "ENOENT") throw err;
+	});
+	await rename(temp, path);
+}
+
+/** Never throws: losing history is bad, but blocking a stop or a delete over it is worse. */
 export async function archive(
 	instance: string,
 	sandbox: string,
@@ -47,6 +73,17 @@ export async function archive(
 	].join("\n");
 
 	try {
+		const path = archivePath(sandbox);
+		const marker = holdsCopyMarker(instance);
+		if ((await exists(path)) && !(await exists(marker))) {
+			console.error(
+				`warning: Claude history not saved: ${path} has not been restored into this sandbox yet,`,
+			);
+			console.error(
+				`  and saving would replace it. the next start restores it.`,
+			);
+			return;
+		}
 		const result = await lima.runScript(instance, script);
 		if (result.code === 0 && result.stdout.length === 0) return;
 		if (result.code !== 0) {
@@ -55,8 +92,8 @@ export async function archive(
 			);
 			return;
 		}
-		await mkdir(historyDir(), { recursive: true });
-		await writeFile(archivePath(sandbox), result.stdout);
+		await replaceCopy(sandbox, result.stdout);
+		await writeFile(marker, "");
 	} catch (err) {
 		console.error(
 			`warning: could not save Claude history (${err instanceof Error ? err.message : err})`,
@@ -113,4 +150,5 @@ export async function restore(
 	console.error(
 		`  it stays in ${path}, and the next start of this sandbox tries again.`,
 	);
+	console.error(`  until then, stopping this sandbox does not save over it.`);
 }

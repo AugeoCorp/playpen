@@ -510,44 +510,26 @@ async function release(
 	});
 }
 
+/** The one way playpen stops a running sandbox, so its history is saved first. */
+async function saveHistoryAndStop(sb: Sandbox, force: boolean): Promise<void> {
+	await history.archive(sb.instance, sb.sandbox);
+	await lima.stop(sb.instance, force);
+}
+
 export async function stop(sb: Sandbox): Promise<void> {
 	const existing = await lima.get(sb.instance);
-	if (existing && lima.isRunning(existing)) await lima.stop(sb.instance);
+	if (existing && lima.isRunning(existing)) await saveHistoryAndStop(sb, false);
 }
 
 /**
- * Archiving needs the guest up, so a stopped sandbox is started for it: ~10s on
- * a delete, worth it because transcripts and memory exist nowhere else. It is
- * started fenced with nothing allowed: the archive travels over the control
- * socket, and a guest that is about to be deleted is the last one to hand the
- * network to. Best effort throughout -- a sandbox too broken to boot must
- * still be deletable.
+ * A stopped sandbox is deleted without booting it: `stop` saved its history.
+ * One stopped some other way, by limactl or a host shutdown, loses what it
+ * wrote after its last stop through playpen.
  */
-async function saveHistory(sb: Sandbox, running: boolean): Promise<void> {
-	try {
-		// No session record means creation never finished, so there is no history
-		// and no reason to boot it.
-		if (!running && !(await store.load(sb.sandbox))) return;
-		if (!running) {
-			console.error(`starting it briefly to save Claude history`);
-			await fenced(sb, { allow: [], mode: "enforce", ports: [], secrets: [] });
-		}
-		await history.archive(sb.instance, sb.sandbox);
-	} catch (err) {
-		console.error(
-			`warning: could not save Claude history (${err instanceof Error ? err.message : err})`,
-		);
-	}
-}
-
 export async function destroy(sb: Sandbox): Promise<void> {
 	const existing = await lima.get(sb.instance);
 	if (existing) {
-		await saveHistory(sb, lima.isRunning(existing));
-		// Re-read: saveHistory may have started it, and stopping an instance that
-		// is already stopped is an error that must not block the delete.
-		if (lima.isRunning(await lima.get(sb.instance)))
-			await lima.stop(sb.instance, true);
+		if (lima.isRunning(existing)) await saveHistoryAndStop(sb, true);
 		await lima.remove(sb.instance);
 	}
 	await store.remove(sb.sandbox);
