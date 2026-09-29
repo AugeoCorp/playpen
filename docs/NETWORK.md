@@ -394,9 +394,11 @@ new TLS connection to the host the `CONNECT` named, at port 443, verified
 against the certificates Node carries. That connection is resolved and dialed
 through the same lookup a piped tunnel would use, so every rule under "Policy"
 holds for it: a secret's host whose name resolves onto this machine is refused
-the same way. Bodies, both ways, are streamed through unread. One tunnel carries
-as many kept-alive requests as the client sends on it, and a WebSocket upgrade
-gets the same header rewrite before the two connections are joined.
+the same way. Bodies, both ways, are streamed through unread; a host that hangs
+up partway through its answer cuts the guest's response off the same way, with
+an `error` line. One tunnel carries as many kept-alive requests as the client
+sends on it, and a WebSocket upgrade gets the same header rewrite before the two
+connections are joined.
 
 **Where the placeholder is replaced.** In the `Authorization` request header and
 nowhere else: wherever it appears verbatim (`token X`, `Bearer X`), and inside

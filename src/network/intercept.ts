@@ -246,12 +246,19 @@ function tunnelServer(
 			res.writeHead(502, { connection: "close" }).end();
 			return;
 		}
+		let guestGone = false;
 		up.on("response", (answer) => {
 			res.writeHead(
 				answer.statusCode ?? 502,
 				answer.statusMessage,
 				withoutHopByHop(answer.rawHeaders, false),
 			);
+			// `pipe` does not pass on an error: a host hanging up mid-answer would
+			// otherwise leave the guest waiting for the rest.
+			answer.on("error", (err) => {
+				if (!guestGone) logError(err);
+				res.destroy();
+			});
 			answer.pipe(res);
 		});
 		up.on("error", (err) => {
@@ -260,7 +267,9 @@ function tunnelServer(
 			else res.writeHead(502, { connection: "close" }).end();
 		});
 		res.on("close", () => {
-			if (!res.writableFinished) up.destroy();
+			if (res.writableFinished) return;
+			guestGone = true;
+			up.destroy();
 		});
 		req.pipe(up);
 	});
@@ -307,6 +316,10 @@ function tunnelServer(
 			}
 			lines.push("connection: close");
 			socket.write(`${lines.join("\r\n")}\r\n\r\n`);
+			answer.on("error", (err) => {
+				logError(err);
+				socket.destroy();
+			});
 			answer.pipe(socket);
 		});
 		up.on("error", (err) => {
