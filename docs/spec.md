@@ -98,7 +98,9 @@ Derived from signals already present — **no LLM call**, which would add cost,
 latency, and an auth dependency to a cosmetic feature. Fallback chain:
 
 1. First user message in the guest's `~/.claude/projects/<slug>/*.jsonl`,
-   truncated to ~50 chars. Usually the ideal title verbatim.
+   truncated to ~50 chars. Usually the ideal title verbatim. Read in the guest:
+   the host holds the same files in the sandbox's history directory, but the
+   guest writes them, symlinks included, so the host never reads inside it.
 2. Git branch of the mounted dir, if not `main`/`master`.
 3. Most recent commit subject.
 4. `session <date>`.
@@ -108,8 +110,10 @@ fallthrough, so coupling to Claude's JSONL format is safe — a wrong title is
 cosmetic.
 
 **What resume actually buys you:** the cwd is a host mount, so files survive
-regardless. What's trapped in the VM is installed dependencies, shell history,
-and Claude's own session history. Resuming a sandbox resumes the conversation.
+regardless, and so is Claude's own session history, which is mounted from
+`<data>/history/<sandbox>/` and survives the VM too. What's trapped in the VM is
+installed dependencies and shell history. Resuming a sandbox resumes the
+conversation.
 
 ---
 

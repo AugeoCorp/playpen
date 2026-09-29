@@ -1,6 +1,6 @@
 # Plan
 
-Updated 2026-09-17. Design and reasoning are in `spec.md`; constraints that must
+Updated 2026-09-29. Design and reasoning are in `spec.md`; constraints that must
 not be inverted are in `AGENTS.md`. The network fence's mechanism is in
 `docs/NETWORK.md`. Update this when status changes.
 
@@ -25,11 +25,10 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
   keeps the old one running.
 - `start` leaves 8GiB running until `stop`. Idle auto-stop deferred to v1; a
   forgotten VM happened twice in the first half hour, so revisit.
-- Nothing collects old sandboxes, old bases, or history archives. A clone costs
-  almost nothing, but every `image build --force` and every image change leaves
-  a ~2GB base behind. Unscheduled. Whatever does it cannot just delete:
-  `destroy` boots a stopped sandbox to archive its Claude history, so collecting
-  N sandboxes costs N boots unless they are archived on stop instead.
+- Nothing collects old sandboxes or old bases, or the Claude history directories
+  `remove` keeps on purpose. A clone costs almost nothing, but every
+  `image build --force` and every image change leaves a ~2GB base behind.
+  Unscheduled. `remove` boots nothing, so collecting sandboxes costs no boots.
 - Node 26 from nodejs.org and mise are both in the base, verified in a booted
   guest from wiped mise state: `npm test` runs natively (80 pass, nothing
   skipped, no compile-out); a project pinning `.node-version` installs and
@@ -66,8 +65,7 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
   few seconds. Seen once in the container; the helper's record disappearing is
   the reliable signal that the stop has finished. Once `qemu.pid` is gone,
   `bringUp` waits for that record before spawning a helper, so a VM started
-  again inside the gap (a rebuild's history boot, then the new clone) is not
-  taken as up on the last run's record.
+  again inside the gap is not taken as up on the last run's record.
 - The base's `claude code to be installed` readiness probe waits up to 600s for
   `claude` even when a provision layer already failed loudly in
   `cloud-init-output.log`, so a broken bake reports a timeout rather than its
@@ -98,7 +96,8 @@ Two things make a sandbox stale: its rendered template no longer matches the one
 written at creation, or a newer base exists than the one it was cloned from.
 `start` offers a rebuild rather than doing it -- a reclone is ~10s but discards
 installed packages and masked directories, and `start` is routine. Claude
-transcripts and memory are archived across it. Without a TTY it declines.
+transcripts and memory are on the host and survive it. Without a TTY it
+declines.
 
 One base for now. `playpen.config.ts` does not choose an image.
 
@@ -124,9 +123,19 @@ yet vary per sandbox. They are global defaults today.
 - [x] `list` hides bases
 - [x] a stale sandbox offers a rebuild instead of only warning
 - [x] a sandbox on an older base than the newest is offered one too
-- [x] `~/.claude/projects` is archived on destroy and restored on create, so a
-      rebuild keeps transcripts and the memory directory; round-trip verified on
-      the host 2026-09-15
+- [x] `~/.claude/projects` is a host directory, `<data>/history/<sandbox>/`,
+      created `0700` and mounted writable, so transcripts and memory are on the
+      host as they are written and survive a rebuild, `remove`, and a VM that
+      dies. It replaced an archive taken on destroy, which lost history to
+      interrupted unpacks and to VMs stopped outside playpen. Nothing on the
+      host reads inside it: the guest writes it, symlinks included. The guest
+      shows it with the host user's gid, since 9p passes host ids through; Lima
+      gives the guest user the host's uid, so it owns it and can write it.
+- [x] a sandbox from before the mount gets it in its `lima.yaml` on its next
+      boot through playpen, which also moves the history on its disk into it and
+      imports a leftover `<sandbox>.tar` inside the guest. A rebuild is not
+      offered until that boot has happened. If moving it fails, the history
+      stays hidden under the mount and a later rebuild deletes it.
 - [x] verified on the host: a fresh sandbox clones and boots in 10s, with no
       package installs and no image download
 
@@ -155,9 +164,9 @@ every reclone. Decide alongside preset bases.
 
 First test to write once this works: `start`, write a file under
 `~/.claude/projects`, `remove --yes`, `start` again, assert it came back.
-Verified by hand once already, so this is about keeping it true. Automated
-checks otherwise stay out of the way -- manual testing has been finding the real
-bugs.
+Verified by hand with the history mount on 2026-09-29, after an unclean
+`limactl stop -f`, so this is about keeping it true. Automated checks otherwise
+stay out of the way -- manual testing has been finding the real bugs.
 
 ### 4. Later, each small
 
