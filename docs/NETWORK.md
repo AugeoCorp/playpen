@@ -312,6 +312,26 @@ already merged -- and a mode, and applies these rules to every `CONNECT`:
 common package managers need, not a measurement. It stays a guess until a
 `mode: "log"` run against real projects replaces it (see "Later").
 
+## Secrets
+
+`network.secrets` will let a later interceptor terminate TLS for the hosts it
+names, so the guest can hold a placeholder while the real value is swapped in on
+the host side. For the guest to accept the interceptor's certificates, each
+install has one certificate authority (`src/network/ca.ts`) in the `ca/`
+directory under the data directory: its key is mode 0600, is refused if it is
+readable by group or others, and never leaves the host. Its certificate is
+public and is installed into the guest's trust store when the base image is
+baked (the `caTrust()` layer). curl, git and Go programs such as gh read that
+store. Node reads no system store, Python's requests carries its own bundle, and
+uv and other tools with their own TLS stack read `SSL_CERT_FILE`, so
+`NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE` and `SSL_CERT_FILE` are set through
+the image's `env`, which Lima writes to `/etc/environment` for every session,
+sudo included. The certificate is part of the image hash, so a new CA rebakes
+the base. The CA is created in a staging directory and published with one
+rename, so two first runs at once share one CA. It has no name constraints: the
+hosts differ per project and change over time, while the CA is one per install.
+Nothing intercepts yet.
+
 ## What it does not contain
 
 - **An allowed destination is still a way out.** Allow `github.com` and an agent

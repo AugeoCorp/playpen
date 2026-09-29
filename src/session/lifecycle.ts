@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { defaults, limaHome, templatesDir } from "../config.ts";
 import { writeAtomic } from "../fs.ts";
 import { ensureBase, findBase } from "../image/bake.ts";
-import { baseImage } from "../image/base.ts";
+import { loadBaseImage } from "../image/base.ts";
 import { maskScript, render, serialize } from "../image/render.ts";
 import * as lima from "../lima/client.ts";
 import { bringUp, fenceStatus, liveHelper } from "../network/fence.ts";
@@ -46,8 +46,8 @@ function templatePath(sb: Sandbox): string {
 	return join(templatesDir(), `${sb.sandbox}.yaml`);
 }
 
-function renderFor(sb: Sandbox) {
-	return render(baseImage, { ...defaults, mount: sb.cwd });
+async function renderFor(sb: Sandbox) {
+	return render(await loadBaseImage(), { ...defaults, mount: sb.cwd });
 }
 
 async function loadConfig(sb: Sandbox): Promise<{
@@ -157,7 +157,7 @@ interface Template {
 /** Loads the project config, so it is read once per command and reused. */
 async function renderTemplate(sb: Sandbox): Promise<Template> {
 	const { masked, setup, network } = await loadConfig(sb);
-	const rendered = renderFor(sb);
+	const rendered = await renderFor(sb);
 	return {
 		yaml: `${serialize(rendered)}\n`,
 		hash: rendered.contentHash,

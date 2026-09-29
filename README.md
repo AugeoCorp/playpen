@@ -127,6 +127,9 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
   allow entry it implies covers subdomains, like any entry in `allow`. A mistake
   here stops the config loading rather than being skipped. Nothing is injected
   yet: in this version an entry is checked and reported and does nothing else.
+  Every sandbox trusts a certificate authority made for this install, whose key
+  stays on the host (`docs/NETWORK.md`, "Secrets"); the first `start` after
+  upgrading rebakes the base and offers each sandbox a rebuild.
 - `mode: "log"` records what the sandbox reaches and blocks nothing on the
   internet side; your own machine's localhost stays closed in every mode. Use it
   to find the hosts a project needs, then list them; the default is `enforce`.
