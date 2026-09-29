@@ -231,17 +231,23 @@ function clientThrough(
 	return agent;
 }
 
-/** One GET for `/user` over `agent`. */
+/**
+ * One GET over `agent`. `headers` as a flat `[name, value, …]` list goes out
+ * exactly as given, with no `Host` added, so a test can send two.
+ */
 function send(
 	agent: https.Agent,
-	opts: { headers: Record<string, string> },
+	opts: {
+		headers: Record<string, string> | string[];
+		path?: string;
+	},
 ): Promise<{ status: number; headers: Record<string, unknown>; body: string }> {
 	return new Promise((resolve, reject) => {
 		const req = https.request(
 			{
 				agent,
 				host: "api.example",
-				path: "/user",
+				path: opts.path ?? "/user",
 				headers: opts.headers,
 			},
 			(res) => {
@@ -285,6 +291,98 @@ test("the host is dialed by the name the CONNECT approved", async (t) => {
 	await send(clientThrough(t, port, "api.example:443"), { headers: {} });
 
 	assert.equal(upstream.received[0]?.servername, "api.example");
+});
+
+test("a request whose Host header names another site is refused, and nothing is sent on", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port, log } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+
+	const answer = await send(clientThrough(t, port, "api.example:443"), {
+		headers: {
+			host: "elsewhere.example",
+			authorization: `token ${PLACEHOLDER}`,
+		},
+	});
+
+	assert.equal(answer.status, 421);
+	assert.deepEqual(upstream.received, []);
+	const denied = log.find((e) => e.verdict === "deny");
+	assert.match(
+		denied?.reason ?? "",
+		/Host header elsewhere\.example is not api\.example/,
+	);
+});
+
+test("a request line naming another site in full is refused, and nothing is sent on", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port, log } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+
+	const answer = await send(clientThrough(t, port, "api.example:443"), {
+		path: "https://evil.example/steal",
+		headers: { authorization: `token ${PLACEHOLDER}` },
+	});
+
+	assert.equal(answer.status, 421);
+	assert.deepEqual(upstream.received, []);
+	const denied = log.find((e) => e.verdict === "deny");
+	assert.match(
+		denied?.reason ?? "",
+		/request target https:\/\/evil\.example\/steal is not a path on api\.example/,
+	);
+});
+
+test("the host sees exactly one Host header, the approved host, when the guest sends two", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+
+	await send(clientThrough(t, port, "api.example:443"), {
+		headers: [
+			"Host",
+			"api.example",
+			"Host",
+			"evil.example",
+			"Authorization",
+			`token ${PLACEHOLDER}`,
+		],
+	});
+
+	assert.deepEqual(headersNamed(upstream.received[0], "host"), ["api.example"]);
+});
+
+test("headers a front end could route by instead of Host never reach the host", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+
+	await send(clientThrough(t, port, "api.example:443"), {
+		headers: {
+			"x-forwarded-host": "evil.example",
+			forwarded: "host=evil.example",
+			"x-original-url": "https://evil.example/",
+		},
+	});
+
+	const received = upstream.received[0];
+	assert.ok(received, "the request never arrived");
+	assert.deepEqual(
+		{
+			xForwardedHost: headersNamed(received, "x-forwarded-host"),
+			forwarded: headersNamed(received, "forwarded"),
+			xOriginalUrl: headersNamed(received, "x-original-url"),
+		},
+		{ xForwardedHost: [], forwarded: [], xOriginalUrl: [] },
+	);
 });
 
 test("the host's answer reaches the guest intact", async (t) => {
@@ -455,6 +553,40 @@ function plainHttpGet(proxyPort: number, url: string): Promise<number> {
 		req.end();
 	});
 }
+
+test("the guest's hop-by-hop headers do not reach the host", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+
+	await send(clientThrough(t, port, "api.example:443"), {
+		headers: {
+			connection: "keep-alive, x-from-guest",
+			"keep-alive": "timeout=5",
+			"proxy-authorization": "Basic eDp5",
+			"proxy-connection": "keep-alive",
+		},
+	});
+
+	const received = upstream.received[0];
+	assert.deepEqual(
+		{
+			connection: headersNamed(received, "connection"),
+			keepAlive: headersNamed(received, "keep-alive"),
+			proxyAuthorization: headersNamed(received, "proxy-authorization"),
+			proxyConnection: headersNamed(received, "proxy-connection"),
+		},
+		// The connection header is the interceptor's own, to the host.
+		{
+			connection: ["keep-alive"],
+			keepAlive: [],
+			proxyAuthorization: [],
+			proxyConnection: [],
+		},
+	);
+});
 
 test("the host is dialed only at an address the gatekeeper's own rules allow", async (t) => {
 	const { port, log } = await gatekeeperWith(t, {
