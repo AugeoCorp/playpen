@@ -1,7 +1,17 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+	type FileHandle,
+	mkdir,
+	mkdtemp,
+	open,
+	readdir,
+	readFile,
+	rm,
+	stat,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { mock, type TestContext, test } from "node:test";
 import { loadBaseImage } from "../image/base.ts";
 import { imageHash } from "../image/render.ts";
@@ -14,6 +24,9 @@ const calls: string[] = [];
 /** `mock.module` refuses a second mock of the same specifier, so behaviour that
  * varies per test has to live here rather than in the fake. */
 let maskExit = 0;
+let historyMounted = true;
+/** The clone's lima.yaml as a reader opened it before playpen filled it in. */
+let heldLimaYaml: FileHandle | null = null;
 let limaHome = "";
 /** Whether the fake has been cloned into existence yet, so `stop` has something to stop. */
 let exists = false;
@@ -21,8 +34,6 @@ let exists = false;
 let status: "Running" | "Stopped" = "Running";
 /** The policy the sandbox was brought up behind, as the fence was handed it. */
 let fencedWith: Policy | null = null;
-/** The fake's policy.json: the last policy written, which outlives a stop. */
-let policyFile: Policy | null = null;
 /** What the fake fence reports for a running VM; a test overrides it. */
 let fenceState:
 	| "sealed"
@@ -35,6 +46,20 @@ let helperEgress = true;
 let helperUnbound: PortForward[] = [];
 /** Whether the fake fence has been brought up already in this test. */
 let fenced = false;
+/** Every yes-or-no question put to the user, and the answer each one gets. */
+const asked: string[] = [];
+let answer = false;
+
+mock.module("../prompt.ts", {
+	// @ts-expect-error @types/node still types this as `namedExports`, which the
+	// runtime has deprecated. Delete this line once the types catch up.
+	exports: {
+		async confirm(question: string) {
+			asked.push(question);
+			return answer;
+		},
+	},
+});
 
 mock.module("../network/fence.ts", {
 	// @ts-expect-error @types/node still types this as `namedExports`, which the
@@ -51,17 +76,11 @@ mock.module("../network/fence.ts", {
 			unboundPorts: helperUnbound,
 			policy: "1:2",
 		}),
-		// Like the real one, which reads back the policy.json `bringUp` wrote.
-		async readPolicy() {
-			if (policyFile === null) throw new Error("no policy.json");
-			return policyFile;
-		},
 		// Like the real one: the policy is written whatever state the fence is
 		// in, and a sandbox that is already up behind a gatekeeper is left where
 		// it is rather than started a second time.
 		async bringUp(opts: { policy: Policy }) {
 			fencedWith = opts.policy;
-			policyFile = opts.policy;
 			const up = fenceState === "sealed" || fenceState === "sealed-no-egress";
 			if (fenced && up) {
 				calls.push("leave the fence alone");
@@ -87,18 +106,27 @@ mock.module("../lima/client.ts", {
 		stop: async () => {
 			calls.push("stop");
 		},
-		remove: async () => {},
+		remove: async () => {
+			calls.push("delete the VM");
+		},
 		async clone(_source: string, target: string) {
 			exists = true;
 			await mkdir(join(limaHome, target), { recursive: true });
-			await writeFile(
-				join(limaHome, target, "lima.yaml"),
-				'{"mounts": []}\n',
-				"utf8",
-			);
+			const path = join(limaHome, target, "lima.yaml");
+			await writeFile(path, '{"mounts": []}\n', "utf8");
+			heldLimaYaml = await open(path, "r");
 		},
 		async runScript(_instance: string, script: string) {
-			calls.push(script.includes("mount --bind") ? "apply masks" : "other");
+			const step = guestStep(script);
+			calls.push(step);
+			if (step === "ready ~/.claude")
+				return historyMounted
+					? { code: 0, stdout: "", stderr: "" }
+					: {
+							code: 1,
+							stdout: "",
+							stderr: "projects is not mounted from the host",
+						};
 			return { code: maskExit, stdout: "", stderr: "mask script failed" };
 		},
 		async shell(_i: string, _w: string, command: readonly string[]) {
@@ -107,6 +135,12 @@ mock.module("../lima/client.ts", {
 		},
 	},
 });
+
+function guestStep(script: string): string {
+	if (script.includes('"$HOME/.claude"')) return "ready ~/.claude";
+	if (script.includes("mount --bind")) return "apply masks";
+	return "other";
+}
 
 async function sandboxFor(
 	t: TestContext,
@@ -128,16 +162,20 @@ async function sandboxFor(
 	calls.length = 0;
 	exists = false;
 	fencedWith = null;
-	policyFile = null;
 	fenceState = "sealed";
 	helperEgress = true;
 	helperUnbound = [];
 	fenced = false;
 	status = "Running";
-	t.after(() => {
+	asked.length = 0;
+	answer = false;
+	t.after(async () => {
 		process.env.XDG_DATA_HOME = before.xdg;
 		process.env.LIMA_HOME = before.lima;
 		maskExit = 0;
+		historyMounted = true;
+		await heldLimaYaml?.close();
+		heldLimaYaml = null;
 	});
 
 	const { ensureRunning, identify } = await import("./lifecycle.ts");
@@ -169,12 +207,94 @@ async function anotherSessionAttaches(sandbox: string): Promise<void> {
 
 const BOTH = 'export default { masked: ["node_modules"], setup: ["npm ci"] };';
 
+async function limaMounts(sb: Sandbox): Promise<unknown> {
+	const yaml = await readFile(join(limaHome, sb.instance, "lima.yaml"), "utf8");
+	return (JSON.parse(yaml) as { mounts: unknown }).mounts;
+}
+
+function historyDirOf(sb: Sandbox): string {
+	return join(
+		process.env.XDG_DATA_HOME ?? "",
+		"playpen",
+		"history",
+		sb.sandbox,
+	);
+}
+
+test("a new sandbox mounts its own host directory, writable, over the guest's ~/.claude/projects, with the guest's modes and owners kept in xattrs there but not in the project", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await run();
+	assert.deepEqual(await limaMounts(sb), [
+		{ location: sb.cwd, writable: true },
+		{
+			location: historyDirOf(sb),
+			mountPoint: "{{.Home}}/.claude/projects",
+			writable: true,
+			"9p": { securityModel: "mapped-xattr" },
+		},
+	]);
+});
+
+test("a clone's lima.yaml is replaced whole, so a reader holding it never sees it half-written", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await run();
+	assert.equal(
+		await heldLimaYaml?.readFile("utf8"),
+		'{"mounts": []}\n',
+		"the file was rewritten where it stood",
+	);
+	assert.deepEqual(
+		(await readdir(join(limaHome, sb.instance))).filter((f) =>
+			f.endsWith(".tmp"),
+		),
+		[],
+	);
+});
+
+test("a new sandbox whose guest lacks the history mount still starts, with a warning naming it", async (t) => {
+	const { run } = await sandboxFor(t, BOTH);
+	historyMounted = false;
+	const said = t.mock.method(console, "error", () => {});
+	const result = (await run()) as { created: boolean };
+	assert.equal(result.created, true);
+	const lines = said.mock.calls.map((c) => String(c.arguments[0])).join("\n");
+	assert.match(
+		lines,
+		/warning: the guest's ~\/\.claude is not ready \(projects is not mounted from the host\)/,
+	);
+});
+
+test("a stopped sandbox has ~/.claude readied again on its next start, so a first boot cut short is mended", async (t) => {
+	const { run } = await sandboxFor(t, BOTH);
+	await run();
+	status = "Stopped";
+	fenced = false;
+	calls.length = 0;
+	await run();
+	assert.deepEqual(calls, [
+		"start behind the gatekeeper",
+		"apply masks",
+		"ready ~/.claude",
+	]);
+});
+
+test("a stopped sandbox whose history directory was deleted gets it back, readable by its owner only, before it boots", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await run();
+	await rm(historyDirOf(sb), { recursive: true });
+	status = "Stopped";
+	await run();
+	const mode = (await stat(historyDirOf(sb))).mode & 0o777;
+	assert.equal(mode.toString(8), "700");
+});
+
 test("masks are applied before setup runs", async (t) => {
 	const { run } = await sandboxFor(t, BOTH);
 	await run();
 	assert.deepEqual(calls, [
 		"start behind the gatekeeper",
 		"apply masks",
+		"ready ~/.claude",
 		"run exec </dev/null; npm ci",
 	]);
 });
@@ -184,7 +304,11 @@ test("setup is skipped when the masks it would install under failed", async (t) 
 	const { run } = await sandboxFor(t, BOTH);
 	const result = (await run()) as { setupOk: boolean };
 	assert.equal(result.setupOk, false);
-	assert.deepEqual(calls, ["start behind the gatekeeper", "apply masks"]);
+	assert.deepEqual(calls, [
+		"start behind the gatekeeper",
+		"apply masks",
+		"ready ~/.claude",
+	]);
 });
 
 test("a sandbox already running behind its gatekeeper is not started again", async (t) => {
@@ -192,7 +316,11 @@ test("a sandbox already running behind its gatekeeper is not started again", asy
 	await run();
 	calls.length = 0;
 	await run();
-	assert.deepEqual(calls, ["leave the fence alone", "apply masks"]);
+	assert.deepEqual(calls, [
+		"leave the fence alone",
+		"apply masks",
+		"ready ~/.claude",
+	]);
 });
 
 test("a sandbox already running is handed the project's policy again, so a tightened list decides its next connections", async (t) => {
@@ -212,41 +340,90 @@ test("a sandbox already running is handed the project's policy again, so a tight
 	});
 });
 
-test("destroying a stopped sandbox boots it inside the fence with nothing allowed, to save its history", async (t) => {
+test("removing a stopped sandbox deletes it without starting it", async (t) => {
 	const { sb, run } = await sandboxFor(t, BOTH);
 	await run();
 	const { destroy } = await import("./lifecycle.ts");
 	status = "Stopped";
 	fenced = false;
-	fencedWith = null;
 	calls.length = 0;
 	await destroy(sb);
-	assert.deepEqual(fencedWith, {
-		allow: [],
-		mode: "enforce",
-		ports: [],
-		secrets: [],
-	});
-	assert.equal(calls[0], "start behind the gatekeeper");
+	assert.deepEqual(calls, ["delete the VM"]);
 });
 
-test("the boot that saves a stopped sandbox's history carries the secret grants it was last started with, and allows nothing", async (t) => {
-	const { sb, run } = await sandboxFor(
-		t,
-		'export default { network: { secrets: [{ env: "GH_TOKEN", hosts: ["api.github.com"] }] } };',
-	);
+test("removing a sandbox keeps its Claude history on the host", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
 	await run();
+	const transcript = join(historyDirOf(sb), "-project", "session.jsonl");
+	await mkdir(dirname(transcript), { recursive: true });
+	await writeFile(transcript, "written by the guest");
 	const { destroy } = await import("./lifecycle.ts");
-	status = "Stopped";
-	fenced = false;
-	fencedWith = null;
 	await destroy(sb);
-	assert.deepEqual(fencedWith, {
-		allow: [],
-		mode: "enforce",
-		ports: [],
-		secrets: [{ env: "GH_TOKEN", hosts: ["api.github.com"] }],
-	});
+	assert.equal(await readFile(transcript, "utf8"), "written by the guest");
+});
+
+/** A stopped sandbox from before the history mount: its lima.yaml mounts the project alone. */
+async function stoppedFromBeforeTheMount(sb: Sandbox): Promise<void> {
+	await mkdir(join(limaHome, sb.instance), { recursive: true });
+	await writeFile(
+		join(limaHome, sb.instance, "lima.yaml"),
+		`{"mounts": ${JSON.stringify([{ location: sb.cwd, writable: true }])}}\n`,
+		"utf8",
+	);
+	exists = true;
+	status = "Stopped";
+}
+
+/** As if the image or the project config changed since the sandbox was made. */
+async function templateChangedSinceCreation(sb: Sandbox): Promise<void> {
+	const dir = join(process.env.XDG_DATA_HOME ?? "", "playpen", "templates");
+	await mkdir(dir, { recursive: true });
+	await writeFile(join(dir, `${sb.sandbox}.yaml`), "{}\n", "utf8");
+}
+
+test("the remove prompt says where on the host a sandbox's Claude history stays", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await run();
+	const { historyNotice } = await import("./lifecycle.ts");
+	assert.deepEqual(await historyNotice(sb), [
+		`Claude transcripts and memory stay on the host, in ${historyDirOf(sb)}.`,
+	]);
+});
+
+test("the remove prompt says a sandbox from before the history mount has its history on its disk, and how to copy it out", async (t) => {
+	const { sb } = await sandboxFor(t, BOTH);
+	await stoppedFromBeforeTheMount(sb);
+	const { historyNotice } = await import("./lifecycle.ts");
+	const notice = (await historyNotice(sb)).join("\n");
+	assert.match(notice, /on the VM's disk, from before the history mount/);
+	assert.match(
+		notice,
+		/playpen run -- sh -c 'tar -C ~ -cf claude-projects\.tar \.claude\/projects'/,
+	);
+	assert.deepEqual(calls, [], "the VM was touched to find out");
+});
+
+test("a rebuild offered to a sandbox from before the history mount says its history goes with it", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await stoppedFromBeforeTheMount(sb);
+	await templateChangedSinceCreation(sb);
+	const said = t.mock.method(console, "error", () => {});
+	await run();
+	const lines = said.mock.calls.map((c) => String(c.arguments[0])).join("\n");
+	assert.match(lines, /on the VM's disk, from before the history mount/);
+	assert.equal(asked.length, 1, "no rebuild was offered");
+});
+
+test("a rebuild offered to a sandbox with the history mount says nothing about history", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await run();
+	status = "Stopped";
+	await templateChangedSinceCreation(sb);
+	const said = t.mock.method(console, "error", () => {});
+	await run();
+	const lines = said.mock.calls.map((c) => String(c.arguments[0])).join("\n");
+	assert.doesNotMatch(lines, /Claude transcripts/);
+	assert.equal(asked.length, 1, "no rebuild was offered");
 });
 
 test("a sandbox running with no gatekeeper gets one back", async (t) => {
@@ -255,7 +432,11 @@ test("a sandbox running with no gatekeeper gets one back", async (t) => {
 	calls.length = 0;
 	fenceState = "sealed-no-gatekeeper";
 	await run();
-	assert.deepEqual(calls, ["start behind the gatekeeper", "apply masks"]);
+	assert.deepEqual(calls, [
+		"start behind the gatekeeper",
+		"apply masks",
+		"ready ~/.claude",
+	]);
 });
 
 test("a sandbox whose guest cannot reach the gatekeeper is started, with a warning", async (t) => {
@@ -286,7 +467,11 @@ test("a sandbox already running without egress warns again instead of restarting
 		.map((c) => String(c.arguments[0]))
 		.join("\n");
 	assert.match(said, /has no network/);
-	assert.deepEqual(calls, ["leave the fence alone", "apply masks"]);
+	assert.deepEqual(calls, [
+		"leave the fence alone",
+		"apply masks",
+		"ready ~/.claude",
+	]);
 });
 
 test("a sandbox running outside its fence is refused, not attached to", async (t) => {
