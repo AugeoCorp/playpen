@@ -6,6 +6,7 @@ import * as lima from "../lima/client.ts";
 import { self } from "../session/proc.ts";
 import { attach, capture } from "../sh.ts";
 import { sleep } from "../time.ts";
+import { ensureCa } from "./ca.ts";
 import {
 	cliPath,
 	type FencePaths,
@@ -23,9 +24,13 @@ import {
 } from "./fence.ts";
 import {
 	appendJsonLine,
+	type Gatekeeper,
 	type LogEntry,
+	type Resolve,
 	startGatekeeper,
 } from "./gatekeeper.ts";
+import { interceptor } from "./intercept.ts";
+import { leafMinter } from "./leaf.ts";
 import {
 	DENY_HOST,
 	HOST_ALIAS,
@@ -166,6 +171,30 @@ export function describeHeld(secrets: readonly HeldSecret[]): string {
 	return `holding ${secrets.length} secret${secrets.length === 1 ? "" : "s"}: ${names}`;
 }
 
+/**
+ * The gatekeeper, and with any secret held, the interceptor that puts it into
+ * requests for its hosts. The values stay in this process: the interceptor
+ * closes over them, and the CA key is read from the data directory here.
+ */
+export async function startFenceGatekeeper(opts: {
+	held: readonly HeldSecret[];
+	policy: () => Policy;
+	log: (line: LogEntry) => void;
+	resolve?: Resolve;
+}): Promise<Gatekeeper> {
+	const { held, log } = opts;
+	const intercept =
+		held.length === 0
+			? null
+			: interceptor({ held, contextFor: leafMinter(await ensureCa()), log });
+	return startGatekeeper({
+		policy: opts.policy,
+		log,
+		...(opts.resolve === undefined ? {} : { resolve: opts.resolve }),
+		...(intercept === null ? {} : { intercept }),
+	});
+}
+
 function socatListen(path: string, target: string): ChildProcess {
 	return spawnSocat(unixListenAddress(path), target);
 }
@@ -211,10 +240,17 @@ export async function runHelper(
 	if (reattach) say(`${instance} is already fenced; reattaching`);
 
 	const logFrom = await sizeOf(paths.gatekeeperLog);
-	const gatekeeper = await startGatekeeper({
-		policy: () => policy,
-		log: jsonLineAppender(paths.gatekeeperLog),
-	});
+	let gatekeeper: Gatekeeper;
+	try {
+		gatekeeper = await startFenceGatekeeper({
+			held,
+			policy: () => policy,
+			log: jsonLineAppender(paths.gatekeeperLog),
+		});
+	} catch (err) {
+		say(`cannot start the gatekeeper: ${err}`);
+		return 1;
+	}
 	say(`gatekeeper listening on 127.0.0.1:${gatekeeper.port}`);
 
 	const relay = socatListen(paths.egress, `TCP:127.0.0.1:${gatekeeper.port}`);

@@ -6,6 +6,7 @@ import type {
 	PrepareRequestFunctionResult,
 } from "proxy-chain";
 import { RequestError, Server } from "proxy-chain";
+import type { Interceptor } from "./intercept.ts";
 import { isIpv4, isPublicIpv4, isPublicOrLanIpv4 } from "./names.ts";
 import type { Policy, Reach } from "./policy.ts";
 import { decide } from "./policy.ts";
@@ -15,13 +16,21 @@ export interface Gatekeeper {
 	close(): Promise<void>;
 }
 
-export interface LogEntry {
+interface LogLine {
 	time: string;
 	host: string;
 	port: number;
-	verdict: "allow" | "deny" | "probe" | "report";
 	reason: string;
 }
+
+/**
+ * A verdict on a `CONNECT`; or, inside a tunnel the interceptor holds, a value
+ * put into a request (`inject`, naming the header and the variable, never the
+ * value) or a TLS or upstream failure (`error`, the message alone).
+ */
+export type LogEntry =
+	| (LogLine & { verdict: "allow" | "deny" | "probe" | "report" | "error" })
+	| (LogLine & { verdict: "inject"; header: string; env: string });
 
 /**
  * What a hostname resolves to. Injectable so a test can decide what a name
@@ -39,6 +48,12 @@ export interface StartGatekeeperOptions {
 	port?: number;
 	log: (line: LogEntry) => void;
 	resolve?: Resolve;
+	/**
+	 * Takes an allowed `CONNECT` that one of the held secrets is for, in place
+	 * of piping it. Given the same lookup a piped tunnel would dial with, so it
+	 * reaches only an address the policy's rules allow.
+	 */
+	intercept?: Interceptor;
 }
 
 /**
@@ -178,9 +193,11 @@ export async function startGatekeeper(
 		prepareRequestFunction: ({
 			hostname,
 			port,
+			isHttp,
 		}: PrepareRequestFunctionOpts): PrepareRequestFunctionResult => {
 			const own = ownAddresses();
-			const verdict = decide(policy(), hostname, port, own);
+			const current = policy();
+			const verdict = decide(current, hostname, port, own);
 			log({
 				time: new Date().toISOString(),
 				host: hostname,
@@ -196,17 +213,17 @@ export async function startGatekeeper(
 			// case, in a trailing dot, and wherever the policy mapped the name to an
 			// address of its own.
 			const { target, reach } = verdict;
-			if (isIpv4(target.host)) return { dnsLookup: lookupAt(target.host) };
-			return {
-				dnsLookup: lookupReachable(
-					target.host,
-					target.port,
-					reach,
-					own,
-					resolve,
-					log,
-				),
-			};
+			const dnsLookup = isIpv4(target.host)
+				? lookupAt(target.host)
+				: lookupReachable(target.host, target.port, reach, own, resolve, log);
+			// Only a tunnel: proxy-chain ignores `customConnectServer` for a plain
+			// HTTP request, which would then be forwarded without this lookup.
+			const interceptedBy =
+				verdict.kind === "allow" && !isHttp
+					? opts.intercept?.(current, target, dnsLookup)
+					: null;
+			if (interceptedBy) return { customConnectServer: interceptedBy };
+			return { dnsLookup };
 		},
 	});
 
