@@ -30,7 +30,7 @@ export default defineCommand({
 			console.error(`${sb.cwd} is a host mount and is not affected.`);
 			console.error(`Installed packages and other guest-local state are lost.`);
 			console.error(
-				`Claude transcripts and memory are saved, and restored by the next start.`,
+				`Claude transcripts and memory are on the host and stay for the next start.`,
 			);
 			console.error(`Re-run with --yes to proceed.`);
 			process.exitCode = 1;

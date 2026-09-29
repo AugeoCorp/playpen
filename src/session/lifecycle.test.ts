@@ -351,22 +351,15 @@ test("a sandbox already running is handed the project's policy again, so a tight
 	});
 });
 
-test("destroying a stopped sandbox boots it inside the fence with nothing allowed, to save its history", async (t) => {
+test("removing a stopped sandbox deletes it without starting it", async (t) => {
 	const { sb, run } = await sandboxFor(t, BOTH);
 	await run();
 	const { destroy } = await import("./lifecycle.ts");
 	status = "Stopped";
 	fenced = false;
-	fencedWith = null;
 	calls.length = 0;
 	await destroy(sb);
-	assert.deepEqual(fencedWith, {
-		allow: [],
-		mode: "enforce",
-		ports: [],
-		secrets: [],
-	});
-	assert.equal(calls[0], "start behind the gatekeeper");
+	assert.deepEqual(calls, [], "the guest was started or reached");
 });
 
 test("a sandbox running with no gatekeeper gets one back", async (t) => {

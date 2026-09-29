@@ -306,7 +306,7 @@ async function outdatedBase(sb: Sandbox): Promise<string | null> {
 /**
  * Offered rather than done: a reclone is ~10s, but the guest disk goes with it
  * -- installed packages and masked directories. Claude transcripts and memory
- * are archived across it. `start` is routine, so it asks.
+ * are on the host and stay. `start` is routine, so it asks.
  */
 async function confirmRebuild(reason: string): Promise<boolean> {
 	console.error(reason);
@@ -463,9 +463,6 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 	}
 	const masked = await applyMasks(sb, current.masks);
 	await history.settle(sb.instance, sb.sandbox, true);
-	if (await history.restore(sb.instance, sb.sandbox)) {
-		console.error(`restored Claude history from the previous sandbox`);
-	}
 
 	// Recorded before setup, not after: setup can run for minutes, and an
 	// instance that exists with no record is one `start` will neither finish nor
@@ -567,39 +564,10 @@ export async function stop(sb: Sandbox): Promise<void> {
 	if (existing && lima.isRunning(existing)) await lima.stop(sb.instance);
 }
 
-/**
- * Archiving needs the guest up, so a stopped sandbox is started for it: ~10s on
- * a delete, worth it because transcripts and memory exist nowhere else. It is
- * started fenced with nothing allowed: the archive travels over the control
- * socket, and a guest that is about to be deleted is the last one to hand the
- * network to. Best effort throughout -- a sandbox too broken to boot must
- * still be deletable.
- */
-async function saveHistory(sb: Sandbox, running: boolean): Promise<void> {
-	try {
-		// No session record means creation never finished, so there is no history
-		// and no reason to boot it.
-		if (!running && !(await store.load(sb.sandbox))) return;
-		if (!running) {
-			console.error(`starting it briefly to save Claude history`);
-			await fenced(sb, { allow: [], mode: "enforce", ports: [], secrets: [] });
-		}
-		await history.archive(sb.instance, sb.sandbox);
-	} catch (err) {
-		console.error(
-			`warning: could not save Claude history (${err instanceof Error ? err.message : err})`,
-		);
-	}
-}
-
 export async function destroy(sb: Sandbox): Promise<void> {
 	const existing = await lima.get(sb.instance);
 	if (existing) {
-		await saveHistory(sb, lima.isRunning(existing));
-		// Re-read: saveHistory may have started it, and stopping an instance that
-		// is already stopped is an error that must not block the delete.
-		if (lima.isRunning(await lima.get(sb.instance)))
-			await lima.stop(sb.instance, true);
+		if (lima.isRunning(existing)) await lima.stop(sb.instance, true);
 		await lima.remove(sb.instance);
 	}
 	await store.remove(sb.sandbox);
