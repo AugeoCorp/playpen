@@ -126,8 +126,12 @@ yet vary per sandbox. They are global defaults today.
 - [x] a sandbox on an older base than the newest is offered one too
 - [x] `~/.claude/projects` is archived on destroy and restored on create, so a
       rebuild keeps transcripts and the memory directory; round-trip verified on
-      the host 2026-09-15. A restore that fails warns, keeps the archive and
-      prints the command to restore it by hand; it does not fail the start
+      the host 2026-09-15. Each archive is a new file under
+      `history/<sandbox>/pending/` and stays there until a restore of it
+      succeeds; then it becomes `restored.tar`. Every start restores what is
+      pending, oldest first, with `--keep-newer-files` so an old archive never
+      replaces a newer guest file. A restore that fails warns and is retried by
+      the next start; it does not fail this one
 - [x] verified on the host: a fresh sandbox clones and boots in 10s, with no
       package installs and no image download
 
