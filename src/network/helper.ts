@@ -113,23 +113,25 @@ async function reloadPolicy(sandbox: string): Promise<Policy> {
  * the file `playpen start` writes -- which is how a sandbox that is already up
  * picks up a tightened allow list. `stamp` is the file the current policy
  * came from; `swap` is told the new stamp with the policy so it can report
- * what is now applied. `audit` runs on every poll, before the policy check.
+ * what is now applied. `audit` runs on every poll, before the policy check;
+ * false means the VM could not be stopped, and it is not served any longer.
  */
 async function serveWhileRunning(
 	sandbox: string,
 	instance: string,
 	stamp: string,
 	swap: (policy: Policy, stamp: string) => Promise<void>,
-	audit: () => Promise<void>,
-): Promise<void> {
+	audit: () => Promise<MaskCheck>,
+): Promise<boolean> {
 	while (await vmRunning(instance)) {
 		await sleep(POLL_MS);
-		await audit();
+		if ((await audit()) === "stuck") return false;
 		const now = await policyStamp(sandbox);
 		if (now === stamp) continue;
 		stamp = now;
 		await swap(await reloadPolicy(sandbox), stamp);
 	}
+	return true;
 }
 
 /**
@@ -138,18 +140,50 @@ async function serveWhileRunning(
  * playpen uses; it is forced because the guest is not to be given the time a
  * clean shutdown takes. If it cannot stop the VM, qemu is killed directly:
  * killing the bwrap child would not do, since `--die-with-parent` reaches only
- * the inside half, not the qemu that limactl started under it.
+ * the inside half, not the qemu that limactl started under it. False when
+ * neither worked.
  */
-async function stopVm(instance: string): Promise<void> {
+async function stopVm(instance: string): Promise<boolean> {
 	try {
 		await lima.stop(instance, true);
-		return;
+		return true;
 	} catch (err) {
 		say(`could not stop ${instance} (${err}); killing its qemu`);
 	}
 	const qemu = isPlaypenInstance(instance) ? await qemuPid(instance) : null;
-	if (qemu !== null) process.kill(qemu, "SIGKILL");
+	if (qemu === null) return false;
+	try {
+		process.kill(qemu, "SIGKILL");
+		return true;
+	} catch (err) {
+		say(`could not kill ${instance}'s qemu (pid ${qemu}): ${err}`);
+		return false;
+	}
 }
+
+/**
+ * What one look at qemu's namespace says about the entries the helper holds
+ * bound. `live` is the ones it still shows bound, or null when qemu's pid
+ * could not be read; then nothing held can be shown to be hidden, which is
+ * failed closed like a replace.
+ */
+export type MaskAudit =
+	| { kind: "held" }
+	| { kind: "lost"; entries: string[] }
+	| { kind: "unreadable" };
+
+export function auditMasks(
+	bound: readonly string[],
+	live: readonly string[] | null,
+): MaskAudit {
+	if (bound.length === 0) return { kind: "held" };
+	if (live === null) return { kind: "unreadable" };
+	const entries = bound.filter((entry) => !live.includes(entry));
+	return entries.length === 0 ? { kind: "held" } : { kind: "lost", entries };
+}
+
+/** How an audit left the VM: still masked, stopped, or not stoppable. */
+type MaskCheck = "held" | "stopped" | "stuck";
 
 /**
  * Directories holding the host resolver's sockets, hidden inside the fence.
@@ -195,8 +229,9 @@ export async function maskBinds(
 	paths: Pick<FencePaths, "emptyFile" | "emptyDir">,
 	mounts: Mounts,
 	note: (line: string) => void = say,
-): Promise<string[]> {
+): Promise<MaskBinds> {
 	const args: string[] = [];
+	const bound: string[] = [];
 	for (const entry of mounts.masked) {
 		if (underMaskedDir(entry, mounts.masked)) continue;
 		const kind = await maskKind(mounts.project, entry);
@@ -225,13 +260,20 @@ export async function maskBinds(
 				kind === "dir" ? paths.emptyDir : paths.emptyFile,
 				join(mounts.project, entry),
 			);
+			bound.push(entry);
 		}
 	}
 	if (args.length > 0) {
 		await mkdir(paths.emptyDir, { recursive: true });
 		await writeFile(paths.emptyFile, "");
 	}
-	return args;
+	return { args, bound };
+}
+
+export interface MaskBinds {
+	args: string[];
+	/** The `masked` entries that `args` binds. */
+	bound: string[];
 }
 
 /** The mask binds come after the root bind, because they lay over what it mounted. */
@@ -293,10 +335,10 @@ export async function runHelper(
 	// found keeps the table it was born with; it still reads the list, to check
 	// which of the entries that table holds.
 	let mounts: Mounts;
-	let maskArgs: string[] = [];
+	let binds: MaskBinds = { args: [], bound: [] };
 	try {
 		mounts = await readMounts(sandbox);
-		if (!reattach) maskArgs = await maskBinds(paths, mounts);
+		if (!reattach) binds = await maskBinds(paths, mounts);
 	} catch (err) {
 		say(err instanceof Error ? err.message : String(err));
 		return 1;
@@ -317,7 +359,7 @@ export async function runHelper(
 		await unlink(paths.ready).catch(() => {});
 		inside = spawn(
 			"bwrap",
-			bwrapArgv(maskArgs, await hiddenResolverDirs(), [
+			bwrapArgv(binds.args, await hiddenResolverDirs(), [
 				process.execPath,
 				cliPath(),
 				"__net-inside",
@@ -369,15 +411,50 @@ export async function runHelper(
 		return 1;
 	}
 
-	// Read from qemu's namespace rather than taken from what was asked for, so
-	// a reattach and a bwrap that bound less than it was told to are both true.
-	const liveMasks = async (entries: readonly string[]): Promise<string[]> => {
+	const liveMasks = async (
+		entries: readonly string[],
+	): Promise<string[] | null> => {
 		const qemu = await qemuPid(instance);
 		return qemu === null
-			? []
+			? null
 			: boundMasks(qemu, mounts.project, entries, paths);
 	};
-	let bound = await liveMasks(mounts.masked);
+	// A fresh start holds what bwrap was given, so an entry replaced while the
+	// VM booted, when its bind is already gone, is caught by the first audit.
+	// A reattach cannot know what the helper before it saw, so it holds what
+	// qemu's namespace shows now.
+	let bound = reattach ? ((await liveMasks(mounts.masked)) ?? []) : binds.bound;
+	const audit = async (): Promise<MaskCheck> => {
+		const live = await liveMasks(bound);
+		const verdict = auditMasks(bound, live);
+		if (verdict.kind === "held") return "held";
+		// A VM that stopped between the two checks is not a replace.
+		if (!(await vmRunning(instance))) return "held";
+		if (verdict.kind === "unreadable") {
+			say(
+				`masked: cannot read ${instance}'s qemu to check that its masks still hold; stopping it`,
+			);
+		}
+		if (verdict.kind === "lost") {
+			for (const entry of verdict.entries) {
+				say(
+					`masked: ${entry} was replaced on the host; stopping ${instance} so the new contents never reach the guest`,
+				);
+			}
+		}
+		if (!(await stopVm(instance))) return "stuck";
+		bound = live ?? [];
+		return "stopped";
+	};
+
+	// Before `ready`, so a sandbox whose masks did not survive the boot is
+	// never reported up.
+	const booted = await audit();
+	if (booted !== "held") {
+		say(`${instance} did not come up with its masks in place`);
+		await teardown(booted === "stopped");
+		return 1;
+	}
 
 	const egress = await guestReachesGatekeeper(instance, paths, logFrom);
 	// Before `ready`, so the `playpen start` waiting on it can already name a
@@ -401,7 +478,7 @@ export async function runHelper(
 		for (const line of NO_EGRESS_ADVICE) say(`  ${line}`);
 	}
 
-	await serveWhileRunning(
+	const served = await serveWhileRunning(
 		sandbox,
 		instance,
 		stamp,
@@ -414,21 +491,15 @@ export async function runHelper(
 			forwarded = next.ports;
 			await report({ policy: applied, unboundPorts });
 		},
-		async () => {
-			const still = await liveMasks(bound);
-			const lost = bound.filter((entry) => !still.includes(entry));
-			if (lost.length === 0) return;
-			// A VM that stopped between the two checks is not a replace.
-			if (!(await vmRunning(instance))) return;
-			bound = still;
-			for (const entry of lost) {
-				say(
-					`masked: ${entry} was replaced on the host while the sandbox ran; stopping it so the new contents never reach the guest`,
-				);
-			}
-			await stopVm(instance);
-		},
+		audit,
 	);
+	if (!served) {
+		say(
+			`could not stop ${instance}; shutting the fence down so it has no network`,
+		);
+		await teardown(false);
+		return 1;
+	}
 	say(`${instance} is no longer running; shutting the fence down`);
 	await teardown(true);
 	return 0;

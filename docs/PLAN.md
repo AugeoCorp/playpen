@@ -9,15 +9,15 @@ not be inverted are in `AGENTS.md`. The network fence's mechanism is in
 Works end to end on Bazzite, Lima 2.2.0, Node 24. Baking the base takes ~75s
 once; a sandbox then clones from it and boots in 10s. Restart ~20s.
 
-| Area                                                               | State                  |
-| ------------------------------------------------------------------ | ---------------------- |
-| `start` `shell` `run` `list` `stop` `remove` `doctor` `image show` | done                   |
-| `playpen claude` with `~/.claude` allowlist sync and `--no-auth`   | done                   |
-| `playpen.config.ts` masks, trust gate on config execution          | done, verified on host |
-| `masked` also hides the host's contents (host-side bind)           | done; VM step unrun    |
-| `image build`, base image + clone                                  | done, verified on host |
-| `completion bash\|zsh`, generated from the citty command tree      | done; zsh unverified   |
-| network fence (mechanism in `docs/NETWORK.md`)                     | done, see below        |
+| Area                                                               | State                                                     |
+| ------------------------------------------------------------------ | --------------------------------------------------------- |
+| `start` `shell` `run` `list` `stop` `remove` `doctor` `image show` | done                                                      |
+| `playpen claude` with `~/.claude` allowlist sync and `--no-auth`   | done                                                      |
+| `playpen.config.ts` masks, trust gate on config execution          | done, verified on host                                    |
+| `masked` also hides the host's contents (host-side bind)           | done, e2e and hand run on a VM (no KVM); boot check unrun |
+| `image build`, base image + clone                                  | done, verified on host                                    |
+| `completion bash\|zsh`, generated from the citty command tree      | done; zsh unverified                                      |
+| network fence (mechanism in `docs/NETWORK.md`)                     | done, see below                                           |
 
 ## Known problems
 

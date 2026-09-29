@@ -54,7 +54,7 @@ export interface FencePaths {
 	control: string;
 	helper: string;
 	policy: string;
-	/** Which project paths the next fresh helper hides from qemu's 9p share. */
+	/** The masks the next bwrap is to bind; see `Mounts`. */
 	mounts: string;
 	/** Bound read-only over a masked file; nothing reaches it through the bind. */
 	emptyFile: string;
@@ -215,9 +215,9 @@ export async function readPolicy(sandbox: string): Promise<Policy> {
 }
 
 /**
- * What qemu is denied a view of, decided when the fence starts and never
- * reloaded: unlike policy.json, a mount table under a running process cannot
- * be rewritten.
+ * The masks the next bwrap is to bind: the config's at the last start, not
+ * necessarily what a running qemu has. Unlike policy.json it is never
+ * reloaded, since a mount table under a running process cannot be rewritten.
  */
 export interface Mounts {
 	/** Absolute, real path of the project directory the guest shares. */

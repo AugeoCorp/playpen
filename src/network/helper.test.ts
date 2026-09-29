@@ -12,7 +12,13 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { type TestContext, test } from "node:test";
 import { exists } from "../fs.ts";
-import { bwrapArgv, maskBinds, portsScript, unboundIn } from "./helper.ts";
+import {
+	auditMasks,
+	bwrapArgv,
+	maskBinds,
+	portsScript,
+	unboundIn,
+} from "./helper.ts";
 
 /** The units a script stops, in order, glob included. */
 function stops(script: string): string[] {
@@ -146,21 +152,24 @@ async function maskedProject(t: TestContext): Promise<{
 	};
 }
 
-test("each masked entry on the host gets a read-only bind of the placeholder of its kind", async (t) => {
+test("each masked entry on the host gets a read-only bind of the placeholder of its kind, and is named as bound", async (t) => {
 	const { project, paths } = await maskedProject(t);
-	const args = await maskBinds(
+	const binds = await maskBinds(
 		paths,
 		{ project, masked: ["node_modules", ".env"] },
 		() => {},
 	);
-	assert.deepEqual(args, [
-		"--ro-bind",
-		paths.emptyDir,
-		join(project, "node_modules"),
-		"--ro-bind",
-		paths.emptyFile,
-		join(project, ".env"),
-	]);
+	assert.deepEqual(binds, {
+		args: [
+			"--ro-bind",
+			paths.emptyDir,
+			join(project, "node_modules"),
+			"--ro-bind",
+			paths.emptyFile,
+			join(project, ".env"),
+		],
+		bound: ["node_modules", ".env"],
+	});
 });
 
 test("the placeholders are made only when something is bound, and a file left over is emptied", async (t) => {
@@ -181,10 +190,12 @@ test("the placeholders are made only when something is bound, and a file left ov
 test("an entry missing on the host is not bound, and the line says the guest will create it as a directory", async (t) => {
 	const { project, paths } = await maskedProject(t);
 	const said: string[] = [];
-	const args = await maskBinds(paths, { project, masked: ["absent"] }, (line) =>
-		said.push(line),
+	const binds = await maskBinds(
+		paths,
+		{ project, masked: ["absent"] },
+		(line) => said.push(line),
 	);
-	assert.deepEqual(args, []);
+	assert.deepEqual(binds, { args: [], bound: [] });
 	assert.deepEqual(said, [
 		"masked: absent is not on the host; the guest will create it there as an empty directory",
 	]);
@@ -193,12 +204,12 @@ test("an entry missing on the host is not bound, and the line says the guest wil
 test("a nested entry missing under a directory that is there is skipped like any missing entry, so a fresh clone can start", async (t) => {
 	const { project, paths } = await maskedProject(t);
 	const said: string[] = [];
-	const args = await maskBinds(
+	const binds = await maskBinds(
 		paths,
 		{ project, masked: ["config/other.json"] },
 		(line) => said.push(line),
 	);
-	assert.deepEqual(args, []);
+	assert.deepEqual(binds, { args: [], bound: [] });
 	assert.deepEqual(said, [
 		"masked: config/other.json is not on the host; the guest will create it there as an empty directory",
 	]);
@@ -254,7 +265,10 @@ test("an entry under a symlink refuses the start, naming the entry", async (t) =
 
 test("an entry under a masked directory is not bound, since the directory's placeholder hides it, whichever is listed first", async (t) => {
 	const { project, paths } = await maskedProject(t);
-	const dirBinds = ["--ro-bind", paths.emptyDir, join(project, "config")];
+	const dirBinds = {
+		args: ["--ro-bind", paths.emptyDir, join(project, "config")],
+		bound: ["config"],
+	};
 	assert.deepEqual(
 		await maskBinds(
 			paths,
@@ -271,6 +285,30 @@ test("an entry under a masked directory is not bound, since the directory's plac
 		),
 		dirBinds,
 	);
+});
+
+test("masks qemu still shows bound let the VM keep running", () => {
+	assert.deepEqual(
+		auditMasks([".env", "node_modules"], [".env", "node_modules"]),
+		{
+			kind: "held",
+		},
+	);
+});
+
+test("an entry qemu no longer shows bound, as after a replace during boot, is named so the VM is stopped", () => {
+	assert.deepEqual(auditMasks([".env", "node_modules"], ["node_modules"]), {
+		kind: "lost",
+		entries: [".env"],
+	});
+});
+
+test("a qemu whose pid cannot be read, with masks to check, has the VM stopped", () => {
+	assert.deepEqual(auditMasks([".env"], null), { kind: "unreadable" });
+});
+
+test("with nothing bound there is nothing to check, so an unreadable qemu does not stop the VM", () => {
+	assert.deepEqual(auditMasks([], null), { kind: "held" });
 });
 
 test("the mask binds come after the root bind and before the command", () => {
