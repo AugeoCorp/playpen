@@ -27,6 +27,8 @@ let maskExit = 0;
 let settleExit = 0;
 /** What the history step was handed on its stdin, when anything. */
 let settleInput: Uint8Array | null = null;
+/** The flags the history step was last run with: `takeover`, `archive`. */
+let settleArgs: readonly string[] = [];
 let limaHome = "";
 /** Whether the fake has been cloned into existence yet, so `stop` has something to stop. */
 let exists = false;
@@ -115,14 +117,22 @@ mock.module("../lima/client.ts", {
 			);
 		},
 		async runScript(
-			_instance: string,
+			instance: string,
 			script: string,
-			opts: { input?: Uint8Array } = {},
+			opts: { input?: Uint8Array; args?: readonly string[] } = {},
 		) {
 			const step = guestStep(script);
 			calls.push(step);
 			if (step === "settle history") {
 				settleInput = opts.input ?? null;
+				settleArgs = opts.args ?? [];
+				// Like the guest, which checks the mount before touching anything.
+				const yaml = await readFile(
+					join(limaHome, instance, "lima.yaml"),
+					"utf8",
+				);
+				if (!yaml.includes('"mountPoint":"{{.Home}}/.claude/projects"'))
+					return { code: 1, stdout: "", stderr: "not mounted from the host" };
 				return { code: settleExit, stdout: "", stderr: "tar: broken pipe" };
 			}
 			return { code: maskExit, stdout: "", stderr: "mask script failed" };
@@ -174,6 +184,7 @@ async function sandboxFor(
 		maskExit = 0;
 		settleExit = 0;
 		settleInput = null;
+		settleArgs = [];
 	});
 
 	const { ensureRunning, identify } = await import("./lifecycle.ts");
@@ -266,7 +277,7 @@ test("a stopped sandbox made before history was mounted gets the mount when it n
 	]);
 });
 
-test("a stopped sandbox moves the history on its disk to the host as it boots", async (t) => {
+test("a stopped sandbox made before history was mounted is asked, once it boots, to move the history on its disk to the host", async (t) => {
 	const { sb, run } = await sandboxFor(t, BOTH);
 	await stoppedWithProjectMountOnly(sb);
 	await run();
@@ -274,6 +285,63 @@ test("a stopped sandbox moves the history on its disk to the host as it boots", 
 		"start behind the gatekeeper",
 		"apply masks",
 		"settle history",
+	]);
+	assert.equal(settleArgs[0], "takeover");
+});
+
+test("once the history is on the host, a boot no longer asks the guest to move it", async (t) => {
+	const { run } = await sandboxFor(t, BOTH);
+	await run();
+	status = "Stopped";
+	await run();
+	assert.equal(settleArgs[0], "", `the second boot was run with ${settleArgs}`);
+});
+
+test("a failed move keeps deferring the rebuild on every start until one succeeds", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await stoppedWithProjectMountOnly(sb);
+	await templateChangedSinceCreation(sb);
+	answer = true;
+	settleExit = 1;
+	t.mock.method(console, "error", () => {});
+	await run();
+	const second = (await run()) as { created: boolean };
+	assert.equal(second.created, false, "rebuilt after a failed move");
+	assert.deepEqual(asked, [], "a rebuild was offered after a failed move");
+});
+
+test("a sandbox already running without its history on the host is asked to move it at every start", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	settleExit = 1;
+	t.mock.method(console, "error", () => {});
+	await run();
+	settleExit = 0;
+	calls.length = 0;
+	await run();
+	assert.ok(calls.includes("settle history"), calls.join(", "));
+	assert.equal(settleArgs[0], "takeover");
+	const { historyOnHost } = await import("./lifecycle.ts");
+	assert.equal(await historyOnHost(sb), true);
+});
+
+test("a sandbox made before bases existed, with its mounts pretty-printed, gets the history mount too", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await mkdir(join(limaHome, sb.instance), { recursive: true });
+	await writeFile(
+		join(limaHome, sb.instance, "lima.yaml"),
+		`${JSON.stringify({ arch: "x86_64", mounts: [{ location: sb.cwd, writable: true }] }, null, 2)}\n`,
+		"utf8",
+	);
+	exists = true;
+	status = "Stopped";
+	await run();
+	assert.deepEqual(await limaMounts(sb), [
+		{ location: sb.cwd, writable: true },
+		{
+			location: historyDirOf(sb),
+			mountPoint: "{{.Home}}/.claude/projects",
+			writable: true,
+		},
 	]);
 });
 
@@ -288,7 +356,10 @@ test("an outdated sandbox made before history was mounted boots once to move its
 	assert.equal(first.created, false, "rebuilt with its history still on it");
 	assert.deepEqual(asked, [], "a rebuild was offered on the first start");
 	const lines = said.mock.calls.map((c) => String(c.arguments[0])).join("\n");
-	assert.match(lines, /a rebuild is offered once its Claude history has moved/);
+	assert.match(
+		lines,
+		/no rebuild is offered until its Claude history is safely on the host/,
+	);
 
 	const second = (await run()) as { created: boolean };
 	assert.equal(asked.length, 1, "no rebuild offered once the history moved");
@@ -315,6 +386,8 @@ test("a sandbox that already has the history mount starts again without touching
 
 test("a sandbox whose mounts playpen did not write still starts, with a warning that its history stays on its disk", async (t) => {
 	const { sb, run } = await sandboxFor(t, BOTH);
+	await templateChangedSinceCreation(sb);
+	answer = true;
 	await mkdir(join(limaHome, sb.instance), { recursive: true });
 	await writeFile(
 		join(limaHome, sb.instance, "lima.yaml"),
@@ -333,15 +406,25 @@ test("a sandbox whose mounts playpen did not write still starts, with a warning 
 	const lines = said.mock.calls.map((c) => String(c.arguments[0])).join("\n");
 	assert.match(lines, /Claude history is not mounted from the host/);
 	assert.match(lines, /`playpen remove` deletes it with the VM/);
+	assert.deepEqual(asked, [], "offered a rebuild with its history unmoved");
+	const { historyOnHost } = await import("./lifecycle.ts");
+	assert.equal(await historyOnHost(sb), false);
 });
 
-test("a sandbox made before history was mounted counts as holding its history on its disk until it boots with the mount", async (t) => {
+test("a sandbox's history counts as on the host only after a start has moved it there", async (t) => {
 	const { sb, run } = await sandboxFor(t, BOTH);
-	const { historyStillInGuest } = await import("./lifecycle.ts");
+	const { historyOnHost } = await import("./lifecycle.ts");
 	await stoppedWithProjectMountOnly(sb);
-	assert.equal(await historyStillInGuest(sb), true, "before its first boot");
+	assert.equal(await historyOnHost(sb), false, "before its first boot");
 	await run();
-	assert.equal(await historyStillInGuest(sb), false, "after it");
+	assert.equal(await historyOnHost(sb), true, "after it");
+});
+
+test("a new sandbox's history counts as on the host once its first boot has checked the mount", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await run();
+	const { historyOnHost } = await import("./lifecycle.ts");
+	assert.equal(await historyOnHost(sb), true);
 });
 
 /** An archive as the archive-on-destroy scheme left it; its bytes are opaque here. */

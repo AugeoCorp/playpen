@@ -1,6 +1,7 @@
-import { link, mkdir, readFile, unlink } from "node:fs/promises";
+import { link, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { historyDir } from "../config.ts";
+import { historyDir, limaHome } from "../config.ts";
+import { exists } from "../fs.ts";
 import * as lima from "../lima/client.ts";
 import { assertSandboxName } from "./identity.ts";
 
@@ -45,17 +46,35 @@ export async function makeHostDir(sandbox: string): Promise<string> {
 }
 
 /**
- * Once per boot, and again on a start that finds an archive left by the older
- * archive-on-destroy scheme waiting to be imported.
+ * In the instance directory, so it lives exactly as long as the disk it
+ * vouches for: removing or recloning the instance deletes both, and the guest
+ * cannot reach it.
+ */
+function marker(instance: string): string {
+	return join(limaHome(), instance, "playpen-history-on-host");
+}
+
+/**
+ * True once a start has moved whatever history this instance's disk held to
+ * the host and checked it there. Until then, deleting the VM may delete
+ * history, however its lima.yaml looks.
+ */
+export function onHost(instance: string): Promise<boolean> {
+	return exists(marker(instance));
+}
+
+/**
+ * Once per boot, on every start until the history is on the host, and on a
+ * start that finds an archive left by the older archive-on-destroy scheme.
  *
  * cloud-init creates a mount point's missing parents as root (`util.ensure_dir`
  * in its cc_mounts module), so on a fresh clone the guest user would not own
  * `~/.claude`, and Claude Code could write nothing there but history.
  *
- * A sandbox that kept its history in the guest before the mount existed still
- * has it, hidden under the mount. A bind without `--rbind` leaves submounts
- * out, so it shows what is underneath; that is merged in and then cleared,
- * which makes the next boot a no-op.
+ * `$1` is `takeover` until the history is on the host: a sandbox that kept its
+ * history in the guest before the mount existed still has it, hidden under the
+ * mount. A bind without `--rbind` leaves submounts out, so it shows what is
+ * underneath. `$2` is `archive` when the old archive is on stdin.
  *
  * `--keep-newer-files` so an older copy never overwrites a newer one. GNU tar
  * 1.35 exits 2 with it alone on every directory that already exists;
@@ -72,14 +91,16 @@ const SETTLE = [
 	"  exit 1",
 	"fi",
 	'merge() { tar --keep-newer-files --keep-directory-symlink -xf - "$@"; }',
-	'under="$(mktemp -d)"',
-	'sudo mount --bind "$claude" "$under"',
-	'trap \'sudo umount "$under"; rmdir "$under"\' EXIT',
-	'if [ -n "$(ls -A "$under/projects" 2>/dev/null)" ]; then',
-	'  tar -C "$under" -cf - projects | merge -C "$claude"',
-	'  find "$under/projects" -mindepth 1 -delete',
+	'if [ "$1" = takeover ]; then',
+	'  under="$(mktemp -d)"',
+	'  sudo mount --bind "$claude" "$under"',
+	'  trap \'sudo umount "$under"; rmdir "$under"\' EXIT',
+	'  if [ -n "$(ls -A "$under/projects" 2>/dev/null)" ]; then',
+	'    tar -C "$under" -cf - projects | merge -C "$claude"',
+	'    find "$under/projects" -mindepth 1 -delete',
+	"  fi",
 	"fi",
-	`if [ "\${1:-}" = archive ]; then merge -C "$HOME" ${GUEST_REL}; fi`,
+	`if [ "$2" = archive ]; then merge -C "$HOME" ${GUEST_REL}; fi`,
 ].join("\n");
 
 /**
@@ -95,15 +116,15 @@ export async function settle(
 	booted: boolean,
 ): Promise<void> {
 	const archive = await readFile(archivePath(sandbox)).catch(() => null);
-	if (!booted && archive === null) return;
+	const takeover = !(await onHost(instance));
+	if (!booted && !takeover && archive === null) return;
 
 	let failure: string | null;
 	try {
-		const result = await lima.runScript(
-			instance,
-			SETTLE,
-			archive === null ? {} : { input: archive, args: ["archive"] },
-		);
+		const result = await lima.runScript(instance, SETTLE, {
+			args: [takeover ? "takeover" : "", archive === null ? "" : "archive"],
+			...(archive === null ? {} : { input: archive }),
+		});
 		failure =
 			result.code === 0 ? null : result.stderr.trim() || `exit ${result.code}`;
 	} catch (err) {
@@ -112,12 +133,22 @@ export async function settle(
 
 	if (failure !== null) {
 		console.error(`warning: Claude history is not on the host (${failure})`);
+		if (takeover)
+			console.error(
+				`  what the VM holds stays on its disk; the next start tries again`,
+			);
 		if (archive !== null)
 			console.error(
 				`  ${archivePath(sandbox)} is left to import on the next start`,
 			);
 		return;
 	}
+	if (takeover)
+		await writeFile(marker(instance), "").catch((err: unknown) =>
+			console.error(
+				`warning: moved Claude history to the host, but could not record it (${err instanceof Error ? err.message : err}); the next start moves it again`,
+			),
+		);
 	if (archive === null) return;
 	try {
 		const kept = await setAside(sandbox);

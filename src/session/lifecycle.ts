@@ -192,9 +192,21 @@ function mountsFor(sb: Sandbox): string {
 	])}`;
 }
 
-/** What a sandbox created before the history mount was given. */
-function projectOnlyMounts(sb: Sandbox): string {
-	return `"mounts": ${JSON.stringify([{ location: sb.cwd, writable: true }])}`;
+function escapeRegExp(text: string): string {
+	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * What a sandbox created before the history mount was given: compact JSON in
+ * a clone's lima.yaml, and pretty-printed in one made before bases existed,
+ * which is playpen's own rendered template verbatim.
+ */
+function projectOnlyMounts(sb: Sandbox): RegExp {
+	const location = escapeRegExp(JSON.stringify(sb.cwd));
+	return new RegExp(
+		`"mounts"\\s*:\\s*\\[\\s*\\{\\s*"location"\\s*:\\s*${location}\\s*,\\s*"writable"\\s*:\\s*true\\s*\\}\\s*\\]`,
+		"g",
+	);
 }
 
 function limaYaml(sb: Sandbox): string {
@@ -202,13 +214,12 @@ function limaYaml(sb: Sandbox): string {
 }
 
 /**
- * A sandbox made before the history mount keeps its Claude history on its own
- * disk until it next boots through playpen, which mounts the host directory
- * and moves the history into it. Deleting the VM before then deletes it.
+ * False for a sandbox that may still hold Claude history on its own disk,
+ * whatever its lima.yaml says: one made before the history mount, until a
+ * start has moved that history to the host and checked it there.
  */
-export async function historyStillInGuest(sb: Sandbox): Promise<boolean> {
-	const yaml = await readFile(limaYaml(sb), "utf8").catch(() => "");
-	return yaml.includes(projectOnlyMounts(sb));
+export function historyOnHost(sb: Sandbox): Promise<boolean> {
+	return history.onHost(sb.instance);
 }
 
 /**
@@ -234,7 +245,7 @@ async function giveInstanceItsMounts(sb: Sandbox): Promise<void> {
 	const mounts = mountsFor(sb);
 	if (yaml.includes(mounts)) return;
 	const empty = yaml.match(NO_MOUNTS)?.length ?? 0;
-	const projectOnly = yaml.split(projectOnlyMounts(sb)).length - 1;
+	const projectOnly = yaml.match(projectOnlyMounts(sb))?.length ?? 0;
 	if (empty + projectOnly !== 1) {
 		throw new Error(
 			`${path} has ${empty + projectOnly} \`mounts\` playpen wrote to fill in, expected 1`,
@@ -416,10 +427,10 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 		template = await renderTemplate(sb);
 		const reason =
 			(await changedTemplate(sb, template)) ?? (await outdatedBase(sb));
-		if (reason !== null && (await historyStillInGuest(sb))) {
+		if (reason !== null && !(await historyOnHost(sb))) {
 			console.error(reason);
 			console.error(
-				`  a rebuild is offered once its Claude history has moved to the host, which it does the next time it boots`,
+				`  no rebuild is offered until its Claude history is safely on the host; a start with the history directory mounted moves it there`,
 			);
 		} else {
 			rebuilding = reason !== null && (await confirmRebuild(reason));

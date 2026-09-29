@@ -1,10 +1,6 @@
 import { defineCommand } from "citty";
 import * as leases from "../session/leases.ts";
-import {
-	destroy,
-	historyStillInGuest,
-	identify,
-} from "../session/lifecycle.ts";
+import { destroy, historyOnHost, identify } from "../session/lifecycle.ts";
 import { withLock } from "../session/lock.ts";
 
 export default defineCommand({
@@ -34,7 +30,7 @@ export default defineCommand({
 			console.error(`${sb.cwd} is a host mount and is not affected.`);
 			console.error(`Installed packages and other guest-local state are lost.`);
 			console.error(
-				(await historyStillInGuest(sb))
+				!(await historyOnHost(sb))
 					? `Claude transcripts and memory are still on the VM's disk and are lost with it;\n` +
 							`  stop it and start it once first, which moves them to the host.`
 					: `Claude transcripts and memory are on the host and stay for the next start.`,
