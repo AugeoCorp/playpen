@@ -20,7 +20,7 @@ import { networkMode } from "../session/projectconfig.ts";
 import { capture } from "../sh.ts";
 import { sleep } from "../time.ts";
 import { isPort } from "./names.ts";
-import type { Policy } from "./policy.ts";
+import { isEnvName, type Policy, parseSecretHost } from "./policy.ts";
 
 /**
  * The fence: a network namespace with no route out, holding one sandbox VM.
@@ -174,6 +174,25 @@ export async function policyStamp(sandbox: string): Promise<string> {
 	}
 }
 
+const secretGrant = z.object(
+	{
+		env: z
+			.string({ error: "must be an environment variable name" })
+			.refine(isEnvName, { error: "must be an environment variable name" }),
+		hosts: z
+			.array(
+				z
+					.string({ error: "must be a hostname" })
+					.refine((host) => parseSecretHost(host) !== null, {
+						error: "must be a hostname without a port",
+					}),
+				{ error: "must be an array of hostnames" },
+			)
+			.min(1, { error: "must name at least one host" }),
+	},
+	{ error: "must be { env, hosts }" },
+);
+
 const policyFile = z.object(
 	{
 		allow: z.array(z.string({ error: "must be a string" }), {
@@ -186,6 +205,9 @@ const policyFile = z.object(
 		 */
 		ports: z.array(portForward, {
 			error: "must be an array of { host, guest }",
+		}),
+		secrets: z.array(secretGrant, {
+			error: "must be an array of { env, hosts }",
 		}),
 	},
 	{ error: "must hold a JSON object" },

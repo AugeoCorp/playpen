@@ -107,6 +107,9 @@ async function loadConfig(sb: Sandbox): Promise<{
 			`forwarding host port ${host} to the guest's localhost:${guest}`,
 		);
 	}
+	for (const { env, hosts } of network.secrets) {
+		console.error(`naming ${env} for ${hosts.join(", ")} (not injected yet)`);
+	}
 	return { masked, setup, network };
 }
 
@@ -286,16 +289,18 @@ export interface Running {
  * in it but the build.
  */
 async function startFenced(sb: Sandbox, template: Template): Promise<void> {
-	const { allow, mode, ports } = template.network;
+	const { allow, mode, ports, secrets } = template.network;
 	await fenced(sb, {
-		// A port is a grant of that host port, so writing it once is enough.
+		// A port or a secret's host is a grant, so writing it once is enough.
 		allow: [
 			...BUILTIN_ALLOW,
 			...allow,
 			...ports.map(({ host }) => `localhost:${host}`),
+			...secrets.flatMap(({ hosts }) => hosts),
 		],
 		mode,
 		ports,
+		secrets,
 	});
 	await warnWithoutEgress(sb);
 	await warnUnboundPorts(sb);
@@ -526,7 +531,7 @@ async function saveHistory(sb: Sandbox, running: boolean): Promise<void> {
 		if (!running && !(await store.load(sb.sandbox))) return;
 		if (!running) {
 			console.error(`starting it briefly to save Claude history`);
-			await fenced(sb, { allow: [], mode: "enforce", ports: [] });
+			await fenced(sb, { allow: [], mode: "enforce", ports: [], secrets: [] });
 		}
 		await history.archive(sb.instance, sb.sandbox);
 	} catch (err) {

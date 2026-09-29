@@ -96,7 +96,7 @@ async function reloadPolicy(sandbox: string): Promise<Policy> {
 		say(
 			`policy.json is unreadable (${err}); denying everything until the next start`,
 		);
-		return { allow: [], mode: "enforce", ports: [] };
+		return { allow: [], mode: "enforce", ports: [], secrets: [] };
 	}
 }
 

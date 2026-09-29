@@ -197,6 +197,7 @@ test("a sandbox already running is handed the project's policy again, so a tight
 		allow: [...BUILTIN_ALLOW, "example.com"],
 		mode: "enforce",
 		ports: [],
+		secrets: [],
 	});
 });
 
@@ -209,7 +210,12 @@ test("destroying a stopped sandbox boots it inside the fence with nothing allowe
 	fencedWith = null;
 	calls.length = 0;
 	await destroy(sb);
-	assert.deepEqual(fencedWith, { allow: [], mode: "enforce", ports: [] });
+	assert.deepEqual(fencedWith, {
+		allow: [],
+		mode: "enforce",
+		ports: [],
+		secrets: [],
+	});
 	assert.equal(calls[0], "start behind the gatekeeper");
 });
 
@@ -271,6 +277,7 @@ test("the hosts a project names are allowed on top of the ones playpen ships", a
 		allow: [...BUILTIN_ALLOW, "example.com"],
 		mode: "log",
 		ports: [],
+		secrets: [],
 	});
 });
 
@@ -293,7 +300,73 @@ test("a port entry brings its own localhost entry into the policy, and reaches t
 			{ host: 1234, guest: 1234 },
 			{ host: 5000, guest: 4321 },
 		],
+		secrets: [],
 	});
+});
+
+test("a secret's hosts are allowed without being listed, and the secret reaches the helper's policy", async (t) => {
+	const { run } = await sandboxFor(
+		t,
+		'export default { network: { allow: ["example.com"], secrets: [{ env: "GH_TOKEN", hosts: ["api.github.com", "github.com"] }, { env: "NPM_TOKEN", hosts: ["registry.example.com"] }] } };',
+	);
+	await run();
+	const { BUILTIN_ALLOW } = await import("../network/policy.ts");
+	assert.deepEqual(fencedWith, {
+		allow: [
+			...BUILTIN_ALLOW,
+			"example.com",
+			"api.github.com",
+			"github.com",
+			"registry.example.com",
+		],
+		mode: "enforce",
+		ports: [],
+		secrets: [
+			{ env: "GH_TOKEN", hosts: ["api.github.com", "github.com"] },
+			{ env: "NPM_TOKEN", hosts: ["registry.example.com"] },
+		],
+	});
+});
+
+test("each secret is reported by name and hosts, and its value stays out of the output, so a later injector cannot print it", async (t) => {
+	process.env.PLAYPEN_TEST_TOKEN = "ghp_not-to-be-printed";
+	t.after(() => {
+		delete process.env.PLAYPEN_TEST_TOKEN;
+	});
+	const { run } = await sandboxFor(
+		t,
+		'export default { network: { secrets: [{ env: "PLAYPEN_TEST_TOKEN", hosts: ["api.github.com", "github.com"] }] } };',
+	);
+	const said = t.mock.method(console, "error", () => {});
+	await run();
+	const lines = said.mock.calls.map((c) => String(c.arguments[0]));
+	assert.ok(
+		lines.includes(
+			"naming PLAYPEN_TEST_TOKEN for api.github.com, github.com (not injected yet)",
+		),
+		`expected a naming line, got:\n${lines.join("\n")}`,
+	);
+	assert.equal(
+		lines.some((line) => line.includes("ghp_not-to-be-printed")),
+		false,
+		"the value appeared in the output",
+	);
+});
+
+test("a bad secret fails the config load, so the sandbox starts with no project policy", async (t) => {
+	const { run } = await sandboxFor(
+		t,
+		'export default { network: { allow: ["example.com"], secrets: [{ env: "gh_token", hosts: ["github.com"] }] } };',
+	);
+	const said = t.mock.method(console, "error", () => {});
+	await run();
+	const lines = said.mock.calls.map((c) => String(c.arguments[0])).join("\n");
+	assert.match(
+		lines,
+		/`network\.secrets\[0\]\.env` must be an environment variable name/,
+	);
+	assert.deepEqual(fencedWith?.secrets, []);
+	assert.equal(fencedWith?.allow.includes("example.com"), false);
 });
 
 test("a guest port nothing could listen on is named in a warning, and the sandbox still starts", async (t) => {

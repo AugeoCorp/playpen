@@ -147,7 +147,7 @@ export async function loadTrustedConfig(
 	const skipped = (state: TrustState, error?: string): TrustedConfig => ({
 		masked: [],
 		setup: [],
-		network: { allow: [], mode: "enforce", ports: [] },
+		network: { allow: [], mode: "enforce", ports: [], secrets: [] },
 		rejected: [],
 		rejectedSetup: [],
 		rejectedNetwork: [],
@@ -200,7 +200,10 @@ export async function loadTrustedConfig(
 			`  its \`setup\` commands, if any, then run inside the sandbox.`,
 		);
 		console.error(
-			`  its \`network\` entries decide what the sandbox reaches, ports on this machine included.`,
+			`  its \`network\` entries decide what the sandbox reaches, ports on this machine included,`,
+		);
+		console.error(
+			`  and a \`secrets\` entry names a credential from your environment that the sandbox may use on those hosts.`,
 		);
 		console.error(
 			`  ${count === 1 ? "1 file" : `${count} files`} will be executed:`,
