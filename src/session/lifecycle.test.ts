@@ -51,6 +51,8 @@ let restoreFails: Error | number | null = null;
  * names, sorted and space-separated; unpacking an archive adds the names in it.
  */
 const guestFiles = new Set<string>();
+/** How the fake guest's tar ends a save, when a test says it ends badly. */
+let saveEnds: { code: number; stderr: string } = { code: 0, stderr: "" };
 /** Every archive the fake guest unpacked, in the order it unpacked them. */
 const restored: string[] = [];
 
@@ -125,7 +127,7 @@ mock.module("../lima/client.ts", {
 			if (script.includes("tar -cf -")) {
 				calls.push("save history");
 				const names = [...guestFiles].sort().join(" ");
-				return { code: 0, stdout: Buffer.from(names), stderr: "" };
+				return { ...saveEnds, stdout: Buffer.from(names) };
 			}
 			if (script.includes("-xf -")) {
 				calls.push("restore history");
@@ -179,6 +181,7 @@ async function sandboxFor(
 		process.env.LIMA_HOME = before.lima;
 		maskExit = 0;
 		restoreFails = null;
+		saveEnds = { code: 0, stderr: "" };
 	});
 
 	const { ensureRunning, identify } = await import("./lifecycle.ts");
@@ -422,6 +425,42 @@ test("when the host's copy still cannot be put back at a stop, the sandbox's his
 		`expected both files named, got:\n${lines.join("\n")}`,
 	);
 	assert.ok(calls.includes("stop"), `expected a stop in ${calls.join(", ")}`);
+});
+
+test("a save whose tar reports a file changed while it was read still replaces the host's copy, with the note shown", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await run();
+	guestFiles.add("today.jsonl");
+	saveEnds = {
+		code: 1,
+		stderr: "tar: .claude/projects/today.jsonl: file changed as we read it",
+	};
+	const notes = t.mock.method(console, "error", () => {});
+	const { stop } = await import("./lifecycle.ts");
+
+	await stop(sb);
+
+	assert.equal(await readFile(hostCopy(sb), "utf8"), "today.jsonl");
+	assert.ok(
+		said(notes).includes(
+			"note: tar: .claude/projects/today.jsonl: file changed as we read it",
+		),
+		`expected tar's message as a note, got:\n${said(notes).join("\n")}`,
+	);
+});
+
+test("a save the guest fails outright leaves the host's copy alone", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await hostHolds(sb, "old.jsonl");
+	await run();
+	guestFiles.add("today.jsonl");
+	saveEnds = { code: 2, stderr: "tar: .claude/projects: Cannot open" };
+	t.mock.method(console, "error", () => {});
+	const { stop } = await import("./lifecycle.ts");
+
+	await stop(sb);
+
+	assert.equal(await readFile(hostCopy(sb), "utf8"), "old.jsonl");
 });
 
 test("a save that cannot be put in place leaves no temporary file behind", async (t) => {

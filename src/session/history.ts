@@ -180,12 +180,17 @@ export async function archive(
 		const result = await lima.runScript(instance, script, {
 			timeoutMs: GUEST_TIMEOUT_MS,
 		});
-		if (result.code !== 0) {
+		// GNU tar exits 1 when a file changed while it was read, as a transcript
+		// Claude is still writing can; the archive is complete, with that file
+		// as it was at some point during the read.
+		const changedWhileRead = result.code === 1 && result.stdout.length > 0;
+		if (result.code !== 0 && !changedWhileRead) {
 			console.error(
 				`warning: could not save Claude history (${result.stderr.trim() || `exit ${result.code}`})`,
 			);
 			return false;
 		}
+		if (changedWhileRead) console.error(`note: ${result.stderr.trim()}`);
 		if (result.stdout.length === 0) return true;
 		if (held) {
 			await replaceCopy(sandbox, result.stdout);
