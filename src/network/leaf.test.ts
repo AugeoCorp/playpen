@@ -87,6 +87,12 @@ test("the certificate names the host in its subject and its alternative names", 
 
 test("the certificate is for a server and cannot sign other certificates", async (t) => {
 	const cert = await served(t, leafMinter(ca), "api.github.com");
+	// `X509Certificate.ca` is false for a CA:TRUE certificate whose key usage
+	// lacks keyCertSign, so the extension itself is read too.
+	const basicConstraints = forge.pki
+		.certificateFromPem(cert.toString())
+		.getExtension("basicConstraints") as { cA?: boolean } | undefined;
+	assert.equal(basicConstraints?.cA, false);
 	assert.equal(cert.ca, false);
 	assert.deepEqual(cert.keyUsage, ["1.3.6.1.5.5.7.3.1"]);
 });

@@ -1,7 +1,7 @@
-import { generateKeyPairSync, randomBytes } from "node:crypto";
+import { generateKeyPairSync } from "node:crypto";
 import { createSecureContext, type SecureContext } from "node:tls";
 import forge from "node-forge";
-import type { Ca } from "./ca.ts";
+import { type Ca, newCertificate } from "./ca.ts";
 
 const DAY_MS = 24 * 3600_000;
 const VALID_MS = 7 * DAY_MS;
@@ -21,7 +21,10 @@ export type ContextFor = (host: string) => SecureContext;
  * its end.
  */
 export function leafMinter(ca: Ca, now: () => number = Date.now): ContextFor {
-	const caCert = forge.pki.certificateFromPem(ca.certPem);
+	// Taken apart here so that what the minter keeps is the parsed key, which
+	// renewal needs, and not the `Ca` with its PEM copy of it.
+	const caCertPem = ca.certPem;
+	const caCert = forge.pki.certificateFromPem(caCertPem);
 	const caKey = forge.pki.privateKeyFromPem(ca.keyPem);
 	const ski = caCert.getExtension("subjectKeyIdentifier") as
 		| { subjectKeyIdentifier?: string }
@@ -38,9 +41,6 @@ export function leafMinter(ca: Ca, now: () => number = Date.now): ContextFor {
 		modulusLength: 2048,
 	});
 	const keyPem = privateKey.export({ type: "pkcs1", format: "pem" }).toString();
-	const leafPublic = forge.pki.publicKeyFromPem(
-		publicKey.export({ type: "spki", format: "pem" }).toString(),
-	);
 
 	const minted = new Map<string, { context: SecureContext; until: number }>();
 	return (host) => {
@@ -48,14 +48,8 @@ export function leafMinter(ca: Ca, now: () => number = Date.now): ContextFor {
 		if (cached !== undefined && cached.until - now() > RENEW_MS) {
 			return cached.context;
 		}
-		const cert = forge.pki.createCertificate();
-		cert.publicKey = leafPublic;
-		// A leading 01 keeps the serial positive; RFC 5280 allows 20 octets.
-		cert.serialNumber = `01${randomBytes(15).toString("hex")}`;
 		const issued = now();
-		// Backdated a minute so a guest with a slightly slow clock accepts it.
-		cert.validity.notBefore = new Date(issued - 60_000);
-		cert.validity.notAfter = new Date(issued + VALID_MS);
+		const cert = newCertificate(publicKey, issued, new Date(issued + VALID_MS));
 		cert.setSubject([{ name: "commonName", value: host }]);
 		cert.setIssuer(caCert.subject.attributes);
 		cert.setExtensions([
@@ -73,7 +67,7 @@ export function leafMinter(ca: Ca, now: () => number = Date.now): ContextFor {
 		cert.sign(caKey, forge.md.sha256.create());
 		const context = createSecureContext({
 			key: keyPem,
-			cert: `${forge.pki.certificateToPem(cert)}${ca.certPem}`,
+			cert: `${forge.pki.certificateToPem(cert)}${caCertPem}`,
 		});
 		minted.set(host, { context, until: issued + VALID_MS });
 		return context;
