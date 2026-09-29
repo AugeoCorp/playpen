@@ -84,8 +84,18 @@ export async function archive(
 	}
 }
 
-/** Unpacks the archive on stdin into the guest's home, readable only by its owner. */
-const UNPACK = "cd && umask 077 && tar -xf -";
+/**
+ * `--keep-newer-files` so an older archive never replaces what the guest has
+ * written since, such as a newer MEMORY.md.
+ *
+ * `--keep-directory-symlink` because without it `--keep-newer-files` fails on
+ * every directory that already exists ("Unexpected inconsistency when making
+ * directory", exit 2): `extract_dir` in GNU tar's src/extract.c accepts an
+ * existing directory only under that option or one of the other old-files
+ * modes. Seen on GNU tar 1.35.
+ */
+export const UNPACK =
+	"cd && umask 077 && tar --keep-newer-files --keep-directory-symlink -xf -";
 
 async function unpack(instance: string, path: string): Promise<string | null> {
 	try {
