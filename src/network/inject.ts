@@ -83,7 +83,7 @@ function swapInBasic(
  *
  * `secrets` is only what may be sent to this request's host; a placeholder for
  * any other secret is left as it is. Each header a value went into is listed
- * once per secret.
+ * once per secret, which is what gets logged.
  */
 export function rewriteHeaders(
 	rawHeaders: readonly string[],

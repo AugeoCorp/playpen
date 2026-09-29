@@ -90,8 +90,9 @@ export interface Policy {
 	 */
 	ports: readonly PortForward[];
 	/**
-	 * For whatever injects the values. `decide` never reads it: a secret's host
-	 * is reachable only because `allow` names it too.
+	 * For the interceptor (intercept.ts), which puts the values in. `decide`
+	 * never reads it: a secret's host is reachable only because `allow` names
+	 * it too.
 	 */
 	secrets: readonly SecretGrant[];
 }

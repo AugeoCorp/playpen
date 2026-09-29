@@ -16,18 +16,22 @@ export interface Gatekeeper {
 	close(): Promise<void>;
 }
 
-/**
- * A verdict on a `CONNECT`; or, inside a tunnel the interceptor holds, a
- * refused server name (`deny`) or a TLS or upstream failure (`error`, the
- * message alone).
- */
-export interface LogEntry {
+interface LogLine {
 	time: string;
 	host: string;
 	port: number;
-	verdict: "allow" | "deny" | "probe" | "report" | "error";
 	reason: string;
 }
+
+/**
+ * A verdict on a `CONNECT`; or, inside a tunnel the interceptor holds, a
+ * refused server name (`deny`), a value put into a request (`inject`, naming
+ * the header and the variable, never the value) or a TLS or upstream failure
+ * (`error`, the message alone).
+ */
+export type LogEntry =
+	| (LogLine & { verdict: "allow" | "deny" | "probe" | "report" | "error" })
+	| (LogLine & { verdict: "inject"; header: string; env: string });
 
 /**
  * What a hostname resolves to. Injectable so a test can decide what a name
