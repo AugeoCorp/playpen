@@ -21,12 +21,6 @@ export default defineCommand({
 			description: "Delete even while other sessions are attached",
 			default: false,
 		},
-		"discard-history": {
-			type: "boolean",
-			description:
-				"Delete it even if Claude history on its disk has not been moved to the host",
-			default: false,
-		},
 	},
 	async run({ args }) {
 		const sb = await identify(process.cwd());
@@ -35,16 +29,14 @@ export default defineCommand({
 			console.error(`This deletes VM ${sb.instance}.`);
 			console.error(`${sb.cwd} is a host mount and is not affected.`);
 			console.error(`Installed packages and other guest-local state are lost.`);
-			console.error(await historyNotice(sb));
+			for (const line of await historyNotice(sb)) console.error(line);
 			console.error(`Re-run with --yes to proceed.`);
 			process.exitCode = 1;
 			return;
 		}
 
 		// Checked and destroyed under one lock: unlocked, a session attaching in
-		// between would have its guest disk deleted underneath it, which is what
-		// the gate exists to prevent. Worse than stopping, so it is gated on a
-		// live lease rather than on removal itself.
+		// between would have its guest disk deleted underneath it.
 		const deleted = await withLock(sb.sandbox, async () => {
 			const others = await leases.live(sb.sandbox);
 			if (others.length > 0 && !args.force) {
@@ -56,7 +48,7 @@ export default defineCommand({
 				return false;
 			}
 			await leases.clear(sb.sandbox);
-			await destroy(sb, { discardHistory: args["discard-history"] });
+			await destroy(sb);
 			return true;
 		});
 

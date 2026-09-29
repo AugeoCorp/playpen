@@ -189,82 +189,33 @@ function mountsFor(sb: Sandbox): string {
 			location: history.hostDir(sb.sandbox),
 			mountPoint: history.GUEST_MOUNT_POINT,
 			writable: true,
+			"9p": { securityModel: history.SECURITY_MODEL },
 		},
 	])}`;
-}
-
-function escapeRegExp(text: string): string {
-	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/**
- * What a sandbox created before the history mount was given: compact JSON in
- * a clone's lima.yaml, and pretty-printed in one made before bases existed,
- * which is playpen's own rendered template verbatim.
- */
-function projectOnlyMounts(sb: Sandbox): RegExp {
-	const location = escapeRegExp(JSON.stringify(sb.cwd));
-	return new RegExp(
-		`"mounts"\\s*:\\s*\\[\\s*\\{\\s*"location"\\s*:\\s*${location}\\s*,\\s*"writable"\\s*:\\s*true\\s*\\}\\s*\\]`,
-		"g",
-	);
-}
-
-function limaYaml(sb: Sandbox): string {
-	return join(limaHome(), sb.instance, "lima.yaml");
 }
 
 /**
  * A clone carries the base's instance config, which Lima has resolved: `base:`
  * consumed, the concrete `images:` list spliced in. Lima rejects a config that
  * still has `base:` and no `images:`, so playpen's own rendered template cannot
- * replace it -- only the `mounts` the base left empty is rewritten.
+ * replace it -- only the empty `mounts` the base left behind is rewritten.
  *
- * A sandbox made before the history mount existed has the project's mount
- * alone, which playpen wrote and so can recognise. It gets the history
- * mount here too, in place, on its next boot: Lima reads lima.yaml on every
- * start. Its rendered template is left as it was, so `changedTemplate` does
- * not offer a rebuild for this -- a rebuild would delete the guest's own copy
- * of its history before the mount could take it over.
- *
- * Provisioning stays skipped either way: the guard markers are on the cloned
- * disk and the image hash has not changed.
+ * Provisioning stays skipped: the guard markers are on the cloned disk and the
+ * image hash has not changed.
  */
-async function giveInstanceItsMounts(sb: Sandbox): Promise<void> {
-	const path = limaYaml(sb);
+async function giveCloneItsMount(sb: Sandbox): Promise<void> {
+	const path = join(limaHome(), sb.instance, "lima.yaml");
 	const yaml = await readFile(path, "utf8");
-	const mounts = mountsFor(sb);
-	if (yaml.includes(mounts)) return;
-	const empty = yaml.match(NO_MOUNTS)?.length ?? 0;
-	const projectOnly = yaml.match(projectOnlyMounts(sb))?.length ?? 0;
-	if (empty + projectOnly !== 1) {
+	const found = yaml.match(NO_MOUNTS)?.length ?? 0;
+	if (found !== 1) {
 		throw new Error(
-			`${path} has ${empty + projectOnly} \`mounts\` playpen wrote to fill in, expected 1`,
+			`cloned ${path} has ${found} empty \`mounts\` to fill in, expected 1`,
 		);
 	}
-	const filled =
-		empty === 1
-			? yaml.replace(NO_MOUNTS, () => mounts)
-			: yaml.replace(projectOnlyMounts(sb), () => mounts);
-	await writeAtomic(path, filled);
-}
-
-/**
- * Not fatal: the sandbox still works, with Claude history kept in the guest as
- * before. Said, because until the history is on the host the sandbox cannot be
- * rebuilt or removed without discarding it.
- */
-async function mountHistoryOnExisting(sb: Sandbox): Promise<void> {
-	try {
-		await giveInstanceItsMounts(sb);
-	} catch (err) {
-		console.error(
-			`warning: Claude history is not mounted from the host (${err instanceof Error ? err.message : err})`,
-		);
-		console.error(
-			`  it stays on the VM's disk; \`playpen remove --yes --discard-history\` deletes it with the VM`,
-		);
-	}
+	await writeAtomic(
+		path,
+		yaml.replace(NO_MOUNTS, () => mountsFor(sb)),
+	);
 }
 
 /**
@@ -321,12 +272,42 @@ async function outdatedBase(sb: Sandbox): Promise<string | null> {
 }
 
 /**
- * Offered rather than done: a reclone is ~10s, but the guest disk goes with it
- * -- installed packages and masked directories. Claude transcripts and memory
- * are on the host and stay. `start` is routine, so it asks.
+ * A sandbox made before the history mount keeps Claude history on its own
+ * disk, so deleting the VM deletes it. Read from lima.yaml: nothing here boots
+ * the VM to find out.
  */
-async function confirmRebuild(reason: string): Promise<boolean> {
+async function historyOnVmDisk(sb: Sandbox): Promise<boolean> {
+	const yaml = await readFile(
+		join(limaHome(), sb.instance, "lima.yaml"),
+		"utf8",
+	).catch(() => null);
+	return (
+		yaml !== null && !yaml.includes(JSON.stringify(history.hostDir(sb.sandbox)))
+	);
+}
+
+const HISTORY_ON_VM_DISK = [
+	"Its Claude transcripts and memory are on the VM's disk, from before the history mount, and go with it.",
+	"To keep them, copy them into the project first:",
+	"  playpen run -- sh -c 'tar -C ~ -cf claude-projects.tar .claude/projects'",
+];
+
+/** For the `remove` prompt: what deleting the VM does to Claude history. */
+export async function historyNotice(sb: Sandbox): Promise<string[]> {
+	if (await historyOnVmDisk(sb)) return HISTORY_ON_VM_DISK;
+	return [
+		`Claude transcripts and memory stay on the host, in ${history.hostDir(sb.sandbox)}.`,
+	];
+}
+
+/**
+ * Offered rather than done: a reclone is ~10s, but the guest disk goes with it
+ * -- installed packages and masked directories. `start` is routine, so it asks.
+ */
+async function confirmRebuild(sb: Sandbox, reason: string): Promise<boolean> {
 	console.error(reason);
+	if (await historyOnVmDisk(sb))
+		for (const line of HISTORY_ON_VM_DISK) console.error(`  ${line}`);
 	const ok = await confirm(
 		`  rebuild it now? ~10s, discards packages and masked dirs [y/N] `,
 	);
@@ -419,14 +400,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 		template = await renderTemplate(sb);
 		const reason =
 			(await changedTemplate(sb, template)) ?? (await outdatedBase(sb));
-		if (reason !== null && !(await history.onHost(sb.instance))) {
-			console.error(reason);
-			console.error(
-				`  no rebuild is offered until its Claude history is safely on the host; a start with the history directory mounted moves it there`,
-			);
-		} else {
-			rebuilding = reason !== null && (await confirmRebuild(reason));
-		}
+		rebuilding = reason !== null && (await confirmRebuild(sb, reason));
 		if (!rebuilding) {
 			const fence = lima.isRunning(existing)
 				? await fenceStatus(sb.sandbox, sb.instance)
@@ -439,11 +413,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 						`  stop it and start it again: playpen stop --force && playpen start`,
 				);
 			}
-			const booting = !lima.isRunning(existing);
-			if (booting) {
-				await history.makeHostDir(sb.sandbox);
-				await mountHistoryOnExisting(sb);
-			}
+			if (!lima.isRunning(existing)) await history.makeHostDir(sb.sandbox);
 			// In every other state, including a sandbox that is already up: a
 			// stopped VM is started, one that survived its helper gets another
 			// gatekeeper, and a running one has its policy rewritten, which is
@@ -451,7 +421,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 			// started takes effect without a restart.
 			await startFenced(sb, template);
 			await applyMasks(sb, template.masks);
-			await history.settle(sb.instance, sb.sandbox, booting);
+			await history.prepareGuest(sb.instance);
 			await store.touch(sb.sandbox);
 			return { created: false, setupOk: true, setup: template.setup };
 		}
@@ -477,7 +447,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 	await lima.clone(base.instance, sb.instance);
 	try {
 		await history.makeHostDir(sb.sandbox);
-		await giveInstanceItsMounts(sb);
+		await giveCloneItsMount(sb);
 		await startFenced(sb, current);
 	} catch (err) {
 		await lima
@@ -490,7 +460,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 		throw err;
 	}
 	const masked = await applyMasks(sb, current.masks);
-	await history.settle(sb.instance, sb.sandbox, true);
+	await history.prepareGuest(sb.instance);
 
 	// Recorded before setup, not after: setup can run for minutes, and an
 	// instance that exists with no record is one `start` will neither finish nor
@@ -592,34 +562,9 @@ export async function stop(sb: Sandbox): Promise<void> {
 	if (existing && lima.isRunning(existing)) await lima.stop(sb.instance);
 }
 
-const MOVE_HISTORY_FIRST = [
-	"run `playpen start` once to move it to the host (with `playpen stop` first if",
-	"  it has been running since before the history mount), or pass",
-	"  --discard-history to delete it with the VM",
-].join("\n");
-
-/** For the `remove` prompt: what happens to Claude history if it goes ahead. */
-export async function historyNotice(sb: Sandbox): Promise<string> {
-	if (!(await lima.get(sb.instance)) || (await history.onHost(sb.instance)))
-		return "Claude transcripts and memory are on the host and stay for the next start.";
-	return `Claude transcripts and memory may still be on the VM's disk only;\n  ${MOVE_HISTORY_FIRST}.`;
-}
-
-/**
- * Refuses a VM whose disk may still hold history the host has not got, unless
- * told to discard it: the one step that deletes a disk is the one that checks.
- * Nothing here boots it to find out.
- */
-export async function destroy(
-	sb: Sandbox,
-	opts: { discardHistory?: boolean } = {},
-): Promise<void> {
+export async function destroy(sb: Sandbox): Promise<void> {
 	const existing = await lima.get(sb.instance);
 	if (existing) {
-		if (!opts.discardHistory && !(await history.onHost(sb.instance)))
-			throw new Error(
-				`${sb.sandbox} may still hold Claude history on its disk that is not on the host.\n  ${MOVE_HISTORY_FIRST}.`,
-			);
 		if (lima.isRunning(existing)) await lima.stop(sb.instance, true);
 		await lima.remove(sb.instance);
 	}
