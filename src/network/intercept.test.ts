@@ -251,11 +251,16 @@ function clientThrough(
 	return agent;
 }
 
+/**
+ * One request over `agent`. `headers` as a flat `[name, value, …]` list goes
+ * out exactly as given, with no `Host` added, so a test can send two.
+ */
 function send(
 	agent: https.Agent,
 	opts: {
-		headers: Record<string, string>;
+		headers: Record<string, string> | string[];
 		method?: string;
+		path?: string;
 		body?: Buffer;
 	},
 ): Promise<{ status: number; headers: Record<string, unknown>; body: string }> {
@@ -264,7 +269,7 @@ function send(
 			{
 				agent,
 				host: "api.example",
-				path: "/user",
+				path: opts.path ?? "/user",
 				method: opts.method ?? "GET",
 				headers: opts.headers,
 			},
@@ -340,6 +345,74 @@ test("a request whose Host header names another site is refused, and nothing is 
 	assert.match(
 		denied?.reason ?? "",
 		/Host header elsewhere\.example is not api\.example/,
+	);
+});
+
+test("a request line naming another site in full is refused, and nothing is sent on", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port, log } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+
+	const answer = await send(clientThrough(t, port, "api.example:443"), {
+		path: "https://evil.example/steal",
+		headers: { authorization: `token ${PLACEHOLDER}` },
+	});
+
+	assert.equal(answer.status, 421);
+	assert.deepEqual(upstream.received, []);
+	const denied = log.find((e) => e.verdict === "deny");
+	assert.match(
+		denied?.reason ?? "",
+		/request target https:\/\/evil\.example\/steal is not a path on api\.example/,
+	);
+});
+
+test("the host sees exactly one Host header, the approved host, when the guest sends two", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+
+	await send(clientThrough(t, port, "api.example:443"), {
+		headers: [
+			"Host",
+			"api.example",
+			"Host",
+			"evil.example",
+			"Authorization",
+			`token ${PLACEHOLDER}`,
+		],
+	});
+
+	assert.deepEqual(headersNamed(upstream.received[0], "host"), ["api.example"]);
+});
+
+test("headers a front end could route by instead of Host never reach the host", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+
+	await send(clientThrough(t, port, "api.example:443"), {
+		headers: {
+			"x-forwarded-host": "evil.example",
+			forwarded: "host=evil.example",
+			"x-original-url": "https://evil.example/",
+		},
+	});
+
+	assert.equal(upstream.received.length, 1, "the request never arrived");
+	assert.deepEqual(
+		[
+			...headersNamed(upstream.received[0], "x-forwarded-host"),
+			...headersNamed(upstream.received[0], "forwarded"),
+			...headersNamed(upstream.received[0], "x-original-url"),
+		],
+		[],
 	);
 });
 

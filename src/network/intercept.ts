@@ -64,6 +64,14 @@ const HOP_BY_HOP = new Set([
 	"upgrade",
 ]);
 
+/** Headers a front end may route a request by, rather than by its connection. */
+const ROUTING = new Set([
+	"host",
+	"x-forwarded-host",
+	"forwarded",
+	"x-original-url",
+]);
+
 function withoutHopByHop(raw: readonly string[], upgrade: boolean): string[] {
 	const kept: string[] = [];
 	for (let i = 0; i + 1 < raw.length; i += 2) {
@@ -130,27 +138,51 @@ function tunnelServer(
 		agent.createConnection = (o) => connect(o as tls.ConnectionOptions);
 
 	/**
-	 * A request naming another site in `Host` is refused, not sent on: behind a
-	 * shared front end, that header rather than the connection can decide which
-	 * site gets the request, and with it the value.
+	 * A request naming another site is refused, not sent on: behind a shared
+	 * front end, the request line or `Host` rather than the connection can
+	 * decide which site gets the request, and with it the value. An
+	 * absolute-form target (`GET https://other.example/`) overrides `Host`
+	 * (RFC 9112, 3.2.2), so only a path, or `*` for `OPTIONS`, is accepted.
 	 */
-	const misdirected = (req: IncomingMessage): boolean => {
+	const misdirection = (req: IncomingMessage): string | null => {
+		const target = req.url ?? "";
+		const originForm =
+			target.startsWith("/") || (target === "*" && req.method === "OPTIONS");
+		if (!originForm) {
+			return `request target ${target} is not a path on ${host}, the host this tunnel was allowed for`;
+		}
 		const named = (req.headers.host ?? "")
 			.toLowerCase()
 			.replace(/:443$/, "")
 			.replace(/\.$/, "");
-		if (named === host) return false;
-		log({
-			...at(),
-			verdict: "deny",
-			reason: `Host header ${req.headers.host ?? "(none)"} is not ${host}, the host this tunnel was allowed for`,
-		});
-		return true;
+		if (named === host) return null;
+		return `Host header ${req.headers.host ?? "(none)"} is not ${host}, the host this tunnel was allowed for`;
+	};
+	const misdirected = (req: IncomingMessage): boolean => {
+		const reason = misdirection(req);
+		if (reason !== null) log({ ...at(), verdict: "deny", reason });
+		return reason !== null;
+	};
+
+	/**
+	 * The upstream sees one `Host`, the approved one, whatever the guest sent:
+	 * Node checks only the first of several, and a front end may route on the
+	 * last, or on a header that overrides it.
+	 */
+	const forwardedHeaders = (req: IncomingMessage, upgrade: boolean) => {
+		const kept = withoutHopByHop(req.rawHeaders, upgrade);
+		const headers = ["Host", host];
+		for (let i = 0; i + 1 < kept.length; i += 2) {
+			const name = kept[i] as string;
+			if (ROUTING.has(name.toLowerCase())) continue;
+			headers.push(name, kept[i + 1] as string);
+		}
+		return headers;
 	};
 
 	const upstream = (req: IncomingMessage, upgrade: boolean) => {
 		const { headers, injected } = rewriteHeaders(
-			withoutHopByHop(req.rawHeaders, upgrade),
+			forwardedHeaders(req, upgrade),
 			secrets,
 		);
 		for (const { header, env } of injected) {

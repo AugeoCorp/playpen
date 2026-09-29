@@ -378,10 +378,17 @@ on the same host -- and every plain-HTTP request is piped as before.
 **What happens in the tunnel.** The gatekeeper answers the `CONNECT` itself and
 hands the tunnel to a server made for that one host
 (`src/network/intercept.ts`), which terminates TLS, offering HTTP/1.1 only. A
-TLS server name other than the host the `CONNECT` named is refused, and so is a
-request whose `Host` header names another site (with a 421): behind a shared
-front end, that header can decide which site gets the request, and with it the
-value. Each request's headers are read, the placeholder is replaced
+TLS server name other than the host the `CONNECT` named is refused. So, with a
+421 and a `deny` line, is a request whose `Host` header names another site, and
+one whose request line is anything but a path (or `*` for `OPTIONS`): behind a
+shared front end, `Host` or a full URL in the request line
+(`GET https://other.example/`, which overrides `Host`) can decide which site
+gets the request, and with it the value. The upstream sees exactly one `Host`,
+the approved host, whatever the guest sent, and never the guest's
+`X-Forwarded-Host`, `Forwarded` or `X-Original-URL`, which some front ends route
+by; hop-by-hop headers (`Connection`, `Keep-Alive`, `Proxy-*`, `TE`, `Trailer`,
+and `Upgrade` outside an upgrade) are dropped too. Every other header goes on as
+sent. Each request's headers are read, the placeholder is replaced
 (`rewriteHeaders` in `src/network/inject.ts`), and the request goes on over a
 new TLS connection to the host the `CONNECT` named, at port 443, verified
 against the certificates Node carries. That connection is resolved and dialed
@@ -476,7 +483,10 @@ and change over time, while the CA is one per install.
   but it means "allow `github.com`" is wider than it looks: names like
   `objects.githubusercontent.com` sit behind shared front ends too. A secret's
   host is the exception: there the server name and `Host` must both be the host
-  the `CONNECT` named, so a value cannot be fronted onto another site.
+  the `CONNECT` named, the request line must be a path, and the upstream gets
+  one `Host` naming that host and none of the headers front ends are known to
+  route by. That closes the ways of naming another site that this code knows of;
+  a front end that routes on something else still could.
 
 ## What was measured, and where
 
