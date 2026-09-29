@@ -27,6 +27,8 @@ let maskExit = 0;
 let settleExit = 0;
 /** What the history step was handed on its stdin, when anything. */
 let settleInput: Uint8Array | null = null;
+/** What the history step prints: the files it kept the host's newer copy of. */
+let settleStdout = "";
 /** The flags the history step was last run with: `takeover`, `archive`. */
 let settleArgs: readonly string[] = [];
 let limaHome = "";
@@ -133,7 +135,11 @@ mock.module("../lima/client.ts", {
 				);
 				if (!yaml.includes('"mountPoint":"{{.Home}}/.claude/projects"'))
 					return { code: 1, stdout: "", stderr: "not mounted from the host" };
-				return { code: settleExit, stdout: "", stderr: "tar: broken pipe" };
+				return {
+					code: settleExit,
+					stdout: Buffer.from(settleStdout),
+					stderr: "tar: broken pipe",
+				};
 			}
 			return { code: maskExit, stdout: "", stderr: "mask script failed" };
 		},
@@ -185,6 +191,7 @@ async function sandboxFor(
 		settleExit = 0;
 		settleInput = null;
 		settleArgs = [];
+		settleStdout = "";
 	});
 
 	const { ensureRunning, identify } = await import("./lifecycle.ts");
@@ -462,6 +469,18 @@ test("an archive the guest failed to import stays where it was, for the next sta
 	);
 	const lines = said.mock.calls.map((c) => String(c.arguments[0])).join("\n");
 	assert.match(lines, /Claude history is not on the host \(tar: broken pipe\)/);
+});
+
+test("files the guest left alone because the host's copy is newer are named", async (t) => {
+	const { run } = await sandboxFor(t, BOTH);
+	settleStdout = "-home-me-project/one.jsonl\n";
+	const said = t.mock.method(console, "error", () => {});
+	await run();
+	const lines = said.mock.calls.map((c) => String(c.arguments[0])).join("\n");
+	assert.match(
+		lines,
+		/kept the newer copies already in .* of:\n {2}-home-me-project\/one\.jsonl/,
+	);
 });
 
 test("an archive imported earlier is not overwritten by the next one", async (t) => {

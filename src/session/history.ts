@@ -64,6 +64,64 @@ export function onHost(instance: string): Promise<boolean> {
 }
 
 /**
+ * Copies `$1` into `$2` through `$2/.playpen-staging`: cleared on every
+ * attempt, filled, compared against `$1`, and only then moved into place, by
+ * renames within `$2`. So an attempt cut off at any point leaves nothing
+ * partial in `$2` that the next attempt would take for newer. An entry already
+ * in `$2` and newer than the copy is kept, and named on stdout; so is one
+ * whose type differs, rather than a directory being replaced by a file. `$1`
+ * is left as it was.
+ *
+ * Never call it as a condition (`if`, `||`): bash ignores `set -e` for the
+ * whole of a function run that way, even inside it.
+ */
+export const MOVE_HISTORY = [
+	"move_history() (",
+	"	set -euo pipefail",
+	"	shopt -s nullglob dotglob",
+	'	src="$1"',
+	'	dst="$2"',
+	'	stage="$dst/.playpen-staging"',
+	'	rm -rf "$stage"',
+	'	mkdir "$stage"',
+	'	tar -C "$src" -cf - . | tar -C "$stage" -xf -',
+	'	diff -r --no-dereference "$src" "$stage" >&2',
+	"	place() (",
+	'		cd "$1"',
+	"		for name in *; do",
+	'			target="$2/$name"',
+	'			if [ -d "./$name" ] && [ ! -L "./$name" ] && [ -d "$target" ] && [ ! -L "$target" ]; then',
+	'				place "./$name" "$target" "$3$name/"',
+	'			elif [ ! -e "$target" ] && [ ! -L "$target" ]; then',
+	'				mv -T "./$name" "$target"',
+	'			elif [ -n "$(find "$target" -maxdepth 0 -newer "./$name")" ] || [ -d "$target" ] || [ -d "./$name" ]; then',
+	'				echo "$3$name"',
+	"			else",
+	'				mv -fT "./$name" "$target"',
+	"			fi",
+	"		done",
+	"	)",
+	'	place "$stage" "$(cd "$dst" && pwd)" ""',
+	'	rm -rf "$stage"',
+	")",
+].join("\n");
+
+/**
+ * The archive-on-destroy scheme's tar on stdin, into `$1`. Unpacked on the
+ * guest's own disk first, where tar reports a truncated archive, then moved
+ * like the guest's own history.
+ */
+export const IMPORT_HISTORY = [
+	"import_history() (",
+	"	set -euo pipefail",
+	'	unpacked="$(mktemp -d "$HOME/.playpen-import.XXXXXX")"',
+	"	trap 'rm -rf \"$unpacked\"' EXIT",
+	'	tar -C "$unpacked" -xf -',
+	`	move_history "$unpacked/${GUEST_REL}" "$1"`,
+	")",
+].join("\n");
+
+/**
  * Once per boot, on every start until the history is on the host, and on a
  * start that finds an archive left by the older archive-on-destroy scheme.
  *
@@ -74,12 +132,8 @@ export function onHost(instance: string): Promise<boolean> {
  * `$1` is `takeover` until the history is on the host: a sandbox that kept its
  * history in the guest before the mount existed still has it, hidden under the
  * mount. A bind without `--rbind` leaves submounts out, so it shows what is
- * underneath. `$2` is `archive` when the old archive is on stdin.
- *
- * `--keep-newer-files` so an older copy never overwrites a newer one. GNU tar
- * 1.35 exits 2 with it alone on every directory that already exists;
- * `--keep-directory-symlink` takes it through that path cleanly, and leaves
- * the existing directories' modes alone, the host directory's 0700 included.
+ * underneath. That copy stays there, and goes with the disk. `$2` is `archive`
+ * when the old archive is on stdin.
  */
 const SETTLE = [
 	"set -euo pipefail",
@@ -90,17 +144,19 @@ const SETTLE = [
 	'  echo "$claude/projects is not mounted from the host" >&2',
 	"  exit 1",
 	"fi",
-	'merge() { tar --keep-newer-files --keep-directory-symlink -xf - "$@"; }',
+	MOVE_HISTORY,
+	IMPORT_HISTORY,
 	'if [ "$1" = takeover ]; then',
 	'  under="$(mktemp -d)"',
 	'  sudo mount --bind "$claude" "$under"',
 	'  trap \'sudo umount "$under"; rmdir "$under"\' EXIT',
-	'  if [ -n "$(ls -A "$under/projects" 2>/dev/null)" ]; then',
-	'    tar -C "$under" -cf - projects | merge -C "$claude"',
-	'    find "$under/projects" -mindepth 1 -delete',
+	'  if [ -d "$under/projects" ]; then',
+	'    move_history "$under/projects" "$claude/projects"',
 	"  fi",
 	"fi",
-	`if [ "$2" = archive ]; then merge -C "$HOME" ${GUEST_REL}; fi`,
+	'if [ "$2" = archive ]; then',
+	'  import_history "$claude/projects"',
+	"fi",
 ].join("\n");
 
 /**
@@ -120,6 +176,7 @@ export async function settle(
 	if (!booted && !takeover && archive === null) return;
 
 	let failure: string | null;
+	let kept = "";
 	try {
 		const result = await lima.runScript(instance, SETTLE, {
 			args: [takeover ? "takeover" : "", archive === null ? "" : "archive"],
@@ -127,6 +184,7 @@ export async function settle(
 		});
 		failure =
 			result.code === 0 ? null : result.stderr.trim() || `exit ${result.code}`;
+		kept = result.stdout.toString("utf8").trim();
 	} catch (err) {
 		failure = err instanceof Error ? err.message : String(err);
 	}
@@ -142,6 +200,10 @@ export async function settle(
 				`  ${archivePath(sandbox)} is left to import on the next start`,
 			);
 		return;
+	}
+	if (kept !== "") {
+		console.error(`kept the newer copies already in ${hostDir(sandbox)} of:`);
+		for (const path of kept.split("\n")) console.error(`  ${path}`);
 	}
 	if (takeover)
 		await writeFile(marker(instance), "").catch((err: unknown) =>
