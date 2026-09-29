@@ -9,7 +9,7 @@ export async function exists(path: string): Promise<boolean> {
 	}
 }
 
-export async function sizeOf(path: string): Promise<number> {
+export async function sizeOrZero(path: string): Promise<number> {
 	try {
 		return (await stat(path)).size;
 	} catch {

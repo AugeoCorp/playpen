@@ -12,7 +12,7 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { dataDir, limaHome } from "../config.ts";
-import { readAppended, sizeOf, writeAtomic } from "../fs.ts";
+import { readAppended, sizeOrZero, writeAtomic } from "../fs.ts";
 import { describeIssue } from "../issue.ts";
 import { assertSandboxName } from "../session/identity.ts";
 import { isLive, ownerSchema } from "../session/proc.ts";
@@ -390,7 +390,7 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 	}
 
 	const paths = fencePaths(sandbox);
-	let offset = await sizeOf(paths.helperLog);
+	let offset = await sizeOrZero(paths.helperLog);
 	const child = await spawnHelper(sandbox, instance);
 
 	let exit: number | null = null;
