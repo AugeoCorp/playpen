@@ -86,15 +86,18 @@ export function onHost(instance: string): Promise<boolean> {
  * partial in `$2` that the next attempt would take for newer. `$1` is left as
  * it was.
  *
- * An entry already in `$2` is replaced only by a strictly newer copy. An
- * identical one is left as it is; any other -- older, as old but different,
- * or of another type -- is kept, and named on stdout as `kept<TAB>path`.
+ * An entry already in `$2` is replaced only by a strictly newer copy, and an
+ * identical one is left as it is. No version is ever deleted: the copy that
+ * does not end up in place -- the replaced one, or the guest's when it is
+ * older, as old but different, or of another type -- is moved to
+ * `$2/.playpen-kept/<attempt>/`, and named on stdout as
+ * `kept<TAB>path<TAB>where`.
  *
- * Claude Code may be writing to `$2` meanwhile. `mv -n` never replaces an
- * entry that appeared after the check that found none. What remains: 9p has
- * no RENAME_NOREPLACE, so `mv -n` checks and renames in two steps, and one
- * created in that instant is replaced; and so is a target written between the
- * `find` that found it older and the rename.
+ * Claude Code may be writing to `$2` meanwhile. A target is moved aside before
+ * its replacement goes in, so a write through a descriptor opened before lands
+ * in the kept copy, and `mv -n` never replaces an entry that appeared since.
+ * What remains: 9p has no RENAME_NOREPLACE, so `mv -n` checks and renames in
+ * two steps, and an entry created in that instant is replaced.
  *
  * Under a lock on the guest's own disk for the whole run: killing
  * `limactl shell` on the host does not stop the script in the guest, so an
@@ -127,10 +130,17 @@ export const MOVE_HISTORY = [
 	'			cmp -s "$1" "$2"',
 	"		fi",
 	"	}",
+	'	attempt="$(date -u +%Y%m%dT%H%M%SZ)-$$"',
+	'	kept="$(cd "$dst" && pwd)/.playpen-kept/$attempt"',
+	"	set_aside() {",
+	'		mkdir -p "$(dirname "$kept/$2")"',
+	'		mv -T "$1" "$kept/$2"',
+	'		printf \'kept\\t%s\\t%s\\n\' "$2" ".playpen-kept/$attempt/$2"',
+	"	}",
 	"	put() {",
 	'		mv -nT "$1" "$2" || true',
 	'		if [ -e "$1" ] || [ -L "$1" ]; then',
-	"			printf 'kept\\t%s\\n' \"$3\"",
+	'			set_aside "$1" "$3"',
 	"		fi",
 	"	}",
 	"	place() (",
@@ -142,13 +152,14 @@ export const MOVE_HISTORY = [
 	'			elif [ ! -e "$target" ] && [ ! -L "$target" ]; then',
 	'				put "./$name" "$target" "$3$name"',
 	'			elif [ -d "$target" ] || [ -d "./$name" ]; then',
-	"				printf 'kept\\t%s\\n' \"$3$name\"",
+	'				set_aside "./$name" "$3$name"',
 	'			elif same "./$name" "$target"; then',
 	"				:",
 	'			elif [ -n "$(find "./$name" -maxdepth 0 -newer "$target")" ]; then',
-	'				mv -fT "./$name" "$target"',
+	'				set_aside "$target" "$3$name"',
+	'				put "./$name" "$target" "$3$name"',
 	"			else",
-	"				printf 'kept\\t%s\\n' \"$3$name\"",
+	'				set_aside "./$name" "$3$name"',
 	"			fi",
 	"		done",
 	"	)",
@@ -257,8 +268,11 @@ export async function settle(
 	}
 	const report = parseReport(result.stdout.toString("utf8"));
 	if (report.kept.length > 0) {
-		console.error(`kept the newer copies already in ${hostDir(sandbox)} of:`);
-		for (const path of report.kept) console.error(`  ${path}`);
+		console.error(
+			`kept both copies of these; the one not in place is under ${hostDir(sandbox)}:`,
+		);
+		for (const { path, aside } of report.kept)
+			console.error(`  ${path}  (the other: ${aside})`);
 	}
 	if (takeover) {
 		if (report.takeover === 0) await recordOnHost(instance);
@@ -287,16 +301,16 @@ function errorText(err: unknown): string {
 interface Report {
 	takeover: number | null;
 	import: number | null;
-	kept: string[];
+	kept: { path: string; aside: string }[];
 }
 
 /** What `SETTLE` printed; a step it never reached reads as null. */
 function parseReport(stdout: string): Report {
 	const report: Report = { takeover: null, import: null, kept: [] };
 	for (const line of stdout.split("\n")) {
-		const [key, value] = line.split("\t");
+		const [key, value, aside] = line.split("\t");
 		if (value === undefined) continue;
-		if (key === "kept") report.kept.push(value);
+		if (key === "kept") report.kept.push({ path: value, aside: aside ?? "" });
 		if (key === "takeover" || key === "import") report[key] = Number(value);
 	}
 	return report;

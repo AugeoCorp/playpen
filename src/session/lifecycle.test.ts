@@ -532,15 +532,16 @@ test("a whole script that fails leaves the history counted as not moved", async 
 	assert.equal(await historyOnHost(sb), false);
 });
 
-test("files the guest left alone because the host's copy is newer are named", async (t) => {
+test("files with two copies are named, with where the one not in place went", async (t) => {
 	const { run } = await sandboxFor(t, BOTH);
-	settleStdout = "kept\t-home-me-project/one.jsonl\n";
+	settleStdout =
+		"kept\t-home-me-project/one.jsonl\t.playpen-kept/1/-home-me-project/one.jsonl\n";
 	const said = t.mock.method(console, "error", () => {});
 	await run();
 	const lines = said.mock.calls.map((c) => String(c.arguments[0])).join("\n");
 	assert.match(
 		lines,
-		/kept the newer copies already in .* of:\n {2}-home-me-project\/one\.jsonl/,
+		/kept both copies of these; the one not in place is under .*:\n {2}-home-me-project\/one\.jsonl {2}\(the other: \.playpen-kept\/1\/-home-me-project\/one\.jsonl\)/,
 	);
 });
 

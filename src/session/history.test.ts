@@ -216,21 +216,31 @@ test("a move waits while an earlier one still holds the guest's lock, and then r
 	assert.deepEqual(await tree(s.dst), await tree(s.src));
 });
 
-test("a file already on the host and newer than the guest's is kept, and named", async (t) => {
+/** Where the one `kept` line on stdout says the other copy went. */
+function setAsideAt(s: Scratch, stdout: string): string {
+	const [, path, aside] = stdout.trimEnd().split("\t");
+	assert.equal(path, "-home-me-project/one.jsonl", stdout);
+	return join(s.dst, aside ?? "");
+}
+
+test("a file already on the host and newer than the guest's stays in place, and the guest's is set aside, not deleted", async (t) => {
 	const s = await scratch(t);
 	await guestHistory(s.src);
 	const onHost = join(s.dst, "-home-me-project", "one.jsonl");
 	await mkdir(dirname(onHost));
-	await writeFile(onHost, "resumed on the host since");
+	await writeFile(onHost, "cut sho");
 	const later = new Date(Date.now() + 3_600_000);
 	await utimes(onHost, later, later);
 	const result = run(s, MOVE);
 	assert.equal(result.code, 0, result.stderr);
-	assert.equal(await readFile(onHost, "utf8"), "resumed on the host since");
-	assert.equal(result.stdout, "kept\t-home-me-project/one.jsonl\n");
+	assert.equal(await readFile(onHost, "utf8"), "cut sho");
+	assert.equal(
+		await readFile(setAsideAt(s, result.stdout), "utf8"),
+		"first session",
+	);
 });
 
-test("a file already on the host and older than the guest's is replaced", async (t) => {
+test("a file already on the host and older than the guest's is replaced, and set aside, not deleted", async (t) => {
 	const s = await scratch(t);
 	await guestHistory(s.src);
 	const onHost = join(s.dst, "-home-me-project", "one.jsonl");
@@ -241,10 +251,27 @@ test("a file already on the host and older than the guest's is replaced", async 
 	const result = run(s, MOVE);
 	assert.equal(result.code, 0, result.stderr);
 	assert.equal(await readFile(onHost, "utf8"), "first session");
-	assert.equal(result.stdout, "");
+	assert.equal(await readFile(setAsideAt(s, result.stdout), "utf8"), "stale");
 });
 
-test("a copy as old as the one on the host but different leaves the host's in place, and is named", async (t) => {
+test("a link on the host where the guest has a directory is not followed, and the guest's directory is set aside", async (t) => {
+	const s = await scratch(t);
+	await guestHistory(s.src);
+	const elsewhere = join(s.home, "elsewhere");
+	await mkdir(elsewhere);
+	await symlink(elsewhere, join(s.dst, "-home-me-project"));
+	const result = run(s, MOVE);
+	assert.equal(result.code, 0, result.stderr);
+	assert.deepEqual(await readdir(elsewhere), []);
+	const [, path, aside] = result.stdout.trimEnd().split("\t");
+	assert.equal(path, "-home-me-project");
+	assert.deepEqual(
+		await tree(join(s.dst, aside ?? "")),
+		await tree(join(s.src, "-home-me-project")),
+	);
+});
+
+test("a copy as old as the one on the host but different leaves the host's in place, and is set aside, not deleted", async (t) => {
 	const s = await scratch(t);
 	await guestHistory(s.src);
 	const onHost = join(s.dst, "-home-me-project", "one.jsonl");
@@ -256,7 +283,10 @@ test("a copy as old as the one on the host but different leaves the host's in pl
 	const result = run(s, MOVE);
 	assert.equal(result.code, 0, result.stderr);
 	assert.equal(await readFile(onHost, "utf8"), "different");
-	assert.equal(result.stdout, "kept\t-home-me-project/one.jsonl\n");
+	assert.equal(
+		await readFile(setAsideAt(s, result.stdout), "utf8"),
+		"first session",
+	);
 });
 
 test("a copy identical to the one on the host is left alone, and not named", async (t) => {
@@ -287,7 +317,10 @@ test("a file a live session creates just before the move puts one there is not r
 		await readFile(join(s.dst, "-home-me-project", "one.jsonl"), "utf8"),
 		"written by a live session\n",
 	);
-	assert.equal(result.stdout, "kept\t-home-me-project/one.jsonl\n");
+	assert.equal(
+		await readFile(setAsideAt(s, result.stdout), "utf8"),
+		"first session",
+	);
 });
 
 /** An archive as the archive-on-destroy scheme wrote it: `.claude/projects/...`. */
