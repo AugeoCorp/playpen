@@ -95,12 +95,14 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
 - Editing a masked path on the host in place is safe. Replacing it (an editor
   that saves by rename, `sed -i`, `git checkout`,
   `rm -rf node_modules && npm ci`) detaches the placeholder, so the helper
-  checks for that every few seconds and stops the sandbox when it happens; the
-  guest can see the new contents until it does. Start it again afterwards.
+  checks for that as the VM comes up and every few seconds after, and stops the
+  sandbox when it happens; the guest can see the new contents until it does.
+  Start it again afterwards. If the sandbox cannot be stopped, the helper cuts
+  off its network and exits.
 - A masked path that is missing on the host is created by the guest, as an empty
   directory on the host. For a file such as `.env`, create it on the host first
   (`touch .env`). `start` refuses a masked path that is a symlink or under one,
-  and a nested one whose parent directory is gone.
+  under a file, or nested with its parent directory gone.
 - `setup` runs on create and after a rebuild, never on start. Nothing is
   inferred from a lockfile. `playpen setup` re-runs it.
 - `network.allow` is a list of names, not addresses: an entry is a hostname,

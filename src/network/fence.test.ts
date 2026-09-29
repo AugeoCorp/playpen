@@ -312,14 +312,25 @@ async function mountsFileWith(contents: unknown): Promise<void> {
 	await writeFile(fencePaths("api-abc123").mounts, JSON.stringify(contents));
 }
 
-test("a mounts.json with a malformed key is refused, naming the key", async (t) => {
+test("a mounts.json with a malformed or an extra key is refused, saying in plain words what is wrong", async (t) => {
 	await dataDir(t);
 	await mountsFileWith({ project: "/work/api", masked: ".env" });
-	await assert.rejects(readMounts("api-abc123"), /`masked`/);
+	await assert.rejects(
+		readMounts("api-abc123"),
+		/: `masked` must be an array of strings$/,
+	);
 	await mountsFileWith({ project: 7, masked: [] });
-	await assert.rejects(readMounts("api-abc123"), /`project`/);
+	await assert.rejects(readMounts("api-abc123"), /: `project` must be a path$/);
 	await mountsFileWith({ project: "/work/api", masked: [".env", 3] });
-	await assert.rejects(readMounts("api-abc123"), /`masked\[1\]`/);
+	await assert.rejects(
+		readMounts("api-abc123"),
+		/: `masked\[1\]` must be a string$/,
+	);
+	await mountsFileWith({ project: "/work/api", masked: [], extra: 1 });
+	await assert.rejects(
+		readMounts("api-abc123"),
+		/mounts\.json must hold a JSON object with only `project` and `masked`$/,
+	);
 });
 
 test("a mounts.json missing a key, or missing altogether, is refused rather than read as masking nothing", async (t) => {
@@ -374,7 +385,7 @@ test("a masked entry is classed by what is on the host, without following it", a
 	assert.equal(await maskKind(dir, ".env"), "file");
 	assert.equal(await maskKind(dir, "node_modules"), "dir");
 	assert.equal(await maskKind(dir, "absent"), "missing");
-	assert.equal(await maskKind(dir, ".env/inside"), "missing");
+	assert.equal(await maskKind(dir, ".env/inside"), "under-file");
 	assert.equal(await maskKind(dir, "gone/inside"), "parent-missing");
 	assert.equal(await maskKind(dir, "linked"), "symlink");
 	assert.equal(await maskKind(dir, "via/inside"), "under-symlink");
@@ -486,9 +497,16 @@ test("a masked file showing the placeholder's own inode is bound", async (t) => 
 
 test("a masked directory showing the placeholder's own inode is bound", async (t) => {
 	const { proc, view, placeholders } = await fakeProc(t);
-	await symlink(placeholders.emptyDir, join(view, "node_modules"));
+	const nodeModules = join(view, "node_modules");
+	await mkdir(nodeModules);
 	assert.deepEqual(
-		await boundMasks(QEMU, PROJECT, ["node_modules"], placeholders, proc),
+		await boundMasks(
+			QEMU,
+			PROJECT,
+			["node_modules"],
+			{ ...placeholders, emptyDir: nodeModules },
+			proc,
+		),
 		["node_modules"],
 	);
 });
@@ -496,10 +514,27 @@ test("a masked directory showing the placeholder's own inode is bound", async (t
 test("a masked file replaced on the host, so qemu now sees another inode there, is not bound", async (t) => {
 	const { proc, view, placeholders } = await fakeProc(t);
 	await link(placeholders.emptyFile, join(view, ".env"));
-	await writeFile(join(view, ".env.local"), "SECRET=2\n");
+	await rm(join(view, ".env"));
+	await writeFile(join(view, ".env"), "SECRET=2\n");
 	assert.deepEqual(
-		await boundMasks(QEMU, PROJECT, [".env", ".env.local"], placeholders, proc),
-		[".env"],
+		await boundMasks(QEMU, PROJECT, [".env"], placeholders, proc),
+		[],
+	);
+});
+
+test("a nested masked file that the guest swapped for a symlink to the placeholder is not bound", async (t) => {
+	const { proc, view, placeholders } = await fakeProc(t);
+	await mkdir(join(view, "config"));
+	await symlink(placeholders.emptyFile, join(view, "config", "secrets.json"));
+	assert.deepEqual(
+		await boundMasks(
+			QEMU,
+			PROJECT,
+			["config/secrets.json"],
+			placeholders,
+			proc,
+		),
+		[],
 	);
 });
 
