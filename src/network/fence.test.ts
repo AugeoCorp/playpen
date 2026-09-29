@@ -23,6 +23,7 @@ import {
 	readMounts,
 	readPolicy,
 	underMaskedDir,
+	warnUnboundMasks,
 	writeHelper,
 	writeMounts,
 	writePolicy,
@@ -440,6 +441,29 @@ test("writeMounts leaves the fence directory readable only by its owner", async 
 	assert.equal(await dirMode(fencePaths("api-abc123").dir), 0o700);
 });
 
+test("a helper record carries the entries it bound", async (t) => {
+	await dataDir(t);
+	await mkdir(fencePaths("api-abc123").dir, { recursive: true });
+	await writeHelper("api-abc123", {
+		...helper,
+		...(await self()),
+		masked: ["node_modules"],
+	});
+	assert.deepEqual((await liveHelper("api-abc123"))?.masked, ["node_modules"]);
+});
+
+test("a helper record from before host-side masks still reads as live, with no masked list", async (t) => {
+	await dataDir(t);
+	await mkdir(fencePaths("api-abc123").dir, { recursive: true });
+	await writeFile(
+		fencePaths("api-abc123").helper,
+		JSON.stringify({ ...helper, ...(await self()) }),
+	);
+	const record = await liveHelper("api-abc123");
+	assert.notEqual(record, null);
+	assert.equal(record?.masked, undefined);
+});
+
 /** A project with a file, a directory and a symlink in it. */
 async function projectDir(t: TestContext): Promise<string> {
 	const dir = await mkdtemp(join(tmpdir(), "playpen-mask-"));
@@ -460,6 +484,30 @@ test("a masked entry is classed by what is on the host, without following it", a
 	assert.equal(await maskKind(dir, "gone/inside"), "parent-missing");
 	assert.equal(await maskKind(dir, "linked"), "symlink");
 	assert.equal(await maskKind(dir, "via/inside"), "under-symlink");
+});
+
+test("an entry the running helper did not bind is told to restart, and one it bound is not", async (t) => {
+	const dir = await projectDir(t);
+	const said: string[] = [];
+	await warnUnboundMasks(
+		{ project: dir, masked: ["node_modules", ".env"] },
+		["node_modules"],
+		(text) => said.push(text),
+	);
+	assert.deepEqual(said, [
+		"masked: .env keeps the host's contents out after: playpen stop && playpen start\n",
+	]);
+});
+
+test("an entry with nothing on the host, or a symlink, is not asked to be restarted for", async (t) => {
+	const dir = await projectDir(t);
+	const said: string[] = [];
+	await warnUnboundMasks(
+		{ project: dir, masked: ["absent", "linked", "via/inside"] },
+		[],
+		(text) => said.push(text),
+	);
+	assert.deepEqual(said, []);
 });
 
 test("an entry under a listed directory is under it, whichever is listed first", () => {
@@ -491,6 +539,19 @@ test("an entry beside a listed one, or the listed one itself, is not under it", 
 		false,
 		"config, with config listed",
 	);
+});
+
+test("an entry under a masked directory is not asked to be restarted for", async (t) => {
+	const dir = await projectDir(t);
+	await mkdir(join(dir, "config"));
+	await writeFile(join(dir, "config", "secrets.json"), "{}\n");
+	const said: string[] = [];
+	await warnUnboundMasks(
+		{ project: dir, masked: ["config/secrets.json", "config"] },
+		["config"],
+		(text) => said.push(text),
+	);
+	assert.deepEqual(said, []);
 });
 
 const QEMU = 4242;

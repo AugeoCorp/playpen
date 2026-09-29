@@ -204,8 +204,14 @@ contents from when it mounts the share until that check. A helper that
 reattaches cannot know what the one before it saw, so it starts from the entries
 qemu's namespace shows bound.
 
-Two more facts about the entries:
+Three more facts about the entries:
 
+- helper.json's `masked` is the entries the helper holds bound, written once the
+  check as the VM comes up has passed: on a fresh start, the ones it gave bwrap,
+  all found still bound; on a reattach to a qemu that helper did not start, the
+  ones that qemu's namespace shows. `bringUp` tells the user to
+  `playpen stop && playpen start` for any entry that is on the host and not in
+  that list.
 - A symlink, a path under one, a path under a file, and a nested entry whose
   parent is gone all refuse the start. A guest can arrange each: only the bound
   path itself is protected from a rename, so it can rename the parent of a

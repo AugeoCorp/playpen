@@ -128,6 +128,16 @@ const helperRecord = ownerSchema.extend({
 	 * `ports`, and until the guest has first been asked.
 	 */
 	unboundPorts: z.array(portForward).optional(),
+	/**
+	 * The `masked` entries (project-relative) the helper holds bound in qemu's
+	 * mount table, once `boundMasks` has found them bound as the VM came up: on
+	 * a fresh start the ones it gave bwrap, on a reattach the ones qemu's own
+	 * namespace shows. So `bringUp` can tell a mask added since the sandbox
+	 * started from one the running qemu already has, and a reattached qemu
+	 * counts the same as one this helper started. Absent for a helper older
+	 * than host-side masks.
+	 */
+	masked: z.array(z.string()).optional(),
 });
 
 export type HelperRecord = z.infer<typeof helperRecord>;
@@ -534,7 +544,9 @@ const APPLY_WINDOW_MS = 15_000;
  * not yet deciding anything. Connections already open stay open either way;
  * the policy decides new ones.
  *
- * Masks are the opposite: fixed when qemu starts, so mounts.json is written
+ * Masks are the opposite: fixed when qemu starts. Whichever way the helper
+ * came up, the entries it reports bound are the ones qemu's own namespace shows
+ * bound, and the user is told to restart for the rest. mounts.json is written
  * only for a helper about to be spawned.
  */
 export async function bringUp(opts: BringUpOptions): Promise<void> {
@@ -551,6 +563,11 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 			await applied(sandbox, stamp);
 			opts.log(`network policy updated for new connections\n`);
 		}
+		await warnUnboundMasks(
+			opts.mounts,
+			(await liveHelper(sandbox))?.masked ?? [],
+			opts.log,
+		);
 		return;
 	}
 
@@ -566,7 +583,11 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 
 	for (;;) {
 		offset = await drain(paths.helperLog, offset, opts.log);
-		if ((await liveHelper(sandbox))?.ready === true) return;
+		const helper = await liveHelper(sandbox);
+		if (helper?.ready === true) {
+			await warnUnboundMasks(opts.mounts, helper.masked ?? [], opts.log);
+			return;
+		}
 		if (exit !== null) {
 			throw new Error(
 				`the network helper for ${sandbox} exited ${exit}; see ${paths.helperLog}`,
@@ -578,6 +599,27 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 			);
 		}
 		await sleep(250);
+	}
+}
+
+/**
+ * Says which masked entries the running qemu still serves the host's contents
+ * for. Only the host's bytes are at stake: the guest side of every entry is
+ * applied on each start whatever the helper bound. An entry with nothing on the
+ * host has nothing for a restart to hide, so it is not mentioned.
+ */
+export async function warnUnboundMasks(
+	mounts: Mounts,
+	bound: readonly string[],
+	log: (text: string) => void,
+): Promise<void> {
+	for (const entry of mounts.masked) {
+		if (bound.includes(entry) || underMaskedDir(entry, mounts.masked)) continue;
+		const kind = await maskKind(mounts.project, entry);
+		if (kind !== "dir" && kind !== "file") continue;
+		log(
+			`masked: ${entry} keeps the host's contents out after: playpen stop && playpen start\n`,
+		);
 	}
 }
 

@@ -97,7 +97,7 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
   an empty read-only placeholder over the path where qemu serves the share. That
   is fixed when the VM starts: an entry added to a running sandbox is masked in
   the guest at once, and keeps the host's contents out after
-  `playpen stop && playpen start`.
+  `playpen stop && playpen start`, which `start` says.
 - Editing a masked path on the host in place is safe. Replacing it (an editor
   that saves by rename, `sed -i`, `git checkout`,
   `rm -rf node_modules && npm ci`) detaches the placeholder, so the helper

@@ -444,6 +444,7 @@ export async function runHelper(
 		}
 		if (!(await stopVm(instance))) return "stuck";
 		bound = live ?? [];
+		await report({ masked: bound });
 		return "stopped";
 	};
 
@@ -455,6 +456,7 @@ export async function runHelper(
 		await teardown(booted === "stopped");
 		return 1;
 	}
+	await report({ masked: bound });
 
 	const egress = await guestReachesGatekeeper(instance, paths, logFrom);
 	// Before `ready`, so the `playpen start` waiting on it can already name a
