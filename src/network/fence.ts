@@ -387,6 +387,9 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 	}
 
 	const paths = fencePaths(sandbox);
+	const deadline = Date.now() + (opts.timeoutMs ?? 10 * 60_000);
+	if (state === "stopped") await lastHelperGone(sandbox, deadline);
+
 	let offset = await sizeOf(paths.helperLog);
 	const child = await spawnHelper(sandbox, instance);
 
@@ -395,7 +398,6 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 		exit = code ?? 1;
 	});
 
-	const deadline = Date.now() + (opts.timeoutMs ?? 10 * 60_000);
 	for (;;) {
 		offset = await drain(paths.helperLog, offset, opts.log);
 		if ((await liveHelper(sandbox))?.ready === true) return;
@@ -407,6 +409,35 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 		if (Date.now() > deadline) {
 			throw new Error(
 				`the network helper for ${sandbox} did not come up; see ${paths.helperLog}`,
+			);
+		}
+		await sleep(250);
+	}
+}
+
+/**
+ * How long a helper whose VM has stopped gets to notice and exit. It looks
+ * every few seconds (`POLL_MS` in helper.ts), so this is several looks.
+ */
+const RETIRE_WINDOW_MS = 30_000;
+
+/**
+ * A helper outlives its VM by up to one poll, and its record still says ready.
+ * A VM stopped and started again inside that gap -- a rebuild's history boot
+ * followed by the new clone -- would otherwise find that record and return
+ * with nothing started, while the new helper refuses to run beside the old.
+ */
+async function lastHelperGone(
+	sandbox: string,
+	deadline: number,
+): Promise<void> {
+	const until = Math.min(deadline, Date.now() + RETIRE_WINDOW_MS);
+	for (;;) {
+		const helper = await liveHelper(sandbox);
+		if (helper === null) return;
+		if (Date.now() > until) {
+			throw new Error(
+				`the network helper for ${sandbox} (pid ${helper.pid}) is still running with its VM stopped; see ${fencePaths(sandbox).helperLog}`,
 			);
 		}
 		await sleep(250);
