@@ -209,9 +209,8 @@ test("a helper handed a malformed document exits naming the key and without the 
 /**
  * A CONNECT for `host:443` through `port`, then TLS for `host` trusting only
  * `caPem`. Resolves with the certificate the client was shown, or rejects
- * with "closed" when the gatekeeper hung up instead of answering. The TLS
- * socket, not the one under it, is what gets destroyed: destroying a socket
- * under a live `tls.connect` wrapper crashes Node 24.21 at exit.
+ * with "closed" when the gatekeeper hung up instead of answering. It is
+ * closed through the TLS socket, not the one under it.
  */
 function certificateThrough(
 	t: TestContext,

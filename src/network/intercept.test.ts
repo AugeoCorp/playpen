@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { X509Certificate } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
-import type { ServerResponse } from "node:http";
+import http, { type ServerResponse } from "node:http";
 import https from "node:https";
 import * as net from "node:net";
 import { tmpdir } from "node:os";
@@ -183,8 +183,7 @@ async function gatekeeperWith(
  * rejects with the status line, or "closed" if the proxy hung up instead.
  *
  * The caller owns an open tunnel, and closes it through the TLS socket
- * wrapped around it: destroying a socket under a live `tls.connect` wrapper
- * crashes Node 24.21 at exit (SIGSEGV), whichever side opened it.
+ * wrapped around it.
  */
 function tunnel(proxyPort: number, target: string): Promise<net.Socket> {
 	return new Promise((resolve, reject) => {
@@ -744,6 +743,129 @@ test("a secret dropped from the policy stops being intercepted for on the next t
 	log.length = 0;
 
 	await assertPiped(port, log, "api.example:443");
+});
+
+test("a tunnel already open keeps getting the real value after its secret is dropped from the policy", async (t) => {
+	const upstream = await upstreamHost(t);
+	let policy = secretPolicy();
+	const { port, log } = await gatekeeperWith(t, {
+		policy: () => policy,
+		upstreamPort: upstream.port,
+	});
+	const agent = clientThrough(t, port, "api.example:443");
+	await send(agent, { headers: { authorization: `token ${PLACEHOLDER}` } });
+
+	policy = { ...secretPolicy(), secrets: [] };
+	await send(agent, { headers: { authorization: `token ${PLACEHOLDER}` } });
+
+	assert.equal(log.filter((e) => e.verdict === "allow").length, 1);
+	assert.deepEqual(
+		upstream.received.map((r) => r.authorization),
+		["token ghp_real_value", "token ghp_real_value"],
+	);
+});
+
+test("a secret added to the policy is intercepted for on the next tunnel", async (t) => {
+	const upstream = await upstreamHost(t);
+	let policy: Policy = { ...secretPolicy(), secrets: [] };
+	const { port } = await gatekeeperWith(t, {
+		policy: () => policy,
+		upstreamPort: upstream.port,
+	});
+	// Piped, so dialed at the address the name resolves to here, which the
+	// gatekeeper refuses.
+	await assert.rejects(tunnel(port, "api.example:443"), { message: "closed" });
+
+	policy = secretPolicy();
+	await send(clientThrough(t, port, "api.example:443"), {
+		headers: { authorization: `token ${PLACEHOLDER}` },
+	});
+
+	assert.equal(upstream.received[0]?.authorization, "token ghp_real_value");
+});
+
+test("a plain HTTP request to port 443 of a secret's host is dialed through the address rules, not intercepted", async (t) => {
+	const { port, log } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		resolveTo: "127.0.0.1",
+	});
+
+	await plainHttpGet(port, "http://api.example:443/");
+
+	const refused = log.find((e) => e.verdict === "deny");
+	assert.match(
+		refused?.reason ?? "",
+		/127\.0\.0\.1, which is an address of this machine/,
+	);
+});
+
+/** A plain-HTTP GET for `url` through the proxy; resolves with the status. */
+function plainHttpGet(proxyPort: number, url: string): Promise<number> {
+	return new Promise((resolve, reject) => {
+		const req = http.request(
+			{ host: "127.0.0.1", port: proxyPort, path: url },
+			(res) => {
+				res.resume();
+				res.on("end", () => resolve(res.statusCode ?? 0));
+			},
+		);
+		req.on("error", reject);
+		req.end();
+	});
+}
+
+test("a value Node refuses to put in a header gets the guest a 502, and the gatekeeper keeps serving", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port, log } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		held: [{ env: "GH_TOKEN", value: "line\nbreak" }],
+		upstreamPort: upstream.port,
+	});
+
+	const refused = await send(clientThrough(t, port, "api.example:443"), {
+		headers: { authorization: `token ${PLACEHOLDER}` },
+	});
+	const next = await send(clientThrough(t, port, "api.example:443"), {
+		headers: {},
+	});
+
+	assert.equal(refused.status, 502);
+	assert.equal(next.status, 200);
+	assert.doesNotMatch(JSON.stringify(log), /line\\nbreak/);
+});
+
+test("the guest's hop-by-hop headers do not reach the host", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+
+	await send(clientThrough(t, port, "api.example:443"), {
+		headers: {
+			connection: "keep-alive, x-from-guest",
+			"keep-alive": "timeout=5",
+			"proxy-authorization": "Basic eDp5",
+			"proxy-connection": "keep-alive",
+		},
+	});
+
+	const received = upstream.received[0];
+	assert.deepEqual(
+		{
+			connection: headersNamed(received, "connection"),
+			keepAlive: headersNamed(received, "keep-alive"),
+			proxyAuthorization: headersNamed(received, "proxy-authorization"),
+			proxyConnection: headersNamed(received, "proxy-connection"),
+		},
+		// The connection header is the interceptor's own, to the host.
+		{
+			connection: ["keep-alive"],
+			keepAlive: [],
+			proxyAuthorization: [],
+			proxyConnection: [],
+		},
+	);
 });
 
 test("the host is dialed only at an address the gatekeeper's own rules allow", async (t) => {
