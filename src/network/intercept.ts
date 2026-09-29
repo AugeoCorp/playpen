@@ -106,6 +106,21 @@ export function interceptor(opts: InterceptorOptions): Interceptor {
 		if (target.port !== TLS_PORT) return null;
 		const granted = grantedTo(policy, target.host);
 		const secrets = opts.held.filter((secret) => granted.has(secret.env));
+		// A grant added to the config after this helper was spawned: its
+		// placeholder reaches the host, which a user would otherwise see only as
+		// a 401.
+		const heldNames = new Set(secrets.map((secret) => secret.env));
+		for (const env of granted) {
+			if (heldNames.has(env)) continue;
+			const outcome =
+				secrets.length === 0 ? "piped" : "its placeholder goes out as it is";
+			opts.log({
+				time: new Date().toISOString(),
+				...target,
+				verdict: "note",
+				reason: `secret ${env} is named for this host but this helper does not hold it; ${outcome}`,
+			});
+		}
 		if (secrets.length === 0) return null;
 		return tunnelServer(opts, target, secrets, lookup);
 	};
