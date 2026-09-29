@@ -56,8 +56,18 @@ export async function archive(
 /**
  * Unpacks the archive on stdin into the guest's home, readable only by its
  * owner. Printed for the user to run as well, so it is one line of plain sh.
+ *
+ * `--keep-newer-files` so an archive never replaces a file the guest has
+ * written since it was taken, such as a newer MEMORY.md.
+ *
+ * `--keep-directory-symlink` because without it `--keep-newer-files` fails on
+ * every directory that already exists ("Unexpected inconsistency when making
+ * directory", exit 2): `extract_dir` in GNU tar's src/extract.c accepts an
+ * existing directory only under that option or one of the other old-files
+ * modes. Seen on GNU tar 1.35, the guest's.
  */
-const UNPACK = "cd && umask 077 && tar -xf -";
+export const UNPACK =
+	"cd && umask 077 && tar --keep-newer-files --keep-directory-symlink -xf -";
 
 /**
  * Kept after restoring, so it stays the last known history if this one is lost.

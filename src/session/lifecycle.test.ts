@@ -94,7 +94,7 @@ mock.module("../lima/client.ts", {
 			);
 		},
 		async runScript(_instance: string, script: string) {
-			if (restoreFails !== null && script.includes("tar -xf -")) {
+			if (restoreFails !== null && script.includes("-xf -")) {
 				if (restoreFails instanceof Error) throw restoreFails;
 				return { code: restoreFails, stdout: "", stderr: "" };
 			}
@@ -275,7 +275,7 @@ test("a new sandbox still starts when the history saved from the old one cannot 
 	assert.ok(command, `expected a restore command, got:\n${said.join("\n")}`);
 	assert.equal(
 		asTheShellRunsIt(command),
-		"run\n--\nsh\n-c\ncd && umask 077 && tar -xf -\nsaved transcripts",
+		"run\n--\nsh\n-c\ncd && umask 077 && tar --keep-newer-files --keep-directory-symlink -xf -\nsaved transcripts",
 	);
 });
 
