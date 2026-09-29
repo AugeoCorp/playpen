@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
@@ -9,9 +9,13 @@ import {
 	fencePaths,
 	liveHelper,
 	looksLikeQemu,
+	maskKind,
 	policyStamp,
+	readMounts,
 	readPolicy,
+	underMaskedDir,
 	writeHelper,
+	writeMounts,
 	writePolicy,
 } from "./fence.ts";
 
@@ -378,4 +382,104 @@ test("a recycled pid now running an unrelated process is not mistaken for qemu",
 
 test("an empty cmdline, as a zombie or an unreadable process reads, is not qemu", () => {
 	assert.equal(looksLikeQemu(""), false);
+});
+
+test("mounts.json comes back as it was written", async (t) => {
+	await dataDir(t);
+	const mounts = { project: "/work/api", masked: ["node_modules", ".env"] };
+	await writeMounts("api-abc123", mounts);
+	assert.deepEqual(await readMounts("api-abc123"), mounts);
+});
+
+/** A mounts.json written by hand rather than by `writeMounts`. */
+async function mountsFileWith(contents: unknown): Promise<void> {
+	await writeMounts("api-abc123", { project: "/work/api", masked: [] });
+	await writeFile(fencePaths("api-abc123").mounts, JSON.stringify(contents));
+}
+
+test("a mounts.json with a malformed or an extra key is refused, saying in plain words what is wrong", async (t) => {
+	await dataDir(t);
+	await mountsFileWith({ project: "/work/api", masked: ".env" });
+	await assert.rejects(
+		readMounts("api-abc123"),
+		/: `masked` must be an array of strings$/,
+	);
+	await mountsFileWith({ project: 7, masked: [] });
+	await assert.rejects(readMounts("api-abc123"), /: `project` must be a path$/);
+	await mountsFileWith({ project: "/work/api", masked: [".env", 3] });
+	await assert.rejects(
+		readMounts("api-abc123"),
+		/: `masked\[1\]` must be a string$/,
+	);
+	await mountsFileWith({ project: "/work/api", masked: [], extra: 1 });
+	await assert.rejects(
+		readMounts("api-abc123"),
+		/mounts\.json must hold a JSON object with only `project` and `masked`$/,
+	);
+});
+
+test("a mounts.json missing a key, or missing altogether, is refused rather than read as masking nothing", async (t) => {
+	await dataDir(t);
+	await mountsFileWith({ project: "/work/api" });
+	await assert.rejects(readMounts("api-abc123"), /`masked`/);
+	await assert.rejects(readMounts("never-written"), /ENOENT/);
+});
+
+test("writeMounts leaves the fence directory readable only by its owner", async (t) => {
+	await dataDir(t);
+	await writeMounts("api-abc123", { project: "/work/api", masked: [] });
+	assert.equal(await dirMode(fencePaths("api-abc123").dir), 0o700);
+});
+
+/** A project with a file, a directory and a symlink in it. */
+async function projectDir(t: TestContext): Promise<string> {
+	const dir = await mkdtemp(join(tmpdir(), "playpen-mask-"));
+	t.after(() => rm(dir, { recursive: true, force: true }));
+	await writeFile(join(dir, ".env"), "SECRET=1\n");
+	await mkdir(join(dir, "node_modules"));
+	await symlink(".env", join(dir, "linked"));
+	await symlink("node_modules", join(dir, "via"));
+	return dir;
+}
+
+test("a masked entry is classed by what is on the host, without following it", async (t) => {
+	const dir = await projectDir(t);
+	assert.equal(await maskKind(dir, ".env"), "file");
+	assert.equal(await maskKind(dir, "node_modules"), "dir");
+	assert.equal(await maskKind(dir, "absent"), "missing");
+	assert.equal(await maskKind(dir, ".env/inside"), "under-file");
+	assert.equal(await maskKind(dir, "gone/inside"), "parent-missing");
+	assert.equal(await maskKind(dir, "linked"), "symlink");
+	assert.equal(await maskKind(dir, "via/inside"), "under-symlink");
+});
+
+test("an entry under a listed directory is under it, whichever is listed first", () => {
+	assert.equal(
+		underMaskedDir("config/secrets.json", ["config"]),
+		true,
+		"config/secrets.json, with config listed",
+	);
+	assert.equal(
+		underMaskedDir("config/secrets.json", ["config/secrets.json", "config"]),
+		true,
+		"config/secrets.json, with itself listed before config",
+	);
+});
+
+test("an entry beside a listed one, or the listed one itself, is not under it", () => {
+	assert.equal(
+		underMaskedDir("config", ["config/secrets.json"]),
+		false,
+		"config, with only a path inside it listed",
+	);
+	assert.equal(
+		underMaskedDir("config-old/x", ["config"]),
+		false,
+		"config-old/x, with config listed",
+	);
+	assert.equal(
+		underMaskedDir("config", ["config"]),
+		false,
+		"config, with config listed",
+	);
 });
