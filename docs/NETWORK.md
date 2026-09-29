@@ -142,19 +142,36 @@ helper.log and in its record, and `playpen start` warns that the host port is
 not at that guest port -- without failing the start. A stdio MCP server is a
 process the guest runs, not a port, so nothing here applies to it.
 
-**Secrets.** A `network.secrets` entry names a variable and the hosts it may be
-used on. The helper has one way in for their values, and in this version
-`playpen start` sends none on it. It spawns the helper with a stdin pipe and
-writes one JSON document to it, `{ "secrets": [{ "env", "value" }] }`, followed
-by end-of-stream; today that is always `{ "secrets": [] }`, and the
-end-of-stream means the helper never waits on a stdin that is not coming. The
-helper reads the document to the end before it serves anything and keeps the
-result in memory. It logs a count and names
-(`holding 2 secrets: GH_TOKEN, NPM_TOKEN`) and never a value. A value is not in
-argv, not in a file, and not in the helper's environment, which is the parent's
-with the granted variables removed. The hosts are not in the document:
+**Secrets.** A `network.secrets` entry names a variable in the environment of
+the `playpen start` that boots the sandbox, and the hosts it may be used on. The
+value goes one way only, and nothing injects it yet. `playpen start` reads it
+and refuses to boot if any named variable is unset or empty (listing every one,
+before the VM is touched). It spawns the helper with a stdin pipe and writes one
+JSON document to it, `{ "secrets": [{ "env", "value" }] }`, followed by
+end-of-stream; a project with no secrets sends `{ "secrets": [] }`, so the
+helper never waits on a stdin that is not coming. A name that two entries share
+is sent once. The helper reads the document to the end before it serves anything
+and keeps the result in memory. It logs a count and names
+(`holding 2 secrets: GH_TOKEN, NPM_TOKEN`) and never a value. The value is not
+in argv, not in a file, and not in the helper's environment, which is the
+parent's with the granted variables removed. The hosts are not in the document:
 policy.json carries `env` and `hosts` and is the one place they are kept, and it
-is re-read on reload. helper.json carries the names the helper holds.
+is re-read on reload. helper.json carries the names the helper holds, so a later
+`start` can see what the running helper lacks.
+
+The helper takes its values at spawn and can take no more: once it is running
+its stdin is closed. Only a `start` that spawns a helper needs the variables: a
+new sandbox, a stopped one, a rebuild, or a reattach after the helper died. A
+`shell` or `run` into a sandbox whose helper is live does not, and a change to
+`secrets` on a sandbox that is already up does what it can:
+
+- A secret dropped from the config leaves policy.json on the next `start`. The
+  helper keeps the value in memory until it exits.
+- A secret added to the config is named in policy.json but not held.
+  `playpen start` says
+  `secret GH_TOKEN added to the config takes effect after: playpen stop && playpen start`.
+- A secret already held keeps the value it was started with. A changed value in
+  your environment waits for the same stop and start.
 
 ## Lifecycle
 
