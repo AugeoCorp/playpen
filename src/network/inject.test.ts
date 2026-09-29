@@ -50,14 +50,23 @@ test("the Basic scheme is matched whatever its case", () => {
 	]);
 });
 
-test("Basic credentials that are not valid base64 are left exactly as sent", () => {
-	const sent = "Basic not*base64!";
+test("Basic credentials that are not canonical base64 are left exactly as sent, even when they decode to a placeholder", () => {
+	// The credentials from the test above, without their padding.
+	const sent = "Basic eC1hY2Nlc3MtdG9rZW46cGxheXBlbi1zZWNyZXQtZ2gtdG9rZW4";
 	const { headers, injected } = rewriteHeaders(
 		["Authorization", sent],
 		[GH_TOKEN],
 	);
 	assert.deepEqual(headers, ["Authorization", sent]);
 	assert.deepEqual(injected, []);
+});
+
+test("a byte in Basic credentials that is not UTF-8 comes back unchanged around the real value", () => {
+	// base64("caf\xe9:playpen-secret-gh-token"), \xe9 being é in latin1
+	const sent = "Basic Y2Fm6TpwbGF5cGVuLXNlY3JldC1naC10b2tlbg==";
+	const { headers } = rewriteHeaders(["Authorization", sent], [GH_TOKEN]);
+	// base64("caf\xe9:ghp_real")
+	assert.deepEqual(headers, ["Authorization", "Basic Y2Fm6TpnaHBfcmVhbA=="]);
 });
 
 test("a placeholder in any header but Authorization goes out as it is", () => {
