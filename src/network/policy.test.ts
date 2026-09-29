@@ -9,11 +9,11 @@ import {
 } from "./policy.ts";
 
 function enforcing(allow: readonly string[]): Policy {
-	return { allow, mode: "enforce", ports: [] };
+	return { allow, mode: "enforce", ports: [], secrets: [] };
 }
 
 function logging(allow: readonly string[]): Policy {
-	return { allow, mode: "log", ports: [] };
+	return { allow, mode: "log", ports: [], secrets: [] };
 }
 
 test("a bare hostname entry allows the host itself", () => {
@@ -51,6 +51,14 @@ test("an unlisted name in log mode is reported with reach public, same as a bare
 test("a bare hostname entry allows any subdomain", () => {
 	const v = decide(enforcing(["github.com"]), "api.github.com", 443);
 	assert.equal(v.kind, "allow");
+});
+
+test("a secret's host is not reachable unless allow names it: decide never reads secrets", () => {
+	const policy: Policy = {
+		...enforcing([]),
+		secrets: [{ env: "GH_TOKEN", hosts: ["github.com"] }],
+	};
+	assert.equal(decide(policy, "github.com", 443).kind, "deny");
 });
 
 test("a bare hostname entry allows any port", () => {
