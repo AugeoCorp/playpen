@@ -56,15 +56,19 @@ export interface NetworkConfig {
 
 export interface PlaypenConfig {
 	/**
-	 * Project-relative paths given guest-local storage instead of the 9p share.
+	 * Project-relative paths, directories or files, given guest-local storage
+	 * instead of the 9p share.
 	 *
 	 * Two reasons, neither of them privacy: the 9p share is slow, and host and
 	 * guest frequently need different contents at the same path — native modules
 	 * and toolchain builds are per-platform, so one copy cannot serve both.
 	 *
-	 * Masked, not hidden: the host directory stays mounted underneath, and the
+	 * Masked, not hidden: the host's copy stays mounted underneath, and the
 	 * guest has passwordless root and can unmount the mask. Keep secrets outside
 	 * the project directory.
+	 *
+	 * A path missing on the host is created by the guest as an empty directory:
+	 * create a masked file on the host first.
 	 *
 	 * One concrete relative path per entry; a bind mount needs a single target,
 	 * so globs are unsupported.
