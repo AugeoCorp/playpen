@@ -1,4 +1,13 @@
-import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
+import {
+	link,
+	mkdir,
+	readdir,
+	readFile,
+	rename,
+	stat,
+	unlink,
+	writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { historyDir } from "../config.ts";
 import * as lima from "../lima/client.ts";
@@ -50,6 +59,23 @@ async function addPending(
 			if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
 		}
 	}
+}
+
+/**
+ * Before archives queued, each sandbox had one, `<sandbox>.tar`, overwritten on
+ * every destroy and kept after a restore, so there is no telling whether its
+ * contents ever reached a guest. It is queued as of when it was written.
+ */
+async function adoptSingleArchive(sandbox: string): Promise<void> {
+	const single = `${sandboxHistoryDir(sandbox)}.tar`;
+	let written: number;
+	try {
+		written = Math.floor((await stat(single)).mtimeMs);
+	} catch {
+		return;
+	}
+	await addPending(sandbox, written, (path) => link(single, path));
+	await unlink(single);
 }
 
 /** Never throws: losing history is bad, but blocking a delete over it is worse. */
@@ -126,6 +152,7 @@ export async function restore(
 	sandbox: string,
 ): Promise<void> {
 	try {
+		await adoptSingleArchive(sandbox);
 		const dir = pendingDir(sandbox);
 		const pending = (await readdir(dir).catch(() => []))
 			.filter((name) => name.endsWith(".tar"))

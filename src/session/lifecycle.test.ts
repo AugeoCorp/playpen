@@ -358,6 +358,20 @@ test("history restored once is not put back again by later starts", async (t) =>
 	assert.deepEqual(calls, ["leave the fence alone", "apply masks"]);
 });
 
+test("history saved as <sandbox>.tar, where playpen kept a single archive per sandbox, is restored", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	const history = join(process.env.XDG_DATA_HOME ?? "", "playpen", "history");
+	await mkdir(history, { recursive: true });
+	await writeFile(
+		join(history, `${sb.sandbox}.tar`),
+		"transcripts saved before",
+	);
+
+	await run();
+
+	assert.deepEqual(restored, ["transcripts saved before"]);
+});
+
 test("a start with no history waiting sends the guest nothing for it", async (t) => {
 	const { run } = await sandboxFor(t, "export default {};");
 	await run();
