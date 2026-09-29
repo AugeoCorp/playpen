@@ -312,7 +312,7 @@ test("a TLS server name other than the approved host is refused, and the refusal
 	assert.deepEqual(upstream.received, []);
 });
 
-test("a host no secret names is piped untouched: the guest sees the host's own certificate, and the host the placeholder", async (t) => {
+test("a tunnel the interceptor declines is piped untouched: the guest sees the host's own certificate, and the host the placeholder", async (t) => {
 	const upstream = await upstreamHost(t);
 	const { port } = await gatekeeperWith(t, {
 		policy: () => secretPolicy([`localhost:${upstream.port}`]),

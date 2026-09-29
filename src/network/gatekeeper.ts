@@ -17,8 +17,9 @@ export interface Gatekeeper {
 }
 
 /**
- * A verdict on a `CONNECT`, or, inside a tunnel the interceptor holds, a TLS
- * or upstream failure (`error`, the message alone).
+ * A verdict on a `CONNECT`; or, inside a tunnel the interceptor holds, a
+ * refused server name (`deny`) or a TLS or upstream failure (`error`, the
+ * message alone).
  */
 export interface LogEntry {
 	time: string;
