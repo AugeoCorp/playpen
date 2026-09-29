@@ -168,7 +168,6 @@ function tunnelServer(
 		if (named === host) return null;
 		return `Host header ${req.headers.host ?? "(none)"} is not ${host}, the host this tunnel was allowed for`;
 	};
-	/** Why `req` must not be sent on, and the status the guest gets instead. */
 	const refusalOf = (
 		req: IncomingMessage,
 	): { status: 405 | 421; reason: string } | null => {
