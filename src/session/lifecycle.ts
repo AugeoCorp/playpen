@@ -253,7 +253,7 @@ async function applySecrets(
 	const granted = grants.filter(({ env }) => held.has(env));
 	for (const { env, hosts } of granted) {
 		console.error(
-			`secret ${env} for ${hosts.join(", ")} (a placeholder in the guest, swapped for the value in HTTPS requests to them)`,
+			`secret ${env} for ${hosts.join(", ")} (a placeholder in the guest, swapped for the value in the Authorization header of HTTPS requests to them)`,
 		);
 	}
 	const names = new Set(granted.map(({ env }) => env));

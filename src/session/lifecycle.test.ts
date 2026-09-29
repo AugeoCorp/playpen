@@ -431,7 +431,7 @@ test("each secret is reported by name and hosts, and its value stays out of the 
 	const lines = said.mock.calls.map((c) => String(c.arguments[0]));
 	assert.ok(
 		lines.includes(
-			"secret PLAYPEN_TEST_TOKEN for api.github.com, github.com (a placeholder in the guest, swapped for the value in HTTPS requests to them)",
+			"secret PLAYPEN_TEST_TOKEN for api.github.com, github.com (a placeholder in the guest, swapped for the value in the Authorization header of HTTPS requests to them)",
 		),
 		`expected a naming line, got:\n${lines.join("\n")}`,
 	);
