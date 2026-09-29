@@ -18,6 +18,7 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
 | `completion bash\|zsh`, generated from the citty command tree      | done; zsh unverified   |
 | network fence (mechanism in `docs/NETWORK.md`)                     | done, see below        |
 | per-install CA in `<dataDir>/ca/`, trusted by the base image       | unit-tested; no VM yet |
+| `network.secrets` values held by the helper                        | unit-tested; no VM run |
 
 ## Known problems
 
@@ -95,6 +96,11 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
   `cloud-init-output.log`, so a broken bake reports a timeout rather than its
   cause. A probe that also fails when a provisioning marker is missing would fix
   that.
+
+- `network.secrets` values (`docs/NETWORK.md`, "Secrets") are unit-tested, but
+  none of it has run on a VM. Not run: the real detached spawn round trip
+  (`playpen start` piping the document to a helper that outlives it, with the
+  granted variables gone from its environment). Nothing injects yet.
 
 ## Next
 

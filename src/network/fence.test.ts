@@ -24,6 +24,8 @@ import {
 	parseHeldSecrets,
 	policyStamp,
 	readPolicy,
+	restartNotices,
+	restartNoticesFor,
 	serializeHeldSecrets,
 	writeHelper,
 	writePolicy,
@@ -541,6 +543,62 @@ test("a helper.json from before secrets existed reads as holding none", async (t
 	const { secrets: _, ...older } = { ...helper, ...(await self()) };
 	await writeFile(fencePaths("api-abc123").helper, JSON.stringify(older));
 	assert.deepEqual((await liveHelper("api-abc123"))?.secrets, []);
+});
+
+test("a helper is told to restart for a secret it was not started with", () => {
+	assert.deepEqual(restartNotices({ secrets: [] }, ["GH_TOKEN"]), [
+		"secret GH_TOKEN added to the config takes effect after: playpen stop && playpen start\n",
+	]);
+});
+
+test("a helper started with the same secret names has nothing to be told", () => {
+	assert.deepEqual(restartNotices({ secrets: ["GH_TOKEN"] }, ["GH_TOKEN"]), []);
+});
+
+test("a secret dropped from the config since the helper started is not a reason to restart", () => {
+	assert.deepEqual(restartNotices({ secrets: ["GH_TOKEN"] }, []), []);
+});
+
+test("only the names a running helper lacks are reported", () => {
+	const notices = restartNotices({ secrets: ["GH_TOKEN"] }, [
+		"GH_TOKEN",
+		"NPM_TOKEN",
+		"AWS_TOKEN",
+	]);
+	assert.deepEqual(notices, [
+		"secret NPM_TOKEN added to the config takes effect after: playpen stop && playpen start\n",
+		"secret AWS_TOKEN added to the config takes effect after: playpen stop && playpen start\n",
+	]);
+});
+
+test("a name the config lists twice is reported once", () => {
+	const notices = restartNotices({ secrets: [] }, ["GH_TOKEN", "GH_TOKEN"]);
+	assert.equal(notices.length, 1);
+});
+
+test("the live helper's helper.json decides which secrets a start is told need a restart", async (t) => {
+	await dataDir(t);
+	await mkdir(fencePaths("api-abc123").dir, { recursive: true });
+	await writeHelper("api-abc123", {
+		...helper,
+		...(await self()),
+		secrets: ["GH_TOKEN"],
+	});
+	const policy = {
+		secrets: [
+			{ env: "GH_TOKEN", hosts: ["api.github.com"] },
+			{ env: "NPM_TOKEN", hosts: ["registry.example.com"] },
+		],
+	};
+	assert.deepEqual(await restartNoticesFor("api-abc123", policy), [
+		"secret NPM_TOKEN added to the config takes effect after: playpen stop && playpen start\n",
+	]);
+});
+
+test("with no live helper, a start is told nothing, since the helper it spawns gets every value", async (t) => {
+	await dataDir(t);
+	const policy = { secrets: [{ env: "GH_TOKEN", hosts: ["api.github.com"] }] };
+	assert.deepEqual(await restartNoticesFor("api-abc123", policy), []);
 });
 
 test("the helper is spawned detached, with a pipe for stdin and helper.log for its output", () => {

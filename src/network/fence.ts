@@ -118,9 +118,9 @@ const helperRecord = ownerSchema.extend({
 	 */
 	unboundPorts: z.array(portForward).optional(),
 	/**
-	 * The names of the secrets this helper was handed at spawn. Never a value,
-	 * which stays in the helper's memory. Absent from a helper older than
-	 * `secrets`.
+	 * The names of the secrets this helper was handed at spawn, so `start` can
+	 * see what a running helper lacks. Never a value, which stays in the
+	 * helper's memory. Absent from a helper older than `secrets`.
 	 */
 	secrets: z.array(z.string()).default([]),
 });
@@ -252,6 +252,36 @@ export function parseHeldSecrets(text: string): HeldSecret[] {
 	const result = helperInput.safeParse(json);
 	if (!result.success) throw new Error(describeIssue(result.error, subject));
 	return result.data.secrets;
+}
+
+/**
+ * What `start` has to tell the user when it finds a helper already running:
+ * the helper took its values from the start that spawned it, so a secret added
+ * to the config since is named but not held until the next spawn.
+ */
+export function restartNotices(
+	helper: Pick<HelperRecord, "secrets">,
+	configured: readonly string[],
+): string[] {
+	const held = new Set(helper.secrets);
+	return [...new Set(configured)]
+		.filter((env) => !held.has(env))
+		.map(
+			(env) =>
+				`secret ${env} added to the config takes effect after: playpen stop && playpen start\n`,
+		);
+}
+
+export async function restartNoticesFor(
+	sandbox: string,
+	policy: Pick<Policy, "secrets">,
+): Promise<string[]> {
+	const running = await liveHelper(sandbox);
+	if (running === null) return [];
+	return restartNotices(
+		running,
+		policy.secrets.map(({ env }) => env),
+	);
 }
 
 /**
@@ -460,7 +490,7 @@ export interface BringUpOptions {
 	policy: Policy;
 	/**
 	 * Handed to a helper this call spawns. A helper already running keeps the
-	 * ones it started with.
+	 * ones it started with, and `bringUp` says which of these it lacks.
 	 */
 	secrets?: readonly HeldSecret[];
 	/** Where helper.log goes while the caller waits; usually stderr. */
@@ -500,6 +530,9 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 		if (changed) {
 			await applied(sandbox, stamp);
 			opts.log(`network policy updated for new connections\n`);
+		}
+		for (const notice of await restartNoticesFor(sandbox, opts.policy)) {
+			opts.log(notice);
 		}
 		return;
 	}
