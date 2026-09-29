@@ -569,6 +569,20 @@ test("two requests on one kept-alive connection are both sent on, through one tu
 	assert.equal(log.filter((e) => e.verdict === "allow").length, 1);
 });
 
+test("each request on a kept-alive connection logs its own injection", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port, log } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+	const agent = clientThrough(t, port, "api.example:443");
+
+	await send(agent, { headers: { authorization: `token ${PLACEHOLDER}` } });
+	await send(agent, { headers: { authorization: `token ${PLACEHOLDER}` } });
+
+	assert.equal(log.filter((e) => e.verdict === "inject").length, 2);
+});
+
 test("a TLS server name other than the approved host is refused, and the refusal is logged", async (t) => {
 	const upstream = await upstreamHost(t);
 	const { port, log } = await gatekeeperWith(t, {
@@ -756,6 +770,30 @@ test("the host is dialed only at an address the gatekeeper's own rules allow", a
 	assert.ok(
 		log.some((e) => e.verdict === "error"),
 		`no error line in ${JSON.stringify(log)}`,
+	);
+});
+
+test("a request whose dial is refused logs no injection, since the value never left", async (t) => {
+	const { port, log } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		resolveTo: "127.0.0.1",
+	});
+	const secure = await tlsOver(
+		t,
+		await tunnel(port, "api.example:443"),
+		"api.example",
+	);
+	const agent = new https.Agent({ keepAlive: false });
+	agent.createConnection = () => secure;
+
+	const answer = await send(agent, {
+		headers: { authorization: `token ${PLACEHOLDER}` },
+	});
+
+	assert.equal(answer.status, 502);
+	assert.deepEqual(
+		log.filter((e) => e.verdict === "inject"),
+		[],
 	);
 });
 

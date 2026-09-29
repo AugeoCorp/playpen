@@ -50,6 +50,10 @@ export interface InterceptorOptions {
 /** Only TLS is terminated; any other port on a secret host is piped. */
 const TLS_PORT = 443;
 
+/** A client that hangs up mid-handshake holds its socket until this runs out;
+ * Node's default is 120 s. */
+const HANDSHAKE_MS = 10_000;
+
 /**
  * Hop-by-hop headers (RFC 9110, 7.6.1) describe the guest's connection to
  * here, not this one's to the host.
@@ -196,16 +200,18 @@ function tunnelServer(
 			forwardedHeaders(req, upgrade),
 			secrets,
 		);
-		for (const { header, env } of injected) {
-			log({
-				...at(),
-				verdict: "inject",
-				header,
-				env,
-				reason: `${env} in ${header}`,
-			});
-		}
-		return https.request({
+		const logInjected = () => {
+			for (const { header, env } of injected) {
+				log({
+					...at(),
+					verdict: "inject",
+					header,
+					env,
+					reason: `${env} in ${header}`,
+				});
+			}
+		};
+		const request = https.request({
 			host,
 			port,
 			servername: host,
@@ -215,6 +221,14 @@ function tunnelServer(
 			path: req.url,
 			headers,
 		});
+		// Logged once the connection to the host is up, which is when the value
+		// leaves: a dial the address rules refuse, or a certificate that fails,
+		// sends nothing. A kept-alive connection is up already.
+		request.once("socket", (socket) => {
+			if (socket.connecting) socket.once("secureConnect", logInjected);
+			else logInjected();
+		});
+		return request;
 	};
 
 	let refusedName = false;
@@ -230,6 +244,7 @@ function tunnelServer(
 			done(new Error(reason));
 		},
 		ALPNProtocols: ["http/1.1"],
+		handshakeTimeout: HANDSHAKE_MS,
 		// Node's default, 300 s for the whole request, would cut off a large
 		// upload over a slow link.
 		requestTimeout: 0,
@@ -239,8 +254,11 @@ function tunnelServer(
 		socket.once("close", () => agent.destroy());
 	});
 	server.on("tlsClientError", (err: NodeJS.ErrnoException) => {
-		// A client hanging up mid-handshake is not a failure worth a line.
-		if (!refusedName && err.code !== "ECONNRESET") logError(err);
+		// A client hanging up mid-handshake, not a failure worth a line, shows up
+		// here as the handshake timeout, not as ECONNRESET.
+		const hungUp =
+			err.code === "ECONNRESET" || err.code === "ERR_TLS_HANDSHAKE_TIMEOUT";
+		if (!refusedName && !hungUp) logError(err);
 	});
 
 	server.on("request", (req: IncomingMessage, res: ServerResponse) => {

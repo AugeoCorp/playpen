@@ -425,8 +425,10 @@ days, and naming the CA's key identifier, which Python's strict verification
 requires. One within a day of its end is minted again, since a helper lives as
 long as its VM. The guest accepts it because it trusts the CA (below).
 
-**What the log shows.** One `inject` line in `gatekeeper.log` per header a value
-went into, naming the host, the port, the header and the variable:
+**What the log shows.** One `inject` line in `gatekeeper.log` for each header
+and variable a value went into, written once the connection to the host is up,
+so a request whose dial is refused or whose host fails verification logs none.
+It names the host, the port, the header and the variable:
 `{"verdict":"inject","host":"api.github.com","port":443,"header":"authorization","env":"GH_TOKEN",…}`.
 A wrong server name, `Host` or request target is a `deny` line saying what was
 asked for. A client that sends no server name is refused in the handshake too,
