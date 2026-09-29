@@ -108,7 +108,9 @@ mock.module("../lima/client.ts", {
 		stop: async () => {
 			calls.push("stop");
 		},
-		remove: async () => {},
+		remove: async () => {
+			calls.push("delete the VM");
+		},
 		async clone(_source: string, target: string) {
 			exists = true;
 			await mkdir(join(limaHome, target), { recursive: true });
@@ -412,7 +414,10 @@ test("a sandbox whose mounts playpen did not write still starts, with a warning 
 	);
 	const lines = said.mock.calls.map((c) => String(c.arguments[0])).join("\n");
 	assert.match(lines, /Claude history is not mounted from the host/);
-	assert.match(lines, /`playpen remove` deletes it with the VM/);
+	assert.match(
+		lines,
+		/`playpen remove --yes --discard-history` deletes it with the VM/,
+	);
 	assert.deepEqual(asked, [], "offered a rebuild with its history unmoved");
 	const { historyOnHost } = await import("./lifecycle.ts");
 	assert.equal(await historyOnHost(sb), false);
@@ -567,7 +572,40 @@ test("removing a stopped sandbox deletes it without starting it", async (t) => {
 	fenced = false;
 	calls.length = 0;
 	await destroy(sb);
-	assert.deepEqual(calls, [], "the guest was started or reached");
+	assert.deepEqual(calls, ["delete the VM"]);
+});
+
+test("removing a sandbox whose history may still be only on its disk is refused, and nothing is deleted", async (t) => {
+	const { sb } = await sandboxFor(t, BOTH);
+	await stoppedWithProjectMountOnly(sb);
+	const { destroy } = await import("./lifecycle.ts");
+	await assert.rejects(
+		destroy(sb),
+		/run `playpen start` once[\s\S]*--discard-history/,
+	);
+	assert.deepEqual(calls, [], "the VM was touched");
+});
+
+test("removing it with its history discarded deletes it, without starting it first", async (t) => {
+	const { sb } = await sandboxFor(t, BOTH);
+	await stoppedWithProjectMountOnly(sb);
+	const { destroy } = await import("./lifecycle.ts");
+	await destroy(sb, { discardHistory: true });
+	assert.deepEqual(calls, ["delete the VM"]);
+});
+
+test("the remove prompt says history may be lost until it has moved to the host, and that it stays after", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	const { historyNotice } = await import("./lifecycle.ts");
+	await stoppedWithProjectMountOnly(sb);
+	const before = await historyNotice(sb);
+	assert.match(before, /may still be on the VM's disk only/);
+	assert.match(before, /--discard-history/);
+	await run();
+	assert.match(
+		await historyNotice(sb),
+		/on the host and stay for the next start/,
+	);
 });
 
 test("removing a sandbox keeps its Claude history on the host", async (t) => {

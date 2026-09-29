@@ -36,7 +36,7 @@ playpen shell [--keep]           shell in the guest, then stop the VM
 playpen run [--keep] -- <cmd>    run a command, then stop the VM
 playpen claude [--keep] [args]   run Claude Code, then stop the VM
 playpen setup                    re-run the project's setup steps
-playpen list | stop [--force] | remove --yes [--force]
+playpen list | stop [--force] | remove --yes [--force] [--discard-history]
 playpen image show | doctor
 playpen completion bash|zsh      print a completion script for that shell
 ```

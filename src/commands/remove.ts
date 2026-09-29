@@ -1,6 +1,6 @@
 import { defineCommand } from "citty";
 import * as leases from "../session/leases.ts";
-import { destroy, historyOnHost, identify } from "../session/lifecycle.ts";
+import { destroy, historyNotice, identify } from "../session/lifecycle.ts";
 import { withLock } from "../session/lock.ts";
 
 export default defineCommand({
@@ -21,6 +21,12 @@ export default defineCommand({
 			description: "Delete even while other sessions are attached",
 			default: false,
 		},
+		"discard-history": {
+			type: "boolean",
+			description:
+				"Delete it even if Claude history on its disk has not been moved to the host",
+			default: false,
+		},
 	},
 	async run({ args }) {
 		const sb = await identify(process.cwd());
@@ -29,12 +35,7 @@ export default defineCommand({
 			console.error(`This deletes VM ${sb.instance}.`);
 			console.error(`${sb.cwd} is a host mount and is not affected.`);
 			console.error(`Installed packages and other guest-local state are lost.`);
-			console.error(
-				!(await historyOnHost(sb))
-					? `Claude transcripts and memory are still on the VM's disk and are lost with it;\n` +
-							`  stop it and start it once first, which moves them to the host.`
-					: `Claude transcripts and memory are on the host and stay for the next start.`,
-			);
+			console.error(await historyNotice(sb));
 			console.error(`Re-run with --yes to proceed.`);
 			process.exitCode = 1;
 			return;
@@ -55,7 +56,7 @@ export default defineCommand({
 				return false;
 			}
 			await leases.clear(sb.sandbox);
-			await destroy(sb);
+			await destroy(sb, { discardHistory: args["discard-history"] });
 			return true;
 		});
 

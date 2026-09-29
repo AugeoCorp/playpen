@@ -270,7 +270,7 @@ async function mountHistoryOnExisting(sb: Sandbox): Promise<void> {
 			`warning: Claude history is not mounted from the host (${err instanceof Error ? err.message : err})`,
 		);
 		console.error(
-			`  it stays in the guest, and \`playpen remove\` deletes it with the VM`,
+			`  it stays on the VM's disk; \`playpen remove --yes --discard-history\` deletes it with the VM`,
 		);
 	}
 }
@@ -596,9 +596,34 @@ export async function stop(sb: Sandbox): Promise<void> {
 	if (existing && lima.isRunning(existing)) await lima.stop(sb.instance);
 }
 
-export async function destroy(sb: Sandbox): Promise<void> {
+const MOVE_HISTORY_FIRST = [
+	"run `playpen start` once to move it to the host (with `playpen stop` first if",
+	"  it has been running since before the history mount), or pass",
+	"  --discard-history to delete it with the VM",
+].join("\n");
+
+/** For the `remove` prompt: what happens to Claude history if it goes ahead. */
+export async function historyNotice(sb: Sandbox): Promise<string> {
+	if (!(await lima.get(sb.instance)) || (await historyOnHost(sb)))
+		return "Claude transcripts and memory are on the host and stay for the next start.";
+	return `Claude transcripts and memory may still be on the VM's disk only;\n  ${MOVE_HISTORY_FIRST}.`;
+}
+
+/**
+ * Refuses a VM whose disk may still hold history the host has not got, unless
+ * told to discard it: the one step that deletes a disk is the one that checks.
+ * Nothing here boots it to find out.
+ */
+export async function destroy(
+	sb: Sandbox,
+	opts: { discardHistory?: boolean } = {},
+): Promise<void> {
 	const existing = await lima.get(sb.instance);
 	if (existing) {
+		if (!opts.discardHistory && !(await historyOnHost(sb)))
+			throw new Error(
+				`${sb.sandbox} may still hold Claude history on its disk that is not on the host.\n  ${MOVE_HISTORY_FIRST}.`,
+			);
 		if (lima.isRunning(existing)) await lima.stop(sb.instance, true);
 		await lima.remove(sb.instance);
 	}
