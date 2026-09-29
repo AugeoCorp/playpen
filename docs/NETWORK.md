@@ -160,12 +160,10 @@ value. The value is not in argv, not in a file, and not in the helper's
 environment: the helper gets the parent's environment without every variable the
 policy's `secrets` name, whether or not a value was handed over, so a `GH_TOKEN`
 exported in your shell reaches neither the helper nor the bwrap, limactl and
-qemu below it. The boot that saves a stopped sandbox's history before it is
-deleted allows nothing, but its policy keeps the grants from the sandbox's last
-policy.json for the same reason. The hosts are not in the document: policy.json
-carries `env` and `hosts` and is the one place they are kept, and it is re-read
-on reload. helper.json carries the names the helper holds, so a later `start`
-can see what the running helper lacks.
+qemu below it. The hosts are not in the document: policy.json carries `env` and
+`hosts` and is the one place they are kept, and it is re-read on reload.
+helper.json carries the names the helper holds, so a later `start` can see what
+the running helper lacks.
 
 What the guest sees is a placeholder: `playpen-secret-` and the variable name in
 lower case with dashes, so `GH_TOKEN` is `playpen-secret-gh-token`. It is fixed
@@ -482,8 +480,28 @@ and change over time, while the CA is one per install.
   can push a branch full of secrets to a repo it controls. The fence stops
   unknown destinations; it says nothing about what an agent does with the ones
   it is allowed to reach.
-- **The project mount is the sharing channel, by design.** It was never part of
-  what the fence closes.
+- **The project mount is the sharing channel, by design,** and so is the
+  sandbox's Claude history directory, mounted at the guest's
+  `~/.claude/projects`. Neither was ever part of what the fence closes.
+- **The guest writes both mounts as you,** since qemu creates every file with
+  your uid on the host. What else it can make there differs by mount:
+  - The project mount is 9p with Lima's default `securityModel`, `none`, so a
+    guest `chmod`, setuid bit or `ln -s` is real on the host. The guest can make
+    setuid files owned by you, executables, and symlinks that lead anywhere.
+    That is the price of sharing the project; anything you run over it on the
+    host is trusting the guest.
+  - The history directory is `mapped-xattr`. QEMU keeps the guest's modes and
+    owners in `user.virtfs.*` xattrs, and creates only regular `0600` files and
+    `0700` directories: a guest symlink is a regular file holding its target, a
+    fifo or device node is an empty file, and setuid or execute bits never reach
+    the host's mode. The guest still sees them as it made them. So nothing the
+    guest writes there is a live link, setuid or executable on the host. It
+    needs a host filesystem with user xattrs (ext4, btrfs and xfs have them).
+    playpen never reads inside it, and refuses one that is a link or not yours.
+  - Lima calls mapped modes "incompatible with symlinks". In practice that is
+    about real symlinks already on the host, made there or by a guest before the
+    model changed: the guest lists them as links but cannot read or follow them
+    (`ELOOP`), so they lead nowhere from inside.
 - **DNS lookups happen at the gatekeeper**, not in the guest, for every program
   that uses the guest's own resolver: `--dns virtual` makes tun2proxy answer
   those itself, so a hostname is not a side channel around the policy. A root
