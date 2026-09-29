@@ -1005,6 +1005,101 @@ test("a subdomain of a secret's host is piped: a secret is for the host it names
 	await assertPiped(port, log, "sub.api.example:443");
 });
 
+test("a secret the policy names but the helper does not hold is piped, and a note says why", async (t) => {
+	const { port, log } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		held: [{ env: "NPM_TOKEN", value: "npm_real" }],
+	});
+
+	await assert.rejects(tunnel(port, "api.example:443"), { message: "closed" });
+
+	assert.deepEqual(
+		log.map((e) => e.verdict),
+		["allow", "note", "deny"],
+	);
+	assert.equal(
+		log[1]?.reason,
+		"secret GH_TOKEN is named for this host but this helper does not hold it; piped",
+	);
+	assert.match(log[2]?.reason ?? "", /an address of this machine/);
+});
+
+test("a secret named but not held beside one that is held is noted, and the tunnel is still intercepted", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port, log } = await gatekeeperWith(t, {
+		policy: () => ({
+			...secretPolicy(),
+			secrets: [
+				{ env: "GH_TOKEN", hosts: ["api.example"] },
+				{ env: "NPM_TOKEN", hosts: ["api.example"] },
+			],
+		}),
+		upstreamPort: upstream.port,
+	});
+
+	await send(clientThrough(t, port, "api.example:443"), {
+		headers: { authorization: `token ${PLACEHOLDER}` },
+	});
+
+	assert.equal(upstream.received[0]?.authorization, "token ghp_real_value");
+	assert.deepEqual(
+		log.filter((e) => e.verdict === "note").map((e) => e.reason),
+		[
+			"secret NPM_TOKEN is named for this host but this helper does not hold it; its placeholder goes out as it is",
+		],
+	);
+});
+
+test("a secret dropped from the policy stops being intercepted for on the next tunnel", async (t) => {
+	let policy = secretPolicy();
+	const { port, log } = await gatekeeperWith(t, { policy: () => policy });
+	(await tunnel(port, "api.example:443")).destroy();
+
+	policy = { ...secretPolicy(), secrets: [] };
+	log.length = 0;
+
+	await assertPiped(port, log, "api.example:443");
+});
+
+test("a tunnel already open keeps getting the real value after its secret is dropped from the policy", async (t) => {
+	const upstream = await upstreamHost(t);
+	let policy = secretPolicy();
+	const { port, log } = await gatekeeperWith(t, {
+		policy: () => policy,
+		upstreamPort: upstream.port,
+	});
+	const agent = clientThrough(t, port, "api.example:443");
+	await send(agent, { headers: { authorization: `token ${PLACEHOLDER}` } });
+
+	policy = { ...secretPolicy(), secrets: [] };
+	await send(agent, { headers: { authorization: `token ${PLACEHOLDER}` } });
+
+	assert.equal(log.filter((e) => e.verdict === "allow").length, 1);
+	assert.deepEqual(
+		upstream.received.map((r) => r.authorization),
+		["token ghp_real_value", "token ghp_real_value"],
+	);
+});
+
+test("a secret added to the policy is intercepted for on the next tunnel", async (t) => {
+	const upstream = await upstreamHost(t);
+	let policy: Policy = { ...secretPolicy(), secrets: [] };
+	const { port } = await gatekeeperWith(t, {
+		policy: () => policy,
+		upstreamPort: upstream.port,
+	});
+	// Piped, so dialed at the address the name resolves to here, which the
+	// gatekeeper refuses.
+	await assert.rejects(tunnel(port, "api.example:443"), { message: "closed" });
+
+	policy = secretPolicy();
+	await send(clientThrough(t, port, "api.example:443"), {
+		headers: { authorization: `token ${PLACEHOLDER}` },
+	});
+
+	assert.equal(upstream.received[0]?.authorization, "token ghp_real_value");
+});
+
 test("a plain HTTP request to port 443 of a secret's host is dialed through the address rules, not intercepted", async (t) => {
 	const { port, log } = await gatekeeperWith(t, {
 		policy: () => secretPolicy(),
