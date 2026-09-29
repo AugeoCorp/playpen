@@ -35,6 +35,10 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
 - A sandbox made before the history mount has none, and its history is on its
   own disk, so recreating it to get the mount deletes that history. `remove` and
   the rebuild offer say so, and how to copy it into the project first.
+- Leftovers from the one-time move to the history mount are no longer read: a
+  history directory may hold `.playpen-kept/` and `.playpen-staging-*/`, and a
+  `<sandbox>.tar` from before the mount is never imported. Delete them, or
+  extract what you want, by hand.
 - A sandbox made with the history mount before it became `mapped-xattr` keeps
   Lima's default model, under which the guest's modes and symlinks are real on
   the host. `playpen remove --yes && playpen start` gives it the new one and
