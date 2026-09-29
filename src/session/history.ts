@@ -8,7 +8,7 @@ import { assertSandboxName } from "./identity.ts";
  * Claude Code keeps session transcripts and the persistent memory directory
  * under `~/.claude/projects` in the guest. That whole directory is a host
  * directory mounted writable, so history is on the host as it is written and
- * outlives the VM: rebuild, remove, a crash. There is no second copy to sync.
+ * outlives the VM: rebuild, remove, a crash.
  *
  * The whole directory rather than one project's slug: a sandbox serves a
  * single project, so that is already the scope, and it avoids depending on
@@ -35,10 +35,8 @@ export function hostDir(sandbox: string): string {
 }
 
 /**
- * Before every boot, since Lima creates a missing mount location itself, and
- * makes it 0755 (`os.MkdirAll` in its qemu driver). An existing one is
- * brought back to 0700 too, and refused if it is a link or someone else's:
- * Lima would serve wherever it leads.
+ * Called before every boot: Lima creates a missing mount location itself, 0755
+ * (`os.MkdirAll` in its qemu driver), and serves wherever a link leads.
  */
 export async function makeHostDir(sandbox: string): Promise<string> {
 	const dir = hostDir(sandbox);

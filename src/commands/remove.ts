@@ -39,9 +39,7 @@ export default defineCommand({
 		}
 
 		// Checked and destroyed under one lock: unlocked, a session attaching in
-		// between would have its guest disk deleted underneath it, which is what
-		// the gate exists to prevent. Worse than stopping, so it is gated on a
-		// live lease rather than on removal itself.
+		// between would have its guest disk deleted underneath it.
 		const deleted = await withLock(sb.sandbox, async () => {
 			const others = await leases.live(sb.sandbox);
 			if (others.length > 0 && !args.force) {

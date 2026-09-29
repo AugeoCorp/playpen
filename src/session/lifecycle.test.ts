@@ -21,7 +21,6 @@ const calls: string[] = [];
 /** `mock.module` refuses a second mock of the same specifier, so behaviour that
  * varies per test has to live here rather than in the fake. */
 let maskExit = 0;
-/** Whether the guest finds the history directory mounted at `~/.claude/projects`. */
 let historyMounted = true;
 let limaHome = "";
 /** Whether the fake has been cloned into existence yet, so `stop` has something to stop. */

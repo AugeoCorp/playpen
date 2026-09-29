@@ -9,7 +9,6 @@ export async function exists(path: string): Promise<boolean> {
 	}
 }
 
-/** 0 for a file that does not exist, rather than throwing. */
 export async function sizeOf(path: string): Promise<number> {
 	try {
 		return (await stat(path)).size;
@@ -18,11 +17,6 @@ export async function sizeOf(path: string): Promise<number> {
 	}
 }
 
-/**
- * What a file has gained since byte offset `from`: the shared shape a helper
- * process's own log tailer and a probe scanning for one line both read
- * through, so they land on the same "half-written last line" handling.
- */
 export async function readAppended(
 	path: string,
 	from: number,
@@ -52,12 +46,10 @@ export async function readAppended(
  * Write a file so no reader can ever see it half-written, and a crash or power
  * cut leaves the old contents or the new ones, never an empty file.
  *
- * `writeFile` creates the file and then fills it, so a concurrent reader can
- * catch it existing and empty. Callers here parse what they read and treat
- * unparseable as junk to delete, which would make that window destroy a live
- * lease. `rename` within a directory is atomic, so the file appears complete or
- * not at all; the fsync before it keeps a crash from renaming in a file whose
- * data never reached the disk.
+ * Not `writeFile`, which creates the file and then fills it: a reader that
+ * deletes what it cannot parse, as the lease reader does, would catch it empty
+ * and delete a live lease. The fsync comes before the rename so that a crash
+ * cannot rename in a file whose data never reached the disk.
  */
 export async function writeAtomic(path: string, data: string): Promise<void> {
 	const temp = `${path}.${process.pid}.tmp`;

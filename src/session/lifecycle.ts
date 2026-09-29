@@ -199,8 +199,8 @@ function mountsFor(sb: Sandbox): string {
  * still has `base:` and no `images:`, so playpen's own rendered template cannot
  * replace it -- only the empty `mounts` the base left behind is rewritten.
  *
- * Provisioning stays skipped either way: the guard markers are on the cloned
- * disk and the image hash has not changed.
+ * Provisioning stays skipped: the guard markers are on the cloned disk and the
+ * image hash has not changed.
  */
 async function giveCloneItsMount(sb: Sandbox): Promise<void> {
 	const path = join(limaHome(), sb.instance, "lima.yaml");
