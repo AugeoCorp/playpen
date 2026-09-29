@@ -54,6 +54,7 @@ export interface FencePaths {
 	control: string;
 	helper: string;
 	policy: string;
+	/** Which project paths the next fresh helper hides from qemu's 9p share. */
 	mounts: string;
 	/** Bound read-only over a masked file; nothing reaches it through the bind. */
 	emptyFile: string;
@@ -213,6 +214,11 @@ export async function readPolicy(sandbox: string): Promise<Policy> {
 	return result.data;
 }
 
+/**
+ * What qemu is denied a view of, decided when the fence starts and never
+ * reloaded: unlike policy.json, a mount table under a running process cannot
+ * be rewritten.
+ */
 export interface Mounts {
 	/** Absolute, real path of the project directory the guest shares. */
 	project: string;
@@ -389,7 +395,7 @@ export function looksLikeQemu(cmdline: string): boolean {
 
 /** Lima's own file, and it outlives the process it names, so nothing here
  * trusts the number beyond asking /proc whether it is still qemu. */
-async function qemuPid(instance: string): Promise<number | null> {
+export async function qemuPid(instance: string): Promise<number | null> {
 	let raw: string;
 	try {
 		raw = await readFile(join(limaHome(), instance, "qemu.pid"), "utf8");
@@ -466,6 +472,8 @@ export interface BringUpOptions {
 	sandbox: string;
 	instance: string;
 	policy: Policy;
+	/** The project and its masked entries; see `Mounts`. */
+	mounts: Mounts;
 	/** Where helper.log goes while the caller waits; usually stderr. */
 	log: (text: string) => void;
 	timeoutMs?: number;
@@ -488,6 +496,9 @@ const APPLY_WINDOW_MS = 15_000;
  * policy applied, or throws, so "updated" is never said of a policy that is
  * not yet deciding anything. Connections already open stay open either way;
  * the policy decides new ones.
+ *
+ * Masks are the opposite: fixed when qemu starts, so mounts.json is written
+ * only for a helper about to be spawned.
  */
 export async function bringUp(opts: BringUpOptions): Promise<void> {
 	const { sandbox, instance } = opts;
@@ -503,6 +514,7 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 		return;
 	}
 
+	await writeMounts(sandbox, opts.mounts);
 	const paths = fencePaths(sandbox);
 	let offset = await sizeOf(paths.helperLog);
 	const child = await spawnHelper(sandbox, instance);

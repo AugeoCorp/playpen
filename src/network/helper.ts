@@ -3,10 +3,12 @@ import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { exists, readAppended, sizeOf, writeAtomic } from "../fs.ts";
 import * as lima from "../lima/client.ts";
+import { isPlaypenInstance } from "../session/identity.ts";
 import { self } from "../session/proc.ts";
 import { attach, capture } from "../sh.ts";
 import { sleep } from "../time.ts";
 import {
+	boundMasks,
 	cliPath,
 	type FencePaths,
 	fencePaths,
@@ -17,6 +19,8 @@ import {
 	type Mounts,
 	maskKind,
 	policyStamp,
+	qemuPid,
+	readMounts,
 	readPolicy,
 	removeSocket,
 	underMaskedDir,
@@ -109,21 +113,42 @@ async function reloadPolicy(sandbox: string): Promise<Policy> {
  * the file `playpen start` writes -- which is how a sandbox that is already up
  * picks up a tightened allow list. `stamp` is the file the current policy
  * came from; `swap` is told the new stamp with the policy so it can report
- * what is now applied.
+ * what is now applied. `audit` runs on every poll, before the policy check.
  */
 async function serveWhileRunning(
 	sandbox: string,
 	instance: string,
 	stamp: string,
 	swap: (policy: Policy, stamp: string) => Promise<void>,
+	audit: () => Promise<void>,
 ): Promise<void> {
 	while (await vmRunning(instance)) {
 		await sleep(POLL_MS);
+		await audit();
 		const now = await policyStamp(sandbox);
 		if (now === stamp) continue;
 		stamp = now;
 		await swap(await reloadPolicy(sandbox), stamp);
 	}
+}
+
+/**
+ * Fail closed on a masked path replaced on the host: qemu now serves the
+ * host's new contents there. `limactl stop -f` is the same stop the rest of
+ * playpen uses; it is forced because the guest is not to be given the time a
+ * clean shutdown takes. If it cannot stop the VM, qemu is killed directly:
+ * killing the bwrap child would not do, since `--die-with-parent` reaches only
+ * the inside half, not the qemu that limactl started under it.
+ */
+async function stopVm(instance: string): Promise<void> {
+	try {
+		await lima.stop(instance, true);
+		return;
+	} catch (err) {
+		say(`could not stop ${instance} (${err}); killing its qemu`);
+	}
+	const qemu = isPlaypenInstance(instance) ? await qemuPid(instance) : null;
+	if (qemu !== null) process.kill(qemu, "SIGKILL");
 }
 
 /**
@@ -161,7 +186,7 @@ function jsonLineAppender(path: string): (entry: LogEntry) => void {
  * already hides it. An entry whose parent is there but which is missing itself
  * is skipped with a line: the guest will create it on the host as a directory,
  * which is what `node_modules` on a fresh clone needs. Refused, with an error
- * naming the entry, is what a guest could have arranged by renaming the
+ * that stops the start, is what a guest could have arranged by renaming the
  * parent of a nested entry: a symlink, a path through one, or a parent that is
  * gone.
  */
@@ -256,6 +281,21 @@ export async function runHelper(
 	const reattach = state !== "stopped";
 	if (reattach) say(`${instance} is already fenced; reattaching`);
 
+	// Before anything is started, so a mask list that cannot be read, or an
+	// entry that has to be refused, stops the sandbox coming up rather than
+	// leaving the project unmasked. A reattach starts no bwrap, so the qemu it
+	// found keeps the table it was born with; it still reads the list, to check
+	// which of the entries that table holds.
+	let mounts: Mounts;
+	let maskArgs: string[] = [];
+	try {
+		mounts = await readMounts(sandbox);
+		if (!reattach) maskArgs = await maskBinds(paths, mounts);
+	} catch (err) {
+		say(err instanceof Error ? err.message : String(err));
+		return 1;
+	}
+
 	const logFrom = await sizeOf(paths.gatekeeperLog);
 	const gatekeeper = await startGatekeeper({
 		policy: () => policy,
@@ -271,20 +311,13 @@ export async function runHelper(
 		await unlink(paths.ready).catch(() => {});
 		inside = spawn(
 			"bwrap",
-			[
-				"--unshare-net",
-				"--dev-bind",
-				"/",
-				"/",
-				...(await hiddenResolverDirs()),
-				"--die-with-parent",
-				"--",
+			bwrapArgv(maskArgs, await hiddenResolverDirs(), [
 				process.execPath,
 				cliPath(),
 				"__net-inside",
 				sandbox,
 				instance,
-			],
+			]),
 			{ stdio: "inherit" },
 		);
 	}
@@ -330,6 +363,16 @@ export async function runHelper(
 		return 1;
 	}
 
+	// Read from qemu's namespace rather than taken from what was asked for, so
+	// a reattach and a bwrap that bound less than it was told to are both true.
+	const liveMasks = async (entries: readonly string[]): Promise<string[]> => {
+		const qemu = await qemuPid(instance);
+		return qemu === null
+			? []
+			: boundMasks(qemu, mounts.project, entries, paths);
+	};
+	let bound = await liveMasks(mounts.masked);
+
 	const egress = await guestReachesGatekeeper(instance, paths, logFrom);
 	// Before `ready`, so the `playpen start` waiting on it can already name a
 	// port that could not be bound. A fresh boot has no listeners yet; a guest
@@ -352,15 +395,34 @@ export async function runHelper(
 		for (const line of NO_EGRESS_ADVICE) say(`  ${line}`);
 	}
 
-	await serveWhileRunning(sandbox, instance, stamp, async (next, applied) => {
-		policy = next;
-		// After the swap, so a new listener's first connection already finds
-		// its `localhost:<host>` entry; and before the stamp is reported, so
-		// `bringUp` returns with the listeners in place.
-		const unboundPorts = await forwardPorts(instance, forwarded, next.ports);
-		forwarded = next.ports;
-		await report({ policy: applied, unboundPorts });
-	});
+	await serveWhileRunning(
+		sandbox,
+		instance,
+		stamp,
+		async (next, applied) => {
+			policy = next;
+			// After the swap, so a new listener's first connection already finds
+			// its `localhost:<host>` entry; and before the stamp is reported, so
+			// `bringUp` returns with the listeners in place.
+			const unboundPorts = await forwardPorts(instance, forwarded, next.ports);
+			forwarded = next.ports;
+			await report({ policy: applied, unboundPorts });
+		},
+		async () => {
+			const still = await liveMasks(bound);
+			const lost = bound.filter((entry) => !still.includes(entry));
+			if (lost.length === 0) return;
+			// A VM that stopped between the two checks is not a replace.
+			if (!(await vmRunning(instance))) return;
+			bound = still;
+			for (const entry of lost) {
+				say(
+					`masked: ${entry} was replaced on the host while the sandbox ran; stopping it so the new contents never reach the guest`,
+				);
+			}
+			await stopVm(instance);
+		},
+	);
 	say(`${instance} is no longer running; shutting the fence down`);
 	await teardown(true);
 	return 0;

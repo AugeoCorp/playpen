@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { mock, type TestContext, test } from "node:test";
 import { baseImage } from "../image/base.ts";
 import { imageHash } from "../image/render.ts";
+import type { Mounts } from "../network/fence.ts";
 import type { Policy, PortForward } from "../network/policy.ts";
 import { baseInstanceName } from "./identity.ts";
 import type { Sandbox } from "./lifecycle.ts";
@@ -21,6 +22,10 @@ let exists = false;
 let status: "Running" | "Stopped" = "Running";
 /** The policy the sandbox was brought up behind, as the fence was handed it. */
 let fencedWith: Policy | null = null;
+/** The project and masks the sandbox was brought up with, as the fence was handed them. */
+let fencedMounts: Mounts | null = null;
+/** What mounts.json holds from the sandbox's last start, as the fake fence reads it. */
+let recordedMounts: Mounts | null = null;
 /** What the fake fence reports for a running VM; a test overrides it. */
 let fenceState:
 	| "sealed"
@@ -52,8 +57,13 @@ mock.module("../network/fence.ts", {
 		// Like the real one: the policy is written whatever state the fence is
 		// in, and a sandbox that is already up behind a gatekeeper is left where
 		// it is rather than started a second time.
-		async bringUp(opts: { policy: Policy }) {
+		readMounts: async () => {
+			if (recordedMounts === null) throw new Error("no mounts.json");
+			return recordedMounts;
+		},
+		async bringUp(opts: { policy: Policy; mounts: Mounts }) {
 			fencedWith = opts.policy;
+			fencedMounts = opts.mounts;
 			const up = fenceState === "sealed" || fenceState === "sealed-no-egress";
 			if (fenced && up) {
 				calls.push("leave the fence alone");
@@ -118,6 +128,8 @@ async function sandboxFor(
 	calls.length = 0;
 	exists = false;
 	fencedWith = null;
+	fencedMounts = null;
+	recordedMounts = null;
 	fenceState = "sealed";
 	helperEgress = true;
 	helperUnbound = [];
@@ -200,6 +212,29 @@ test("a sandbox already running is handed the project's policy again, so a tight
 	});
 });
 
+test("the fence is handed the project and the masks, so the host half can hide them", async (t) => {
+	const { sb, run } = await sandboxFor(
+		t,
+		'export default { masked: ["node_modules", ".env"] };',
+	);
+	await run();
+	assert.deepEqual(fencedMounts, {
+		project: sb.cwd,
+		masked: ["node_modules", ".env"],
+	});
+});
+
+test("a stopped sandbox booted to save its history keeps the masks it last ran with", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await run();
+	const { destroy } = await import("./lifecycle.ts");
+	status = "Stopped";
+	fenced = false;
+	recordedMounts = { project: sb.cwd, masked: [".env"] };
+	await destroy(sb);
+	assert.deepEqual(fencedMounts, { project: sb.cwd, masked: [".env"] });
+});
+
 test("destroying a stopped sandbox boots it inside the fence with nothing allowed, to save its history", async (t) => {
 	const { sb, run } = await sandboxFor(t, BOTH);
 	await run();
@@ -207,10 +242,39 @@ test("destroying a stopped sandbox boots it inside the fence with nothing allowe
 	status = "Stopped";
 	fenced = false;
 	fencedWith = null;
+	recordedMounts = { project: sb.cwd, masked: [] };
 	calls.length = 0;
 	await destroy(sb);
 	assert.deepEqual(fencedWith, { allow: [], mode: "enforce", ports: [] });
 	assert.equal(calls[0], "start behind the gatekeeper");
+});
+
+test("a stopped sandbox with no record of its masks is not booted to save its history, since it would boot unmasked", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await run();
+	const { destroy } = await import("./lifecycle.ts");
+	status = "Stopped";
+	fenced = false;
+	recordedMounts = null;
+	fencedMounts = null;
+	calls.length = 0;
+	await destroy(sb);
+	assert.equal(fencedMounts, null);
+	assert.deepEqual(calls, []);
+});
+
+test("a rebuild's history boot also hides a mask added to the config since the last start", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await run();
+	const { destroy } = await import("./lifecycle.ts");
+	status = "Stopped";
+	fenced = false;
+	recordedMounts = { project: sb.cwd, masked: [".env"] };
+	await destroy(sb, ["node_modules", ".env"]);
+	assert.deepEqual(fencedMounts, {
+		project: sb.cwd,
+		masked: [".env", "node_modules"],
+	});
 });
 
 test("a sandbox running with no gatekeeper gets one back", async (t) => {

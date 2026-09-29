@@ -5,7 +5,12 @@ import { ensureBase, findBase } from "../image/bake.ts";
 import { baseImage } from "../image/base.ts";
 import { maskScript, render, serialize } from "../image/render.ts";
 import * as lima from "../lima/client.ts";
-import { bringUp, fenceStatus, liveHelper } from "../network/fence.ts";
+import {
+	bringUp,
+	fenceStatus,
+	liveHelper,
+	readMounts,
+} from "../network/fence.ts";
 import {
 	BUILTIN_ALLOW,
 	NO_EGRESS_ADVICE,
@@ -203,6 +208,10 @@ async function giveCloneItsMount(sb: Sandbox): Promise<void> {
 /**
  * Applied on every start, because a bind mount does not survive a reboot and
  * the mask set can change without the sandbox being rebuilt.
+ *
+ * This is the guest half; the host half is the placeholder the fence's helper
+ * binds over the same paths in qemu's mount table, which is in place before the
+ * guest boots and so before this runs.
  */
 async function applyMasks(
 	sb: Sandbox,
@@ -287,25 +296,34 @@ export interface Running {
  */
 async function startFenced(sb: Sandbox, template: Template): Promise<void> {
 	const { allow, mode, ports } = template.network;
-	await fenced(sb, {
-		// A port is a grant of that host port, so writing it once is enough.
-		allow: [
-			...BUILTIN_ALLOW,
-			...allow,
-			...ports.map(({ host }) => `localhost:${host}`),
-		],
-		mode,
-		ports,
-	});
+	await fenced(
+		sb,
+		{
+			// A port is a grant of that host port, so writing it once is enough.
+			allow: [
+				...BUILTIN_ALLOW,
+				...allow,
+				...ports.map(({ host }) => `localhost:${host}`),
+			],
+			mode,
+			ports,
+		},
+		template.masks,
+	);
 	await warnWithoutEgress(sb);
 	await warnUnboundPorts(sb);
 }
 
-function fenced(sb: Sandbox, policy: Policy): Promise<void> {
+function fenced(
+	sb: Sandbox,
+	policy: Policy,
+	masked: readonly string[],
+): Promise<void> {
 	return bringUp({
 		sandbox: sb.sandbox,
 		instance: sb.instance,
 		policy,
+		mounts: { project: sb.cwd, masked: [...masked] },
 		log: (text) => process.stderr.write(text),
 	});
 }
@@ -382,7 +400,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 	if (!guard.ok) throw new Error(guard.reason ?? `refusing to mount ${sb.cwd}`);
 	if (guard.warning) console.error(`warning: ${guard.warning}`);
 
-	if (rebuilding) await destroy(sb);
+	if (rebuilding) await destroy(sb, template?.masks);
 
 	const current = template ?? (await renderTemplate(sb));
 	await writeTemplate(sb, current);
@@ -517,16 +535,30 @@ export async function stop(sb: Sandbox): Promise<void> {
  * started fenced with nothing allowed: the archive travels over the control
  * socket, and a guest that is about to be deleted is the last one to hand the
  * network to. Best effort throughout -- a sandbox too broken to boot must
- * still be deletable.
+ * still be deletable, but never at the cost of the masks: if the list of
+ * them cannot be read, the boot is skipped and the history with it.
+ *
+ * `masks` are the current config's, when the caller has them, and are added to
+ * the recorded ones so an entry added since the last start is covered too.
  */
-async function saveHistory(sb: Sandbox, running: boolean): Promise<void> {
+async function saveHistory(
+	sb: Sandbox,
+	running: boolean,
+	masks: readonly string[],
+): Promise<void> {
 	try {
 		// No session record means creation never finished, so there is no history
 		// and no reason to boot it.
 		if (!running && !(await store.load(sb.sandbox))) return;
 		if (!running) {
 			console.error(`starting it briefly to save Claude history`);
-			await fenced(sb, { allow: [], mode: "enforce", ports: [] });
+			// The guest side is not applied for this boot, so the host side is all
+			// that keeps the masks out of it. Unreadable means unknown, not "mask
+			// nothing": the throw lands in the warning below.
+			const recorded = await readMounts(sb.sandbox);
+			await fenced(sb, { allow: [], mode: "enforce", ports: [] }, [
+				...new Set([...recorded.masked, ...masks]),
+			]);
 		}
 		await history.archive(sb.instance, sb.sandbox);
 	} catch (err) {
@@ -536,10 +568,13 @@ async function saveHistory(sb: Sandbox, running: boolean): Promise<void> {
 	}
 }
 
-export async function destroy(sb: Sandbox): Promise<void> {
+export async function destroy(
+	sb: Sandbox,
+	masks: readonly string[] = [],
+): Promise<void> {
 	const existing = await lima.get(sb.instance);
 	if (existing) {
-		await saveHistory(sb, lima.isRunning(existing));
+		await saveHistory(sb, lima.isRunning(existing), masks);
 		// Re-read: saveHistory may have started it, and stopping an instance that
 		// is already stopped is an error that must not block the delete.
 		if (lima.isRunning(await lima.get(sb.instance)))
