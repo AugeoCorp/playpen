@@ -114,13 +114,14 @@ function headersNamed(received: Received | undefined, name: string): string[] {
 /**
  * The host a test's upstream really is: the interceptor is told the approved
  * host and port, and this sends it to the test's own loopback server instead,
- * trusting `publicCa` there. The server name is left as the interceptor set it.
+ * trusting `ca` there. The server name is left as the interceptor set it.
  */
 function toUpstream(
 	port: number,
+	ca: Ca,
 ): (options: tls.ConnectionOptions) => tls.TLSSocket {
 	return (options) =>
-		tls.connect({ ...options, host: "127.0.0.1", port, ca: publicCa.certPem });
+		tls.connect({ ...options, host: "127.0.0.1", port, ca: ca.certPem });
 }
 
 /** The gatekeeper with the interceptor, holding GH_TOKEN, with every line it
@@ -130,6 +131,9 @@ async function gatekeeperWith(
 	opts: {
 		policy: () => Policy;
 		upstreamPort?: number;
+		/** What the host's certificate is verified against; `publicCa`, which
+		 * signed it, unless a test needs the check to fail. */
+		upstreamCa?: Ca;
 		resolveTo?: string;
 	},
 ): Promise<{ port: number; log: LogEntry[] }> {
@@ -147,7 +151,9 @@ async function gatekeeperWith(
 			log: record,
 			...(opts.upstreamPort === undefined
 				? {}
-				: { connect: toUpstream(opts.upstreamPort) }),
+				: {
+						connect: toUpstream(opts.upstreamPort, opts.upstreamCa ?? publicCa),
+					}),
 		}),
 	});
 	t.after(() => gatekeeper.close());
@@ -504,6 +510,26 @@ test("a request whose dial is refused logs no injection, since the value never l
 	assert.deepEqual(
 		log.filter((e) => e.verdict === "inject"),
 		[],
+	);
+});
+
+test("a request to a host whose certificate fails verification gets a 502 and an error line, and logs no injection", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port, log } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+		// The host's certificate is from publicCa, so this check fails.
+		upstreamCa: playpenCa,
+	});
+
+	const answer = await send(clientThrough(t, port, "api.example:443"), {
+		headers: { authorization: `token ${PLACEHOLDER}` },
+	});
+
+	assert.equal(answer.status, 502);
+	assert.deepEqual(
+		log.map((e) => e.verdict),
+		["allow", "error"],
 	);
 });
 
