@@ -1,4 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import type { Stats } from "node:fs";
 import {
 	chmod,
 	lstat,
@@ -332,6 +333,49 @@ export function underMaskedDir(
 	masked: readonly string[],
 ): boolean {
 	return masked.some((other) => entry.startsWith(`${other}/`));
+}
+
+/**
+ * The entries that have a placeholder bound over them in qemu's own mount
+ * namespace, which `/proc/<pid>/root` resolves into. A bound entry is the
+ * placeholder's own inode; a host-side replace (rename over, `sed -i`,
+ * `git checkout`) detaches the bind in qemu's namespace and leaves the new
+ * file's inode there. The entry is not followed: a bind is never a symlink,
+ * and a guest that renames away the parent of a nested entry can plant one
+ * pointing at the placeholder, whose path it can work out. An entry that cannot
+ * be read is not bound: what cannot be shown to be hidden is not claimed to be.
+ * `procDir` is a parameter so a test can lay out a fake one.
+ */
+export async function boundMasks(
+	qemu: number,
+	project: string,
+	entries: readonly string[],
+	placeholders: Pick<FencePaths, "emptyFile" | "emptyDir">,
+	procDir = "/proc",
+): Promise<string[]> {
+	let sources: Stats[];
+	try {
+		sources = [
+			await stat(placeholders.emptyFile),
+			await stat(placeholders.emptyDir),
+		];
+	} catch {
+		return [];
+	}
+	const bound: string[] = [];
+	for (const entry of entries) {
+		try {
+			const seen = await lstat(
+				join(procDir, String(qemu), "root", project, entry),
+			);
+			if (sources.some((s) => s.dev === seen.dev && s.ino === seen.ino)) {
+				bound.push(entry);
+			}
+		} catch {
+			// Gone from qemu's view, or not readable: not bound.
+		}
+	}
+	return bound;
 }
 
 export type FenceState =
