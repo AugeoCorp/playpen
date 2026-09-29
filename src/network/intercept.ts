@@ -341,8 +341,6 @@ function tunnelServer(
 			socket.destroy();
 			return;
 		}
-		// A guest hanging up tears the host connection down with it, which is not
-		// a failure worth a line.
 		let guestGone = false;
 		socket.once("close", () => {
 			guestGone = true;
