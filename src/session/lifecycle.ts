@@ -1,6 +1,7 @@
 import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { defaults, limaHome, templatesDir } from "../config.ts";
+import { replaceDurably } from "../fs.ts";
 import { ensureBase, findBase } from "../image/bake.ts";
 import { baseImage } from "../image/base.ts";
 import { maskScript, render, serialize } from "../image/render.ts";
@@ -255,7 +256,7 @@ async function giveInstanceItsMounts(sb: Sandbox): Promise<void> {
 		empty === 1
 			? yaml.replace(NO_MOUNTS, () => mounts)
 			: yaml.replace(projectOnlyMounts(sb), () => mounts);
-	await writeFile(path, filled, "utf8");
+	await replaceDurably(path, filled);
 }
 
 /**

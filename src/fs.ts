@@ -62,3 +62,23 @@ export async function writeAtomic(path: string, data: string): Promise<void> {
 	await writeFile(temp, data, "utf8");
 	await rename(temp, path);
 }
+
+/**
+ * `writeAtomic`, with the new contents flushed to disk before the rename, so a
+ * crash or power cut leaves the old file or the new one and never an empty
+ * one. For a file whose loss costs more than a rewrite: Lima's instance config.
+ */
+export async function replaceDurably(
+	path: string,
+	data: string,
+): Promise<void> {
+	const temp = `${path}.${process.pid}.tmp`;
+	const handle = await open(temp, "w");
+	try {
+		await handle.writeFile(data, "utf8");
+		await handle.sync();
+	} finally {
+		await handle.close();
+	}
+	await rename(temp, path);
+}

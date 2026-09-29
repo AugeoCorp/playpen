@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
 	mkdir,
 	mkdtemp,
+	open,
 	readdir,
 	readFile,
 	rm,
@@ -331,6 +332,25 @@ test("a sandbox already running without its history on the host is asked to move
 	assert.equal(settleArgs[0], "takeover");
 	const { historyOnHost } = await import("./lifecycle.ts");
 	assert.equal(await historyOnHost(sb), true);
+});
+
+test("lima.yaml is replaced whole rather than rewritten in place, so a reader holding the old one never sees it half-written", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await stoppedWithProjectMountOnly(sb);
+	const path = join(limaHome, sb.instance, "lima.yaml");
+	const before = await readFile(path, "utf8");
+	const reader = await open(path, "r");
+	t.after(() => reader.close());
+	await run();
+	assert.equal(
+		await reader.readFile("utf8"),
+		before,
+		"the old file was overwritten where it stood",
+	);
+	assert.deepEqual(
+		(await readdir(dirname(path))).filter((f) => f.endsWith(".tmp")),
+		[],
+	);
 });
 
 test("a sandbox made before bases existed, with its mounts pretty-printed, gets the history mount too", async (t) => {
