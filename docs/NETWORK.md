@@ -328,15 +328,14 @@ common package managers need, not a measurement. It stays a guess until a
     setuid files owned by you, executables, and symlinks that lead anywhere.
     That is the price of sharing the project; anything you run over it on the
     host is trusting the guest.
-  - The history directory is `mapped-xattr`. QEMU keeps the guest's modes,
-    owners and link targets in `user.virtfs.*` xattrs, and creates only regular
-    `0600` files and `0700` directories: a guest symlink is a file holding its
-    target as text, a fifo or device node is an empty file, and setuid or
-    execute bits never reach the host's mode. The guest still sees them as it
-    made them. So nothing the guest writes there is a live link, setuid or
-    executable on the host. It needs a host filesystem with user xattrs (ext4,
-    btrfs and xfs have them). playpen never reads inside it, and refuses one
-    that is a link or not yours.
+  - The history directory is `mapped-xattr`. QEMU keeps the guest's modes and
+    owners in `user.virtfs.*` xattrs, and creates only regular `0600` files and
+    `0700` directories: a guest symlink is a regular file holding its target, a
+    fifo or device node is an empty file, and setuid or execute bits never reach
+    the host's mode. The guest still sees them as it made them. So nothing the
+    guest writes there is a live link, setuid or executable on the host. It
+    needs a host filesystem with user xattrs (ext4, btrfs and xfs have them).
+    playpen never reads inside it, and refuses one that is a link or not yours.
   - Lima calls mapped modes "incompatible with symlinks". In practice that is
     about real symlinks already on the host, made there or by a guest before the
     model changed: the guest lists them as links but cannot read or follow them
