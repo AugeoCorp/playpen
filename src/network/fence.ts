@@ -14,7 +14,7 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { dataDir, limaHome } from "../config.ts";
-import { readAppended, sizeOf, writeAtomic } from "../fs.ts";
+import { readAppended, sizeOrZero, writeAtomic } from "../fs.ts";
 import { describeIssue } from "../issue.ts";
 import { assertSandboxName } from "../session/identity.ts";
 import { isLive, ownerSchema } from "../session/proc.ts";
@@ -22,7 +22,7 @@ import { networkMode } from "../session/projectconfig.ts";
 import { capture } from "../sh.ts";
 import { sleep } from "../time.ts";
 import { isPort } from "./names.ts";
-import type { Policy } from "./policy.ts";
+import { isEnvName, type Policy, parseSecretHost } from "./policy.ts";
 
 /**
  * The fence: a network namespace with no route out, holding one sandbox VM.
@@ -178,6 +178,25 @@ export async function policyStamp(sandbox: string): Promise<string> {
 	}
 }
 
+const secretGrant = z.object(
+	{
+		env: z
+			.string({ error: "must be an environment variable name" })
+			.refine(isEnvName, { error: "must be an environment variable name" }),
+		hosts: z
+			.array(
+				z
+					.string({ error: "must be a hostname" })
+					.refine((host) => parseSecretHost(host) !== null, {
+						error: "must be a hostname without a port",
+					}),
+				{ error: "must be an array of hostnames" },
+			)
+			.min(1, { error: "must name at least one host" }),
+	},
+	{ error: "must be { env, hosts }" },
+);
+
 const policyFile = z.object(
 	{
 		allow: z.array(z.string({ error: "must be a string" }), {
@@ -190,6 +209,9 @@ const policyFile = z.object(
 		 */
 		ports: z.array(portForward, {
 			error: "must be an array of { host, guest }",
+		}),
+		secrets: z.array(secretGrant, {
+			error: "must be an array of { env, hosts }",
 		}),
 	},
 	{ error: "must hold a JSON object" },
@@ -459,7 +481,10 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 	const changed = await writePolicy(sandbox, opts.policy);
 	const stamp = await policyStamp(sandbox);
 
-	const state = await fenceStatus(sandbox, instance);
+	const deadline = Date.now() + (opts.timeoutMs ?? 10 * 60_000);
+	let state = await fenceStatus(sandbox, instance);
+	if (state === "stopped")
+		state = await afterEarlierHelper(sandbox, instance, deadline);
 	if (state === "sealed" || state === "sealed-no-egress") {
 		if (changed) {
 			await applied(sandbox, stamp);
@@ -469,7 +494,7 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 	}
 
 	const paths = fencePaths(sandbox);
-	let offset = await sizeOf(paths.helperLog);
+	let offset = await sizeOrZero(paths.helperLog);
 	const child = await spawnHelper(sandbox, instance);
 
 	let exit: number | null = null;
@@ -477,7 +502,6 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 		exit = code ?? 1;
 	});
 
-	const deadline = Date.now() + (opts.timeoutMs ?? 10 * 60_000);
 	for (;;) {
 		offset = await drain(paths.helperLog, offset, opts.log);
 		if ((await liveHelper(sandbox))?.ready === true) return;
@@ -489,6 +513,44 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 		if (Date.now() > deadline) {
 			throw new Error(
 				`the network helper for ${sandbox} did not come up; see ${paths.helperLog}`,
+			);
+		}
+		await sleep(250);
+	}
+}
+
+/**
+ * How long the VM may read stopped while an earlier helper still runs. One
+ * whose VM is gone notices on its next poll (`POLL_MS` in helper.ts), and one
+ * that is booting has qemu running within seconds, so this is several polls.
+ */
+const STOPPED_WINDOW_MS = 30_000;
+
+/**
+ * An earlier helper still running while the VM reads stopped is one of two
+ * things: a helper whose VM just went away, whose record says ready until its
+ * next poll, or one still booting the VM for a `playpen start` that was
+ * interrupted. A new helper would refuse to run beside either, and the earlier
+ * one's record would pass for its own, so this waits until it has exited or its
+ * VM is up, and returns the state the fence settled in.
+ */
+async function afterEarlierHelper(
+	sandbox: string,
+	instance: string,
+	deadline: number,
+): Promise<FenceState> {
+	let stoppedSince = Date.now();
+	for (;;) {
+		const state = await fenceStatus(sandbox, instance);
+		if (state === "sealed" || state === "sealed-no-egress") return state;
+		const helper = await liveHelper(sandbox);
+		if (helper === null || state === "unsealed") return state;
+		if (state !== "stopped") stoppedSince = Date.now();
+		const now = Date.now();
+		if (now - stoppedSince > STOPPED_WINDOW_MS || now > deadline) {
+			throw new Error(
+				`an earlier network helper for ${sandbox} (pid ${helper.pid}) has neither exited nor brought its VM up; see ${fencePaths(sandbox).helperLog}\n` +
+					`  if no other playpen is starting this sandbox, stop it with: kill ${helper.pid}`,
 			);
 		}
 		await sleep(250);
