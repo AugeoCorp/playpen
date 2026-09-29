@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
 	mkdir,
 	mkdtemp,
+	readdir,
 	readFile,
 	rm,
 	stat,
@@ -421,6 +422,26 @@ test("when the host's copy still cannot be put back at a stop, the sandbox's his
 		`expected both files named, got:\n${lines.join("\n")}`,
 	);
 	assert.ok(calls.includes("stop"), `expected a stop in ${calls.join(", ")}`);
+});
+
+test("a save that cannot be put in place leaves no temporary file behind", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await hostHolds(sb, "old.jsonl");
+	restoreFails = new Error("write EPIPE");
+	t.mock.method(console, "error", () => {});
+	await run();
+	guestFiles.add("new.jsonl");
+	await mkdir(join(hostCopy(sb, ".unrestored.tar"), "in the way"), {
+		recursive: true,
+	});
+	const { stop } = await import("./lifecycle.ts");
+
+	await stop(sb);
+
+	assert.deepEqual((await readdir(dirname(hostCopy(sb)))).sort(), [
+		`${sb.sandbox}.tar`,
+		`${sb.sandbox}.unrestored.tar`,
+	]);
 });
 
 test("stopping a sandbox that got its history back replaces the host's copy, and keeps the one before as <sandbox>.prev.tar", async (t) => {

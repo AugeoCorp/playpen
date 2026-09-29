@@ -1,5 +1,6 @@
 import {
 	chmod,
+	copyFile,
 	link,
 	mkdir,
 	readFile,
@@ -95,8 +96,29 @@ async function ensureHistoryDir(): Promise<void> {
 async function writeBeside(path: string, tar: Buffer): Promise<void> {
 	const temp = `${path}.${process.pid}.tmp`;
 	await ensureHistoryDir();
-	await writeFile(temp, tar, { mode: 0o600 });
-	await rename(temp, path);
+	try {
+		await writeFile(temp, tar, { mode: 0o600 });
+		await rename(temp, path);
+	} catch (err) {
+		await rm(temp, { force: true });
+		throw err;
+	}
+}
+
+/**
+ * A hard link where the filesystem allows one, so keeping it costs nothing; a
+ * copy where it does not (EPERM on filesystems without hard links, EXDEV
+ * across mounts).
+ */
+async function keepAs(path: string, kept: string): Promise<void> {
+	try {
+		await link(path, kept);
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") return;
+		if (code !== "EPERM" && code !== "EXDEV") throw err;
+		await copyFile(path, kept);
+	}
 }
 
 /** The old copy becomes `<sandbox>.prev.tar`. */
@@ -104,9 +126,7 @@ async function replaceCopy(sandbox: string, tar: Buffer): Promise<void> {
 	const path = archivePath(sandbox);
 	const previous = previousPath(sandbox);
 	await rm(previous, { force: true });
-	await link(path, previous).catch((err: NodeJS.ErrnoException) => {
-		if (err.code !== "ENOENT") throw err;
-	});
+	await keepAs(path, previous);
 	await writeBeside(path, tar);
 }
 
