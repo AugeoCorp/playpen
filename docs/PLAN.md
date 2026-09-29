@@ -9,17 +9,17 @@ not be inverted are in `AGENTS.md`. The network fence's mechanism is in
 Works end to end on Bazzite, Lima 2.2.0, Node 24. Baking the base takes ~75s
 once; a sandbox then clones from it and boots in 10s. Restart ~20s.
 
-| Area                                                               | State                  |
-| ------------------------------------------------------------------ | ---------------------- |
-| `start` `shell` `run` `list` `stop` `remove` `doctor` `image show` | done                   |
-| `playpen claude` with `~/.claude` allowlist sync and `--no-auth`   | done                   |
-| `playpen.config.ts` masks, trust gate on config execution          | done, verified on host |
-| `image build`, base image + clone                                  | done, verified on host |
-| `completion bash\|zsh`, generated from the citty command tree      | done; zsh unverified   |
-| network fence (mechanism in `docs/NETWORK.md`)                     | done, see below        |
-| `network.secrets` values held by the helper, placeholders in guest | unit-tested; no VM run |
-| per-install CA in `<dataDir>/ca/`, trusted by the base image       | unit-tested; no VM yet |
-| `network.secrets` swapped into HTTPS `Authorization` headers       | unit-tested; no VM run |
+| Area                                                               | State                                      |
+| ------------------------------------------------------------------ | ------------------------------------------ |
+| `start` `shell` `run` `list` `stop` `remove` `doctor` `image show` | done                                       |
+| `playpen claude` with `~/.claude` allowlist sync and `--no-auth`   | done                                       |
+| `playpen.config.ts` masks, trust gate on config execution          | done, verified on host                     |
+| `image build`, base image + clone                                  | done, verified on host                     |
+| `completion bash\|zsh`, generated from the citty command tree      | done; zsh unverified                       |
+| network fence (mechanism in `docs/NETWORK.md`)                     | done, see below                            |
+| `network.secrets` values held by the helper, placeholders in guest | done, hand run on a VM (no KVM)            |
+| per-install CA in `<dataDir>/ca/`, trusted by the base image       | done, hand run on a VM (no KVM)            |
+| `network.secrets` swapped into HTTPS `Authorization` headers       | done, hand run on a VM; real token unshown |
 
 ## Known problems
 
