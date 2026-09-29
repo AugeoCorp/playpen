@@ -21,6 +21,8 @@ let exists = false;
 let status: "Running" | "Stopped" = "Running";
 /** The policy the sandbox was brought up behind, as the fence was handed it. */
 let fencedWith: Policy | null = null;
+/** The fake's policy.json: the last policy written, which outlives a stop. */
+let policyFile: Policy | null = null;
 /** What the fake fence reports for a running VM; a test overrides it. */
 let fenceState:
 	| "sealed"
@@ -49,11 +51,17 @@ mock.module("../network/fence.ts", {
 			unboundPorts: helperUnbound,
 			policy: "1:2",
 		}),
+		// Like the real one, which reads back the policy.json `bringUp` wrote.
+		async readPolicy() {
+			if (policyFile === null) throw new Error("no policy.json");
+			return policyFile;
+		},
 		// Like the real one: the policy is written whatever state the fence is
 		// in, and a sandbox that is already up behind a gatekeeper is left where
 		// it is rather than started a second time.
 		async bringUp(opts: { policy: Policy }) {
 			fencedWith = opts.policy;
+			policyFile = opts.policy;
 			const up = fenceState === "sealed" || fenceState === "sealed-no-egress";
 			if (fenced && up) {
 				calls.push("leave the fence alone");
@@ -120,6 +128,7 @@ async function sandboxFor(
 	calls.length = 0;
 	exists = false;
 	fencedWith = null;
+	policyFile = null;
 	fenceState = "sealed";
 	helperEgress = true;
 	helperUnbound = [];
@@ -219,6 +228,25 @@ test("destroying a stopped sandbox boots it inside the fence with nothing allowe
 		secrets: [],
 	});
 	assert.equal(calls[0], "start behind the gatekeeper");
+});
+
+test("the boot that saves a stopped sandbox's history carries the secret grants it was last started with, and allows nothing", async (t) => {
+	const { sb, run } = await sandboxFor(
+		t,
+		'export default { network: { secrets: [{ env: "GH_TOKEN", hosts: ["api.github.com"] }] } };',
+	);
+	await run();
+	const { destroy } = await import("./lifecycle.ts");
+	status = "Stopped";
+	fenced = false;
+	fencedWith = null;
+	await destroy(sb);
+	assert.deepEqual(fencedWith, {
+		allow: [],
+		mode: "enforce",
+		ports: [],
+		secrets: [{ env: "GH_TOKEN", hosts: ["api.github.com"] }],
+	});
 });
 
 test("a sandbox running with no gatekeeper gets one back", async (t) => {

@@ -151,10 +151,15 @@ end-of-stream means the helper never waits on a stdin that is not coming. The
 helper reads the document to the end before it serves anything and keeps the
 result in memory. It logs a count and names
 (`holding 2 secrets: GH_TOKEN, NPM_TOKEN`) and never a value. A value is not in
-argv, not in a file, and not in the helper's environment, which is the parent's
-with the granted variables removed. The hosts are not in the document:
-policy.json carries `env` and `hosts` and is the one place they are kept, and it
-is re-read on reload. helper.json carries the names the helper holds.
+argv, not in a file, and not in the helper's environment: the helper gets the
+parent's environment without every variable the policy's `secrets` name, whether
+or not a value was handed over, so a `GH_TOKEN` exported in your shell reaches
+neither the helper nor the bwrap, limactl and qemu below it. The boot that saves
+a stopped sandbox's history before it is deleted allows nothing, but its policy
+keeps the grants from the sandbox's last policy.json for the same reason. The
+hosts are not in the document: policy.json carries `env` and `hosts` and is the
+one place they are kept, and it is re-read on reload. helper.json carries the
+names the helper holds.
 
 ## Lifecycle
 
