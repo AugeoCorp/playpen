@@ -83,10 +83,18 @@ export function onHost(instance: string): Promise<boolean> {
  * Copies `$1` into `$2` through `$2/.playpen-staging`: cleared on every
  * attempt, filled, compared against `$1`, and only then moved into place, by
  * renames within `$2`. So an attempt cut off at any point leaves nothing
- * partial in `$2` that the next attempt would take for newer. An entry already
- * in `$2` and newer than the copy is kept, and named on stdout as
- * `kept<TAB>path`; so is one whose type differs, rather than a directory being
- * replaced by a file. `$1` is left as it was.
+ * partial in `$2` that the next attempt would take for newer. `$1` is left as
+ * it was.
+ *
+ * An entry already in `$2` is replaced only by a strictly newer copy. An
+ * identical one is left as it is; any other -- older, as old but different,
+ * or of another type -- is kept, and named on stdout as `kept<TAB>path`.
+ *
+ * Claude Code may be writing to `$2` meanwhile. `mv -n` never replaces an
+ * entry that appeared after the check that found none. What remains: 9p has
+ * no RENAME_NOREPLACE, so `mv -n` checks and renames in two steps, and one
+ * created in that instant is replaced; and so is a target written between the
+ * `find` that found it older and the rename.
  *
  * Under a lock on the guest's own disk for the whole run: killing
  * `limactl shell` on the host does not stop the script in the guest, so an
@@ -112,6 +120,19 @@ export const MOVE_HISTORY = [
 	'	mkdir "$stage"',
 	'	tar -C "$src" -cf - . | tar -C "$stage" -xf -',
 	'	diff -r --no-dereference "$src" "$stage" >&2',
+	"	same() {",
+	'		if [ -L "$1" ] || [ -L "$2" ]; then',
+	'			[ -L "$1" ] && [ -L "$2" ] && [ "$(readlink "$1")" = "$(readlink "$2")" ]',
+	"		else",
+	'			cmp -s "$1" "$2"',
+	"		fi",
+	"	}",
+	"	put() {",
+	'		mv -nT "$1" "$2" || true',
+	'		if [ -e "$1" ] || [ -L "$1" ]; then',
+	"			printf 'kept\\t%s\\n' \"$3\"",
+	"		fi",
+	"	}",
 	"	place() (",
 	'		cd "$1"',
 	"		for name in *; do",
@@ -119,11 +140,15 @@ export const MOVE_HISTORY = [
 	'			if [ -d "./$name" ] && [ ! -L "./$name" ] && [ -d "$target" ] && [ ! -L "$target" ]; then',
 	'				place "./$name" "$target" "$3$name/"',
 	'			elif [ ! -e "$target" ] && [ ! -L "$target" ]; then',
-	'				mv -T "./$name" "$target"',
-	'			elif [ -n "$(find "$target" -maxdepth 0 -newer "./$name")" ] || [ -d "$target" ] || [ -d "./$name" ]; then',
+	'				put "./$name" "$target" "$3$name"',
+	'			elif [ -d "$target" ] || [ -d "./$name" ]; then',
 	"				printf 'kept\\t%s\\n' \"$3$name\"",
-	"			else",
+	'			elif same "./$name" "$target"; then',
+	"				:",
+	'			elif [ -n "$(find "./$name" -maxdepth 0 -newer "$target")" ]; then',
 	'				mv -fT "./$name" "$target"',
+	"			else",
+	"				printf 'kept\\t%s\\n' \"$3$name\"",
 	"			fi",
 	"		done",
 	"	)",

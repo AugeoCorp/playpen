@@ -244,6 +244,52 @@ test("a file already on the host and older than the guest's is replaced", async 
 	assert.equal(result.stdout, "");
 });
 
+test("a copy as old as the one on the host but different leaves the host's in place, and is named", async (t) => {
+	const s = await scratch(t);
+	await guestHistory(s.src);
+	const onHost = join(s.dst, "-home-me-project", "one.jsonl");
+	await mkdir(dirname(onHost));
+	await writeFile(onHost, "different");
+	const second = new Date("2026-09-01T00:00:00Z");
+	await utimes(join(s.src, "-home-me-project", "one.jsonl"), second, second);
+	await utimes(onHost, second, second);
+	const result = run(s, MOVE);
+	assert.equal(result.code, 0, result.stderr);
+	assert.equal(await readFile(onHost, "utf8"), "different");
+	assert.equal(result.stdout, "kept\t-home-me-project/one.jsonl\n");
+});
+
+test("a copy identical to the one on the host is left alone, and not named", async (t) => {
+	const s = await scratch(t);
+	await guestHistory(s.src);
+	const onHost = join(s.dst, "-home-me-project", "one.jsonl");
+	await mkdir(dirname(onHost));
+	await writeFile(onHost, "first session");
+	const later = new Date(Date.now() + 3_600_000);
+	await utimes(onHost, later, later);
+	const result = run(s, MOVE);
+	assert.equal(result.code, 0, result.stderr);
+	assert.equal(result.stdout, "");
+});
+
+test("a file a live session creates just before the move puts one there is not replaced", async (t) => {
+	const s = await scratch(t);
+	await guestHistory(s.src);
+	await mkdir(join(s.dst, "-home-me-project"));
+	await standIn(
+		s,
+		"mv",
+		`if [ "$1" = -nT ] && [ "\${3##*/}" = one.jsonl ]; then echo "written by a live session" > "$3"; fi; exec "${REAL.mv}" "$@"`,
+	);
+	const result = run(s, MOVE);
+	assert.equal(result.code, 0, result.stderr);
+	assert.equal(
+		await readFile(join(s.dst, "-home-me-project", "one.jsonl"), "utf8"),
+		"written by a live session\n",
+	);
+	assert.equal(result.stdout, "kept\t-home-me-project/one.jsonl\n");
+});
+
 /** An archive as the archive-on-destroy scheme wrote it: `.claude/projects/...`. */
 async function oldArchive(s: Scratch): Promise<Buffer> {
 	const projects = join(s.home, "old", ".claude", "projects");
