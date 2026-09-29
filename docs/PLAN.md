@@ -19,7 +19,7 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
 | network fence (mechanism in `docs/NETWORK.md`)                     | done, see below        |
 | `network.secrets` values held by the helper, placeholders in guest | unit-tested; no VM run |
 | per-install CA in `<dataDir>/ca/`, trusted by the base image       | unit-tested; no VM yet |
-| `network.secrets` swapped into HTTPS request headers               | unit-tested; no VM run |
+| `network.secrets` swapped into HTTPS `Authorization` headers       | unit-tested; no VM run |
 
 ## Known problems
 
@@ -97,6 +97,10 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
   when it is spawned. The upstream is verified against Node's bundled CA list
   (plus `NODE_EXTRA_CA_CERTS`), not the host's system store, so a host behind a
   TLS-intercepting corporate proxy needs that variable set for `playpen start`.
+  The value goes into `Authorization` only, so a host that echoes that header
+  back would return it to the guest; a secret should be granted only to hosts it
+  would be sent to anyway. A service that takes its token in another header is
+  not served yet.
 
 ## Next
 

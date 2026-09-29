@@ -409,14 +409,15 @@ test("headers a front end could route by instead of Host never reach the host", 
 		},
 	});
 
-	assert.equal(upstream.received.length, 1, "the request never arrived");
+	const received = upstream.received[0];
+	assert.ok(received, "the request never arrived");
 	assert.deepEqual(
-		[
-			...headersNamed(upstream.received[0], "x-forwarded-host"),
-			...headersNamed(upstream.received[0], "forwarded"),
-			...headersNamed(upstream.received[0], "x-original-url"),
-		],
-		[],
+		{
+			xForwardedHost: headersNamed(received, "x-forwarded-host"),
+			forwarded: headersNamed(received, "forwarded"),
+			xOriginalUrl: headersNamed(received, "x-original-url"),
+		},
+		{ xForwardedHost: [], forwarded: [], xOriginalUrl: [] },
 	);
 });
 
