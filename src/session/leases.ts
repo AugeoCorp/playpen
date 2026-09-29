@@ -13,8 +13,8 @@ export type { Owner };
  * guest and the first to exit cuts off the second.
  *
  * Under the data directory rather than the project: a sandbox mounts only the
- * project, so nothing inside a guest can forge a lease to keep itself alive or
- * delete one to cut off a sibling.
+ * project and its own `history/<sandbox>`, so nothing inside a guest can forge
+ * a lease to keep itself alive or delete one to cut off a sibling.
  */
 function leasesDir(sandbox: string): string {
 	assertSandboxName(sandbox);
