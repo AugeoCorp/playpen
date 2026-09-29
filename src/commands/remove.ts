@@ -1,7 +1,6 @@
 import { defineCommand } from "citty";
-import { hostDir } from "../session/history.ts";
 import * as leases from "../session/leases.ts";
-import { destroy, identify } from "../session/lifecycle.ts";
+import { destroy, historyNotice, identify } from "../session/lifecycle.ts";
 import { withLock } from "../session/lock.ts";
 
 export default defineCommand({
@@ -30,9 +29,7 @@ export default defineCommand({
 			console.error(`This deletes VM ${sb.instance}.`);
 			console.error(`${sb.cwd} is a host mount and is not affected.`);
 			console.error(`Installed packages and other guest-local state are lost.`);
-			console.error(
-				`Claude transcripts and memory stay on the host, in ${hostDir(sb.sandbox)}.`,
-			);
+			for (const line of await historyNotice(sb)) console.error(line);
 			console.error(`Re-run with --yes to proceed.`);
 			process.exitCode = 1;
 			return;

@@ -32,8 +32,9 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
 - The history directory is named after the sandbox, not the VM, so two
   `$LIMA_HOME`s holding a sandbox for the same project mount one history
   directory into two VMs, which both write it.
-- A sandbox made before the history mount has none: recreate it to get the
-  mount; its old history stays on its disk.
+- A sandbox made before the history mount has none, and its history is on its
+  own disk, so recreating it to get the mount deletes that history. `remove` and
+  the rebuild offer say so, and how to copy it into the project first.
 - A sandbox made with the history mount before it became `mapped-xattr` keeps
   Lima's default model, under which the guest's modes and symlinks are real on
   the host. `playpen remove --yes && playpen start` gives it the new one and

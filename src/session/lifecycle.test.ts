@@ -346,6 +346,70 @@ test("removing a sandbox keeps its Claude history on the host", async (t) => {
 	assert.equal(await readFile(transcript, "utf8"), "written by the guest");
 });
 
+/** A stopped sandbox from before the history mount: its lima.yaml mounts the project alone. */
+async function stoppedFromBeforeTheMount(sb: Sandbox): Promise<void> {
+	await mkdir(join(limaHome, sb.instance), { recursive: true });
+	await writeFile(
+		join(limaHome, sb.instance, "lima.yaml"),
+		`{"mounts": ${JSON.stringify([{ location: sb.cwd, writable: true }])}}\n`,
+		"utf8",
+	);
+	exists = true;
+	status = "Stopped";
+}
+
+/** As if the image or the project config changed since the sandbox was made. */
+async function templateChangedSinceCreation(sb: Sandbox): Promise<void> {
+	const dir = join(process.env.XDG_DATA_HOME ?? "", "playpen", "templates");
+	await mkdir(dir, { recursive: true });
+	await writeFile(join(dir, `${sb.sandbox}.yaml`), "{}\n", "utf8");
+}
+
+test("the remove prompt says where on the host a sandbox's Claude history stays", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await run();
+	const { historyNotice } = await import("./lifecycle.ts");
+	assert.deepEqual(await historyNotice(sb), [
+		`Claude transcripts and memory stay on the host, in ${historyDirOf(sb)}.`,
+	]);
+});
+
+test("the remove prompt says a sandbox from before the history mount has its history on its disk, and how to copy it out", async (t) => {
+	const { sb } = await sandboxFor(t, BOTH);
+	await stoppedFromBeforeTheMount(sb);
+	const { historyNotice } = await import("./lifecycle.ts");
+	const notice = (await historyNotice(sb)).join("\n");
+	assert.match(notice, /on the VM's disk, from before the history mount/);
+	assert.match(
+		notice,
+		/playpen run -- sh -c 'tar -C ~ -cf claude-projects\.tar \.claude\/projects'/,
+	);
+	assert.deepEqual(calls, [], "the VM was touched to find out");
+});
+
+test("a rebuild offered to a sandbox from before the history mount says its history goes with it", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await stoppedFromBeforeTheMount(sb);
+	await templateChangedSinceCreation(sb);
+	const said = t.mock.method(console, "error", () => {});
+	await run();
+	const lines = said.mock.calls.map((c) => String(c.arguments[0])).join("\n");
+	assert.match(lines, /on the VM's disk, from before the history mount/);
+	assert.equal(asked.length, 1, "no rebuild was offered");
+});
+
+test("a rebuild offered to a sandbox with the history mount says nothing about history", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await run();
+	status = "Stopped";
+	await templateChangedSinceCreation(sb);
+	const said = t.mock.method(console, "error", () => {});
+	await run();
+	const lines = said.mock.calls.map((c) => String(c.arguments[0])).join("\n");
+	assert.doesNotMatch(lines, /Claude transcripts/);
+	assert.equal(asked.length, 1, "no rebuild was offered");
+});
+
 test("a sandbox running with no gatekeeper gets one back", async (t) => {
 	const { run } = await sandboxFor(t, BOTH);
 	await run();

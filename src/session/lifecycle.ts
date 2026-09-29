@@ -272,12 +272,42 @@ async function outdatedBase(sb: Sandbox): Promise<string | null> {
 }
 
 /**
- * Offered rather than done: a reclone is ~10s, but the guest disk goes with it
- * -- installed packages and masked directories. Claude transcripts and memory
- * are on the host and stay. `start` is routine, so it asks.
+ * A sandbox made before the history mount keeps Claude history on its own
+ * disk, so deleting the VM deletes it. Read from lima.yaml: nothing here boots
+ * the VM to find out.
  */
-async function confirmRebuild(reason: string): Promise<boolean> {
+async function historyOnVmDisk(sb: Sandbox): Promise<boolean> {
+	const yaml = await readFile(
+		join(limaHome(), sb.instance, "lima.yaml"),
+		"utf8",
+	).catch(() => null);
+	return (
+		yaml !== null && !yaml.includes(JSON.stringify(history.hostDir(sb.sandbox)))
+	);
+}
+
+const HISTORY_ON_VM_DISK = [
+	"Its Claude transcripts and memory are on the VM's disk, from before the history mount, and go with it.",
+	"To keep them, copy them into the project first:",
+	"  playpen run -- sh -c 'tar -C ~ -cf claude-projects.tar .claude/projects'",
+];
+
+/** For the `remove` prompt: what deleting the VM does to Claude history. */
+export async function historyNotice(sb: Sandbox): Promise<string[]> {
+	if (await historyOnVmDisk(sb)) return HISTORY_ON_VM_DISK;
+	return [
+		`Claude transcripts and memory stay on the host, in ${history.hostDir(sb.sandbox)}.`,
+	];
+}
+
+/**
+ * Offered rather than done: a reclone is ~10s, but the guest disk goes with it
+ * -- installed packages and masked directories. `start` is routine, so it asks.
+ */
+async function confirmRebuild(sb: Sandbox, reason: string): Promise<boolean> {
 	console.error(reason);
+	if (await historyOnVmDisk(sb))
+		for (const line of HISTORY_ON_VM_DISK) console.error(`  ${line}`);
 	const ok = await confirm(
 		`  rebuild it now? ~10s, discards packages and masked dirs [y/N] `,
 	);
@@ -370,7 +400,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 		template = await renderTemplate(sb);
 		const reason =
 			(await changedTemplate(sb, template)) ?? (await outdatedBase(sb));
-		rebuilding = reason !== null && (await confirmRebuild(reason));
+		rebuilding = reason !== null && (await confirmRebuild(sb, reason));
 		if (!rebuilding) {
 			const fence = lima.isRunning(existing)
 				? await fenceStatus(sb.sandbox, sb.instance)
