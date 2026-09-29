@@ -52,6 +52,11 @@ export async function makeHostDir(sandbox: string): Promise<string> {
  * in its cc_mounts module), so on a fresh clone the guest user would not own
  * `~/.claude`, and Claude Code could write nothing there but history.
  *
+ * A sandbox that kept its history in the guest before the mount existed still
+ * has it, hidden under the mount. A bind without `--rbind` leaves submounts
+ * out, so it shows what is underneath; that is merged in and then cleared,
+ * which makes the next boot a no-op.
+ *
  * `--keep-newer-files` so an older copy never overwrites a newer one. GNU tar
  * 1.35 exits 2 with it alone on every directory that already exists;
  * `--keep-directory-symlink` takes it through that path cleanly, and leaves
@@ -67,6 +72,13 @@ const SETTLE = [
 	"  exit 1",
 	"fi",
 	'merge() { tar --keep-newer-files --keep-directory-symlink -xf - "$@"; }',
+	'under="$(mktemp -d)"',
+	'sudo mount --bind "$claude" "$under"',
+	'trap \'sudo umount "$under"; rmdir "$under"\' EXIT',
+	'if [ -n "$(ls -A "$under/projects" 2>/dev/null)" ]; then',
+	'  tar -C "$under" -cf - projects | merge -C "$claude"',
+	'  find "$under/projects" -mindepth 1 -delete',
+	"fi",
 	`if [ "\${1:-}" = archive ]; then merge -C "$HOME" ${GUEST_REL}; fi`,
 ].join("\n");
 
