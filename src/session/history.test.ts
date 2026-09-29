@@ -25,6 +25,7 @@ import {
 	IMPORT_HISTORY,
 	MOVE_HISTORY,
 	makeHostDir,
+	SETTLE,
 } from "./history.ts";
 
 test("a sandbox's history directory and its old archive are named after it", () => {
@@ -226,7 +227,7 @@ test("a file already on the host and newer than the guest's is kept, and named",
 	const result = run(s, MOVE);
 	assert.equal(result.code, 0, result.stderr);
 	assert.equal(await readFile(onHost, "utf8"), "resumed on the host since");
-	assert.equal(result.stdout, "-home-me-project/one.jsonl\n");
+	assert.equal(result.stdout, "kept\t-home-me-project/one.jsonl\n");
 });
 
 test("a file already on the host and older than the guest's is replaced", async (t) => {
@@ -268,6 +269,64 @@ test("an old archive is unpacked into the host directory, and its unpacked copy 
 	assert.deepEqual(
 		(await readdir(s.home)).filter((f) => f.startsWith(".playpen-import")),
 		[],
+	);
+});
+
+/**
+ * The guest as `SETTLE` sees it, with root's part played by stand-ins:
+ * `~/.claude/projects` is the mount, and `under` what the mount hides, which
+ * `mount --bind` reveals by linking to it.
+ */
+async function guest(
+	s: Scratch,
+	mounted = true,
+): Promise<{ mount: string; under: string }> {
+	const mount = join(s.home, ".claude", "projects");
+	await mkdir(mount, { recursive: true });
+	const under = join(s.src, "under");
+	await mkdir(join(under, "projects"), { recursive: true });
+	await standIn(s, "sudo", 'exec "$@"');
+	await standIn(s, "mountpoint", mounted ? "exit 0" : "exit 1");
+	await standIn(s, "mount", `rmdir "$3" && ln -s "${under}" "$3"`);
+	await standIn(s, "umount", 'rm "$1" && mkdir "$1"');
+	return { mount, under };
+}
+
+function settle(s: Scratch, args: readonly string[], input?: Buffer) {
+	const result = spawnSync("bash", ["-c", SETTLE, "bash", ...args], {
+		encoding: "utf8",
+		input,
+		env: { ...process.env, HOME: s.home, PATH: `${s.bin}:${process.env.PATH}` },
+	});
+	return { code: result.status, stdout: result.stdout, stderr: result.stderr };
+}
+
+test("a start's takeover moves what lies under the mount into it, and says so", async (t) => {
+	const s = await scratch(t);
+	const { mount, under } = await guest(s);
+	await guestHistory(join(under, "projects"));
+	const result = settle(s, ["takeover", ""]);
+	assert.equal(result.code, 0, result.stderr);
+	assert.equal(result.stdout, "takeover\t0\n");
+	assert.deepEqual(await tree(mount), await tree(join(under, "projects")));
+});
+
+test("an old archive written short fails only the import, and the takeover still counts", async (t) => {
+	const s = await scratch(t);
+	const archive = await oldArchive(s);
+	const { mount, under } = await guest(s);
+	await mkdir(join(under, "projects", "-home-me-guest"));
+	await writeFile(join(under, "projects", "-home-me-guest", "a.jsonl"), "a");
+	const result = settle(
+		s,
+		["takeover", "archive"],
+		archive.subarray(0, archive.length / 2),
+	);
+	assert.equal(result.code, 0, result.stderr);
+	assert.match(result.stdout, /^takeover\t0\nimport\t[1-9]\d*\n$/);
+	assert.equal(
+		await readFile(join(mount, "-home-me-guest", "a.jsonl"), "utf8"),
+		"a",
 	);
 });
 

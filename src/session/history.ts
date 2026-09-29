@@ -84,9 +84,9 @@ export function onHost(instance: string): Promise<boolean> {
  * attempt, filled, compared against `$1`, and only then moved into place, by
  * renames within `$2`. So an attempt cut off at any point leaves nothing
  * partial in `$2` that the next attempt would take for newer. An entry already
- * in `$2` and newer than the copy is kept, and named on stdout; so is one
- * whose type differs, rather than a directory being replaced by a file. `$1`
- * is left as it was.
+ * in `$2` and newer than the copy is kept, and named on stdout as
+ * `kept<TAB>path`; so is one whose type differs, rather than a directory being
+ * replaced by a file. `$1` is left as it was.
  *
  * Under a lock on the guest's own disk for the whole run: killing
  * `limactl shell` on the host does not stop the script in the guest, so an
@@ -121,7 +121,7 @@ export const MOVE_HISTORY = [
 	'			elif [ ! -e "$target" ] && [ ! -L "$target" ]; then',
 	'				mv -T "./$name" "$target"',
 	'			elif [ -n "$(find "$target" -maxdepth 0 -newer "./$name")" ] || [ -d "$target" ] || [ -d "./$name" ]; then',
-	'				echo "$3$name"',
+	"				printf 'kept\\t%s\\n' \"$3$name\"",
 	"			else",
 	'				mv -fT "./$name" "$target"',
 	"			fi",
@@ -160,8 +160,13 @@ export const IMPORT_HISTORY = [
  * mount. A bind without `--rbind` leaves submounts out, so it shows what is
  * underneath. That copy stays there, and goes with the disk. `$2` is `archive`
  * when the old archive is on stdin.
+ *
+ * Each step asked for prints its own result, `takeover<TAB>code` and
+ * `import<TAB>code`, and the script goes on to the next: an old archive
+ * written short must not keep the guest's own history from counting as moved.
+ * The script's exit code is for what stops both.
  */
-const SETTLE = [
+export const SETTLE = [
 	"set -euo pipefail",
 	"umask 077",
 	'claude="$HOME/.claude"',
@@ -176,12 +181,21 @@ const SETTLE = [
 	'  under="$(mktemp -d)"',
 	'  sudo mount --bind "$claude" "$under"',
 	'  trap \'sudo umount "$under"; rmdir "$under"\' EXIT',
+	"  code=0",
 	'  if [ -d "$under/projects" ]; then',
+	"    set +e",
 	'    move_history "$under/projects" "$claude/projects"',
+	"    code=$?",
+	"    set -e",
 	"  fi",
+	"  printf 'takeover\\t%s\\n' \"$code\"",
 	"fi",
 	'if [ "$2" = archive ]; then',
+	"  set +e",
 	'  import_history "$claude/projects"',
+	"  code=$?",
+	"  set -e",
+	"  printf 'import\\t%s\\n' \"$code\"",
 	"fi",
 ].join("\n");
 
@@ -201,52 +215,91 @@ export async function settle(
 	const takeover = !(await onHost(instance));
 	if (!booted && !takeover && archive === null) return;
 
-	let failure: string | null;
-	let kept = "";
+	let result: Awaited<ReturnType<typeof lima.runScript>>;
 	try {
-		const result = await lima.runScript(instance, SETTLE, {
+		result = await lima.runScript(instance, SETTLE, {
 			args: [takeover ? "takeover" : "", archive === null ? "" : "archive"],
 			...(archive === null ? {} : { input: archive }),
 		});
-		failure =
-			result.code === 0 ? null : result.stderr.trim() || `exit ${result.code}`;
-		kept = result.stdout.toString("utf8").trim();
 	} catch (err) {
-		failure = err instanceof Error ? err.message : String(err);
-	}
-
-	if (failure !== null) {
-		console.error(`warning: Claude history is not on the host (${failure})`);
-		if (takeover)
-			console.error(
-				`  what the VM holds stays on its disk; the next start tries again`,
-			);
-		if (archive !== null)
-			console.error(
-				`  ${archivePath(sandbox)} is left to import on the next start`,
-			);
+		warnUnsettled(sandbox, takeover, archive !== null, errorText(err));
 		return;
 	}
-	if (kept !== "") {
-		console.error(`kept the newer copies already in ${hostDir(sandbox)} of:`);
-		for (const path of kept.split("\n")) console.error(`  ${path}`);
+	const why = result.stderr.trim() || `exit ${result.code}`;
+	if (result.code !== 0) {
+		warnUnsettled(sandbox, takeover, archive !== null, why);
+		return;
 	}
-	if (takeover)
-		await writeFile(marker(instance), "").catch((err: unknown) =>
-			console.error(
-				`warning: moved Claude history to the host, but could not record it (${err instanceof Error ? err.message : err}); the next start moves it again`,
-			),
-		);
+	const report = parseReport(result.stdout.toString("utf8"));
+	if (report.kept.length > 0) {
+		console.error(`kept the newer copies already in ${hostDir(sandbox)} of:`);
+		for (const path of report.kept) console.error(`  ${path}`);
+	}
+	if (takeover) {
+		if (report.takeover === 0) await recordOnHost(instance);
+		else warnUnsettled(sandbox, true, false, why);
+	}
 	if (archive === null) return;
+	if (report.import !== 0) {
+		warnUnsettled(sandbox, false, true, why);
+		return;
+	}
 	try {
 		const kept = await setAside(sandbox);
 		console.error(`imported Claude history; the archive is kept as ${kept}`);
 	} catch (err) {
 		// Importing it again is harmless: nothing older replaces anything newer.
 		console.error(
-			`warning: imported Claude history, but could not rename ${archivePath(sandbox)} (${err instanceof Error ? err.message : err})`,
+			`warning: imported Claude history, but could not rename ${archivePath(sandbox)} (${errorText(err)})`,
 		);
 	}
+}
+
+function errorText(err: unknown): string {
+	return err instanceof Error ? err.message : String(err);
+}
+
+interface Report {
+	takeover: number | null;
+	import: number | null;
+	kept: string[];
+}
+
+/** What `SETTLE` printed; a step it never reached reads as null. */
+function parseReport(stdout: string): Report {
+	const report: Report = { takeover: null, import: null, kept: [] };
+	for (const line of stdout.split("\n")) {
+		const [key, value] = line.split("\t");
+		if (value === undefined) continue;
+		if (key === "kept") report.kept.push(value);
+		if (key === "takeover" || key === "import") report[key] = Number(value);
+	}
+	return report;
+}
+
+function warnUnsettled(
+	sandbox: string,
+	takeover: boolean,
+	archive: boolean,
+	why: string,
+): void {
+	console.error(`warning: Claude history is not all on the host (${why})`);
+	if (takeover)
+		console.error(
+			`  what the VM holds stays on its disk; the next start tries again`,
+		);
+	if (archive)
+		console.error(
+			`  ${archivePath(sandbox)} is left to import on the next start`,
+		);
+}
+
+async function recordOnHost(instance: string): Promise<void> {
+	await writeFile(marker(instance), "").catch((err: unknown) =>
+		console.error(
+			`warning: moved Claude history to the host, but could not record it (${errorText(err)}); the next start moves it again`,
+		),
+	);
 }
 
 /** Linked, not renamed, so an archive imported before is never overwritten. */

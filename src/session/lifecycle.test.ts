@@ -26,6 +26,9 @@ const calls: string[] = [];
 let maskExit = 0;
 /** The exit code of the per-boot history step in the guest. */
 let settleExit = 0;
+/** What each step of it reports: moving the guest's own history, and the import. */
+let takeoverExit = 0;
+let importExit = 0;
 /** What the history step was handed on its stdin, when anything. */
 let settleInput: Uint8Array | null = null;
 /** What the history step prints: the files it kept the host's newer copy of. */
@@ -138,9 +141,15 @@ mock.module("../lima/client.ts", {
 				);
 				if (!yaml.includes('"mountPoint":"{{.Home}}/.claude/projects"'))
 					return { code: 1, stdout: "", stderr: "not mounted from the host" };
+				const steps = [
+					...(settleArgs[0] === "takeover"
+						? [`takeover\t${takeoverExit}`]
+						: []),
+					...(settleArgs[1] === "archive" ? [`import\t${importExit}`] : []),
+				];
 				return {
 					code: settleExit,
-					stdout: Buffer.from(settleStdout),
+					stdout: Buffer.from(`${settleStdout}${steps.join("\n")}\n`),
 					stderr: "tar: broken pipe",
 				};
 			}
@@ -192,6 +201,8 @@ async function sandboxFor(
 		process.env.LIMA_HOME = before.lima;
 		maskExit = 0;
 		settleExit = 0;
+		takeoverExit = 0;
+		importExit = 0;
 		settleInput = null;
 		settleArgs = [];
 		settleStdout = "";
@@ -312,7 +323,7 @@ test("a failed move keeps deferring the rebuild on every start until one succeed
 	await stoppedWithProjectMountOnly(sb);
 	await templateChangedSinceCreation(sb);
 	answer = true;
-	settleExit = 1;
+	takeoverExit = 1;
 	t.mock.method(console, "error", () => {});
 	await run();
 	const second = (await run()) as { created: boolean };
@@ -322,10 +333,10 @@ test("a failed move keeps deferring the rebuild on every start until one succeed
 
 test("a sandbox already running without its history on the host is asked to move it at every start", async (t) => {
 	const { sb, run } = await sandboxFor(t, BOTH);
-	settleExit = 1;
+	takeoverExit = 1;
 	t.mock.method(console, "error", () => {});
 	await run();
-	settleExit = 0;
+	takeoverExit = 0;
 	calls.length = 0;
 	await run();
 	assert.ok(calls.includes("settle history"), calls.join(", "));
@@ -483,7 +494,7 @@ test("an archive from before the mount is handed to the guest, then kept as .imp
 test("an archive the guest failed to import stays where it was, for the next start", async (t) => {
 	const { sb, run } = await sandboxFor(t, BOTH);
 	const archive = await oldArchiveFor(sb, "old history");
-	settleExit = 2;
+	importExit = 2;
 	const said = t.mock.method(console, "error", () => {});
 	await run();
 	assert.equal(await readFile(archive, "utf8"), "old history");
@@ -493,12 +504,37 @@ test("an archive the guest failed to import stays where it was, for the next sta
 		"the archive was set aside although the import failed",
 	);
 	const lines = said.mock.calls.map((c) => String(c.arguments[0])).join("\n");
-	assert.match(lines, /Claude history is not on the host \(tar: broken pipe\)/);
+	assert.match(
+		lines,
+		/Claude history is not all on the host \(tar: broken pipe\)/,
+	);
+	assert.match(lines, /is left to import on the next start/);
+});
+
+test("an old archive that fails to import does not keep the guest's own history from counting as moved", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await oldArchiveFor(sb, "written short");
+	await stoppedWithProjectMountOnly(sb);
+	importExit = 2;
+	t.mock.method(console, "error", () => {});
+	await run();
+	const { historyOnHost } = await import("./lifecycle.ts");
+	assert.equal(await historyOnHost(sb), true);
+});
+
+test("a whole script that fails leaves the history counted as not moved", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await stoppedWithProjectMountOnly(sb);
+	settleExit = 1;
+	t.mock.method(console, "error", () => {});
+	await run();
+	const { historyOnHost } = await import("./lifecycle.ts");
+	assert.equal(await historyOnHost(sb), false);
 });
 
 test("files the guest left alone because the host's copy is newer are named", async (t) => {
 	const { run } = await sandboxFor(t, BOTH);
-	settleStdout = "-home-me-project/one.jsonl\n";
+	settleStdout = "kept\t-home-me-project/one.jsonl\n";
 	const said = t.mock.method(console, "error", () => {});
 	await run();
 	const lines = said.mock.calls.map((c) => String(c.arguments[0])).join("\n");
