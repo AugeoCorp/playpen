@@ -1,4 +1,4 @@
-import { open, rename, stat, writeFile } from "node:fs/promises";
+import { open, rename, stat } from "node:fs/promises";
 
 export async function exists(path: string): Promise<boolean> {
 	try {
@@ -49,16 +49,24 @@ export async function readAppended(
 }
 
 /**
- * Write a file so no reader can ever see it half-written.
+ * Write a file so no reader can ever see it half-written, and a crash or power
+ * cut leaves the old contents or the new ones, never an empty file.
  *
  * `writeFile` creates the file and then fills it, so a concurrent reader can
  * catch it existing and empty. Callers here parse what they read and treat
  * unparseable as junk to delete, which would make that window destroy a live
  * lease. `rename` within a directory is atomic, so the file appears complete or
- * not at all.
+ * not at all; the fsync before it keeps a crash from renaming in a file whose
+ * data never reached the disk.
  */
 export async function writeAtomic(path: string, data: string): Promise<void> {
 	const temp = `${path}.${process.pid}.tmp`;
-	await writeFile(temp, data, "utf8");
+	const handle = await open(temp, "w");
+	try {
+		await handle.writeFile(data, "utf8");
+		await handle.sync();
+	} finally {
+		await handle.close();
+	}
 	await rename(temp, path);
 }

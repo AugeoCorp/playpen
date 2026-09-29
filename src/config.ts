@@ -45,8 +45,9 @@ export function historyDir(): string {
 
 /**
  * Approved config graphs and their snapshots. Under the data directory, never
- * the project: the sandbox mounts only the project, so nothing inside a guest
- * can reach these and approve its own config.
+ * the project: the sandbox mounts only the project and its own
+ * `history/<sandbox>`, so nothing inside a guest can reach these and approve
+ * its own config.
  */
 export function trustDir(): string {
 	return join(dataDir(), "trust");
