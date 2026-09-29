@@ -2,14 +2,16 @@ import assert from "node:assert/strict";
 import {
 	mkdir,
 	mkdtemp,
+	readdir,
 	readFile,
 	rm,
 	stat,
 	writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { mock, type TestContext, test } from "node:test";
+import { exists as onDisk } from "../fs.ts";
 import { baseImage } from "../image/base.ts";
 import { imageHash } from "../image/render.ts";
 import type { Policy, PortForward } from "../network/policy.ts";
@@ -21,6 +23,10 @@ const calls: string[] = [];
 /** `mock.module` refuses a second mock of the same specifier, so behaviour that
  * varies per test has to live here rather than in the fake. */
 let maskExit = 0;
+/** The exit code of the per-boot history step in the guest. */
+let settleExit = 0;
+/** What the history step was handed on its stdin, when anything. */
+let settleInput: Uint8Array | null = null;
 let limaHome = "";
 /** Whether the fake has been cloned into existence yet, so `stop` has something to stop. */
 let exists = false;
@@ -94,8 +100,17 @@ mock.module("../lima/client.ts", {
 				"utf8",
 			);
 		},
-		async runScript(_instance: string, script: string) {
-			calls.push(guestStep(script));
+		async runScript(
+			_instance: string,
+			script: string,
+			opts: { input?: Uint8Array } = {},
+		) {
+			const step = guestStep(script);
+			calls.push(step);
+			if (step === "settle history") {
+				settleInput = opts.input ?? null;
+				return { code: settleExit, stdout: "", stderr: "tar: broken pipe" };
+			}
 			return { code: maskExit, stdout: "", stderr: "mask script failed" };
 		},
 		async shell(_i: string, _w: string, command: readonly string[]) {
@@ -141,6 +156,8 @@ async function sandboxFor(
 		process.env.XDG_DATA_HOME = before.xdg;
 		process.env.LIMA_HOME = before.lima;
 		maskExit = 0;
+		settleExit = 0;
+		settleInput = null;
 	});
 
 	const { ensureRunning, identify } = await import("./lifecycle.ts");
@@ -219,6 +236,64 @@ test("a stopped sandbox made before history was mounted gets the mount when it n
 			writable: true,
 		},
 	]);
+});
+
+/** An archive as the archive-on-destroy scheme left it; its bytes are opaque here. */
+async function oldArchiveFor(sb: Sandbox, bytes: string): Promise<string> {
+	const dir = join(process.env.XDG_DATA_HOME ?? "", "playpen", "history");
+	await mkdir(dir, { recursive: true });
+	const path = join(dir, `${sb.sandbox}.tar`);
+	await writeFile(path, bytes);
+	return path;
+}
+
+test("an archive from before the mount is handed to the guest, then kept as .imported.tar", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	const archive = await oldArchiveFor(sb, "old history");
+	await run();
+	assert.equal(Buffer.from(settleInput ?? []).toString(), "old history");
+	assert.equal(await onDisk(archive), false, "the .tar is still there");
+	assert.equal(
+		await readFile(archive.replace(/\.tar$/, ".imported.tar"), "utf8"),
+		"old history",
+	);
+});
+
+test("an archive the guest failed to import stays where it was, for the next start", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	const archive = await oldArchiveFor(sb, "old history");
+	settleExit = 2;
+	const said = t.mock.method(console, "error", () => {});
+	await run();
+	assert.equal(await readFile(archive, "utf8"), "old history");
+	assert.equal(
+		await onDisk(archive.replace(/\.tar$/, ".imported.tar")),
+		false,
+		"the archive was set aside although the import failed",
+	);
+	const lines = said.mock.calls.map((c) => String(c.arguments[0])).join("\n");
+	assert.match(lines, /Claude history is not on the host \(tar: broken pipe\)/);
+});
+
+test("an archive imported earlier is not overwritten by the next one", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	const archive = await oldArchiveFor(sb, "newer");
+	const earlier = archive.replace(/\.tar$/, ".imported.tar");
+	await writeFile(earlier, "earlier");
+	await run();
+	assert.equal(await readFile(earlier, "utf8"), "earlier");
+	const kept = (await readdir(dirname(archive))).filter((f) =>
+		f.startsWith(`${sb.sandbox}.imported-`),
+	);
+	assert.equal(kept.length, 1, `expected one more kept archive, got ${kept}`);
+});
+
+test("a running sandbox is left alone when there is no archive to import", async (t) => {
+	const { run } = await sandboxFor(t, BOTH);
+	await run();
+	calls.length = 0;
+	await run();
+	assert.equal(calls.includes("settle history"), false, calls.join(", "));
 });
 
 test("the host's history directory is readable by its owner only", async (t) => {

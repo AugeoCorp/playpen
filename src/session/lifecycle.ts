@@ -424,7 +424,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 			// started takes effect without a restart.
 			await startFenced(sb, template);
 			await applyMasks(sb, template.masks);
-			if (booting) await history.settle(sb.instance);
+			await history.settle(sb.instance, sb.sandbox, booting);
 			await store.touch(sb.sandbox);
 			return { created: false, setupOk: true, setup: template.setup };
 		}
@@ -462,7 +462,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 		throw err;
 	}
 	const masked = await applyMasks(sb, current.masks);
-	await history.settle(sb.instance);
+	await history.settle(sb.instance, sb.sandbox, true);
 	if (await history.restore(sb.instance, sb.sandbox)) {
 		console.error(`restored Claude history from the previous sandbox`);
 	}

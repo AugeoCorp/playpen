@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { link, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { historyDir } from "../config.ts";
 import * as lima from "../lima/client.ts";
@@ -45,34 +45,92 @@ export async function makeHostDir(sandbox: string): Promise<string> {
 }
 
 /**
- * Once per boot. cloud-init creates a mount point's missing parents as root
- * (`util.ensure_dir` in its cc_mounts module), so on a fresh clone the guest
- * user would not own `~/.claude`, and Claude Code could write nothing but
- * history.
+ * Once per boot, and again on a start that finds an archive left by the older
+ * archive-on-destroy scheme waiting to be imported.
+ *
+ * cloud-init creates a mount point's missing parents as root (`util.ensure_dir`
+ * in its cc_mounts module), so on a fresh clone the guest user would not own
+ * `~/.claude`, and Claude Code could write nothing there but history.
+ *
+ * `--keep-newer-files` so an older copy never overwrites a newer one. GNU tar
+ * 1.35 exits 2 with it alone on every directory that already exists;
+ * `--keep-directory-symlink` takes it through that path cleanly, and leaves
+ * the existing directories' modes alone, the host directory's 0700 included.
  */
 const SETTLE = [
 	"set -euo pipefail",
+	"umask 077",
 	'claude="$HOME/.claude"',
 	'[ -O "$claude" ] || sudo chown "$(id -u):$(id -g)" "$claude"',
 	'if ! mountpoint -q "$claude/projects"; then',
 	'  echo "$claude/projects is not mounted from the host" >&2',
 	"  exit 1",
 	"fi",
+	'merge() { tar --keep-newer-files --keep-directory-symlink -xf - "$@"; }',
+	`if [ "\${1:-}" = archive ]; then merge -C "$HOME" ${GUEST_REL}; fi`,
 ].join("\n");
 
-/** Never throws: a sandbox whose history is not settled still runs. */
-export async function settle(instance: string): Promise<void> {
+/**
+ * Never throws: a sandbox whose history could not be settled still runs.
+ *
+ * The archive travels as bytes and is unpacked in the guest; the host never
+ * reads it as a tar. It is renamed only once the guest has taken it, and never
+ * deleted.
+ */
+export async function settle(
+	instance: string,
+	sandbox: string,
+	booted: boolean,
+): Promise<void> {
+	const archive = await readFile(archivePath(sandbox)).catch(() => null);
+	if (!booted && archive === null) return;
+
 	let failure: string | null;
 	try {
-		const result = await lima.runScript(instance, SETTLE);
+		const result = await lima.runScript(
+			instance,
+			SETTLE,
+			archive === null ? {} : { input: archive, args: ["archive"] },
+		);
 		failure =
 			result.code === 0 ? null : result.stderr.trim() || `exit ${result.code}`;
 	} catch (err) {
 		failure = err instanceof Error ? err.message : String(err);
 	}
+
 	if (failure !== null) {
 		console.error(`warning: Claude history is not on the host (${failure})`);
+		if (archive !== null)
+			console.error(
+				`  ${archivePath(sandbox)} is left to import on the next start`,
+			);
+		return;
 	}
+	if (archive === null) return;
+	try {
+		const kept = await setAside(sandbox);
+		console.error(`imported Claude history; the archive is kept as ${kept}`);
+	} catch (err) {
+		// Importing it again is harmless: nothing older replaces anything newer.
+		console.error(
+			`warning: imported Claude history, but could not rename ${archivePath(sandbox)} (${err instanceof Error ? err.message : err})`,
+		);
+	}
+}
+
+/** Linked, not renamed, so an archive imported before is never overwritten. */
+async function setAside(sandbox: string): Promise<string> {
+	const from = archivePath(sandbox);
+	let to = join(historyDir(), `${sandbox}.imported.tar`);
+	try {
+		await link(from, to);
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+		to = join(historyDir(), `${sandbox}.imported-${Date.now()}.tar`);
+		await link(from, to);
+	}
+	await unlink(from);
+	return to;
 }
 
 /** Joined into a path that is written and read, so it is checked like `store`'s. */
