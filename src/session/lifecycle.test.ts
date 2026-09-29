@@ -248,6 +248,20 @@ test("the host's history directory is readable by its owner only", async (t) => 
 	assert.equal(mode.toString(8), "700");
 });
 
+test("a stopped sandbox has ~/.claude readied again on its next start, so a first boot cut short is mended", async (t) => {
+	const { run } = await sandboxFor(t, BOTH);
+	await run();
+	status = "Stopped";
+	fenced = false;
+	calls.length = 0;
+	await run();
+	assert.deepEqual(calls, [
+		"start behind the gatekeeper",
+		"apply masks",
+		"ready ~/.claude",
+	]);
+});
+
 test("a stopped sandbox whose history directory was deleted gets it back, readable by its owner only, before it boots", async (t) => {
 	const { sb, run } = await sandboxFor(t, BOTH);
 	await run();
@@ -286,7 +300,11 @@ test("a sandbox already running behind its gatekeeper is not started again", asy
 	await run();
 	calls.length = 0;
 	await run();
-	assert.deepEqual(calls, ["leave the fence alone", "apply masks"]);
+	assert.deepEqual(calls, [
+		"leave the fence alone",
+		"apply masks",
+		"ready ~/.claude",
+	]);
 });
 
 test("a sandbox already running is handed the project's policy again, so a tightened list decides its next connections", async (t) => {
@@ -334,7 +352,11 @@ test("a sandbox running with no gatekeeper gets one back", async (t) => {
 	calls.length = 0;
 	fenceState = "sealed-no-gatekeeper";
 	await run();
-	assert.deepEqual(calls, ["start behind the gatekeeper", "apply masks"]);
+	assert.deepEqual(calls, [
+		"start behind the gatekeeper",
+		"apply masks",
+		"ready ~/.claude",
+	]);
 });
 
 test("a sandbox whose guest cannot reach the gatekeeper is started, with a warning", async (t) => {
@@ -365,7 +387,11 @@ test("a sandbox already running without egress warns again instead of restarting
 		.map((c) => String(c.arguments[0]))
 		.join("\n");
 	assert.match(said, /has no network/);
-	assert.deepEqual(calls, ["leave the fence alone", "apply masks"]);
+	assert.deepEqual(calls, [
+		"leave the fence alone",
+		"apply masks",
+		"ready ~/.claude",
+	]);
 });
 
 test("a sandbox running outside its fence is refused, not attached to", async (t) => {

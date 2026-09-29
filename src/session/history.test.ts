@@ -33,11 +33,16 @@ test("a name that could escape the history directory is refused", () => {
 });
 
 /**
- * A fresh clone's home as `PREPARE_GUEST` sees it, with root's part played by
- * stand-ins on PATH: `sudo` notes what it was asked to run and runs it, and
- * `mountpoint` says whether the history mount is there.
+ * A guest's home as `PREPARE_GUEST` sees it, with its commands played by
+ * stand-ins on PATH: `sudo` only notes what it was asked to run, `mountpoint`
+ * says whether the history mount is there, and `id` says who the guest user
+ * is. `~/.claude` is owned by whoever runs the test, so a guest user with
+ * another uid finds it owned by someone else, as it finds root's.
  */
-async function freshClone(t: TestContext, mounted: boolean) {
+async function guest(
+	t: TestContext,
+	opts: { mounted: boolean; guestUid: string },
+) {
 	const root = await mkdtemp(join(tmpdir(), "playpen-history-"));
 	t.after(() => rm(root, { recursive: true, force: true }));
 	const home = join(root, "home");
@@ -45,14 +50,11 @@ async function freshClone(t: TestContext, mounted: boolean) {
 	const sudoLog = join(root, "sudo.log");
 	await mkdir(join(home, ".claude", "projects"), { recursive: true });
 	await mkdir(bin);
-	await writeFile(
-		join(bin, "sudo"),
-		`#!/bin/bash\necho "$*" >> "${sudoLog}"\nexec "$@"\n`,
-		{ mode: 0o755 },
-	);
-	await writeFile(join(bin, "mountpoint"), `#!/bin/bash\n${mounted}\n`, {
-		mode: 0o755,
-	});
+	const standIn = (name: string, body: string) =>
+		writeFile(join(bin, name), `#!/bin/bash\n${body}\n`, { mode: 0o755 });
+	await standIn("sudo", `echo "$*" >> "${sudoLog}"`);
+	await standIn("mountpoint", String(opts.mounted));
+	await standIn("id", `echo "${opts.guestUid}"`);
 	const run = () =>
 		spawnSync("bash", ["-c", PREPARE_GUEST], {
 			encoding: "utf8",
@@ -61,20 +63,36 @@ async function freshClone(t: TestContext, mounted: boolean) {
 	return { home, sudoLog, run };
 }
 
-test("a fresh clone's ~/.claude, which cloud-init made as root, is handed to the guest user", async (t) => {
-	const { home, sudoLog, run } = await freshClone(t, true);
+const TEST_RUNNER = String(process.getuid?.());
+
+test("a ~/.claude owned by someone other than the guest user, as cloud-init leaves it, is handed to the guest user", async (t) => {
+	const { home, sudoLog, run } = await guest(t, {
+		mounted: true,
+		guestUid: "4242",
+	});
 	const result = run();
 	assert.equal(result.status, 0, result.stderr);
-	const uid = process.getuid?.();
-	const gid = process.getgid?.();
 	assert.equal(
 		await readFile(sudoLog, "utf8"),
-		`chown ${uid}:${gid} ${home}/.claude\n`,
+		`chown 4242:4242 ${home}/.claude\n`,
 	);
 });
 
+test("a ~/.claude the guest user already owns is left alone, without sudo", async (t) => {
+	const { sudoLog, run } = await guest(t, {
+		mounted: true,
+		guestUid: TEST_RUNNER,
+	});
+	const result = run();
+	assert.equal(result.status, 0, result.stderr);
+	await assert.rejects(readFile(sudoLog, "utf8"), { code: "ENOENT" });
+});
+
 test("a guest without the history mount fails, saying so, and changes nothing", async (t) => {
-	const { sudoLog, run } = await freshClone(t, false);
+	const { sudoLog, run } = await guest(t, {
+		mounted: false,
+		guestUid: "4242",
+	});
 	const result = run();
 	assert.notEqual(result.status, 0);
 	assert.match(

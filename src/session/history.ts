@@ -62,8 +62,9 @@ export async function makeHostDir(sandbox: string): Promise<string> {
 
 /**
  * cloud-init creates a mount point's missing parents as root (`util.ensure_dir`
- * in its cc_mounts module), so on a fresh clone the guest user would not own
- * `~/.claude`, and Claude Code could write nothing there but history.
+ * in its cc_mounts module), so the guest user would not own `~/.claude`, and
+ * Claude Code could write nothing there but history. Run on every start, not
+ * only a clone's first, so a first boot cut short is mended by the next.
  */
 export const PREPARE_GUEST = [
 	"set -eu",
@@ -72,7 +73,7 @@ export const PREPARE_GUEST = [
 	'  echo "$claude/projects is not mounted from the host" >&2',
 	"  exit 1",
 	"fi",
-	'sudo chown "$(id -u):$(id -g)" "$claude"',
+	'[ "$(stat -c %u "$claude")" = "$(id -u)" ] || sudo chown "$(id -u):$(id -g)" "$claude"',
 ].join("\n");
 
 export async function prepareGuest(instance: string): Promise<void> {
