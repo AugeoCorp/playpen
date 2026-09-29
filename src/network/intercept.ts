@@ -51,6 +51,50 @@ export interface InterceptorOptions {
 const TLS_PORT = 443;
 
 /**
+ * Hop-by-hop headers (after RFC 9110, 7.6.1), which describe the guest's
+ * connection to here, not this one's to the host. `Transfer-Encoding` is kept
+ * because Node frames the forwarded body by it.
+ */
+const HOP_BY_HOP = new Set([
+	"connection",
+	"keep-alive",
+	"proxy-authorization",
+	"proxy-connection",
+	"te",
+	"trailer",
+	"upgrade",
+]);
+
+/** Headers a front end may route a request by, rather than by its connection. */
+const ROUTING = new Set([
+	"host",
+	"x-forwarded-host",
+	"forwarded",
+	"x-original-url",
+	"x-rewrite-url",
+	"x-host",
+	"x-http-host-override",
+	"x-forwarded-server",
+]);
+
+/**
+ * A TRACE answer echoes the request as the host received it (RFC 9110,
+ * 9.3.8), `Authorization` and the value in it included. TRACK is IIS's name
+ * for the same; Node's parser rejects it before it gets here today.
+ */
+const ECHOING = new Set(["TRACE", "TRACK"]);
+
+function withoutHopByHop(raw: readonly string[]): string[] {
+	const kept: string[] = [];
+	for (let i = 0; i + 1 < raw.length; i += 2) {
+		const name = raw[i] as string;
+		if (HOP_BY_HOP.has(name.toLowerCase())) continue;
+		kept.push(name, raw[i + 1] as string);
+	}
+	return kept;
+}
+
+/**
  * The variables `policy` lets go to `host`: an exact match on a name its
  * `secrets` lists, since a secret is meant for that host and not for
  * everything under it.
@@ -77,7 +121,7 @@ export function interceptor(opts: InterceptorOptions): Interceptor {
  * One server per tunnel, never listening: proxy-chain hands it the tunnel's
  * socket as a `connection` once it has answered the `CONNECT`. It is built for
  * one approved host, dials only that host, and serves only a client that
- * names that host in its server name.
+ * names that host in its server name and its `Host` header.
  */
 function tunnelServer(
 	opts: InterceptorOptions,
@@ -99,8 +143,73 @@ function tunnelServer(
 	if (connect !== undefined)
 		agent.createConnection = (o) => connect(o as tls.ConnectionOptions);
 
+	/**
+	 * A request naming another site is refused, not sent on: behind a shared
+	 * front end, the request line or `Host` rather than the connection can
+	 * decide which site gets the request, and with it the value. An
+	 * absolute-form target (`GET https://other.example/`) overrides `Host`
+	 * (RFC 9112, 3.2.2), so only a path, or `*` for `OPTIONS`, is accepted; and
+	 * not a path starting `//`, which a URL parser reads as naming a host.
+	 */
+	const misdirection = (req: IncomingMessage): string | null => {
+		const target = req.url ?? "";
+		if (target.startsWith("//")) {
+			return `request target ${target} starts with //, which reads as another host than ${host}, the host this tunnel was allowed for`;
+		}
+		const originForm =
+			target.startsWith("/") || (target === "*" && req.method === "OPTIONS");
+		if (!originForm) {
+			return `request target ${target} is not a path on ${host}, the host this tunnel was allowed for`;
+		}
+		const named = (req.headers.host ?? "")
+			.toLowerCase()
+			.replace(/:443$/, "")
+			.replace(/\.$/, "");
+		if (named === host) return null;
+		return `Host header ${req.headers.host ?? "(none)"} is not ${host}, the host this tunnel was allowed for`;
+	};
+	const refusalOf = (
+		req: IncomingMessage,
+	): { status: 405 | 421; reason: string } | null => {
+		const method = req.method ?? "";
+		if (ECHOING.has(method)) {
+			return {
+				status: 405,
+				reason: `method ${method} echoes the request back, and the value with it`,
+			};
+		}
+		const reason = misdirection(req);
+		return reason === null ? null : { status: 421, reason };
+	};
+	const refuse = (req: IncomingMessage) => {
+		const refusal = refusalOf(req);
+		if (refusal !== null) {
+			log({ ...at(), verdict: "deny", reason: refusal.reason });
+		}
+		return refusal;
+	};
+
+	/**
+	 * The upstream sees one `Host`, the approved one, whatever the guest sent:
+	 * Node checks only the first of several, and a front end may route on the
+	 * last, or on a header that overrides it.
+	 */
+	const forwardedHeaders = (req: IncomingMessage) => {
+		const kept = withoutHopByHop(req.rawHeaders);
+		const headers = ["Host", host];
+		for (let i = 0; i + 1 < kept.length; i += 2) {
+			const name = kept[i] as string;
+			if (ROUTING.has(name.toLowerCase())) continue;
+			headers.push(name, kept[i + 1] as string);
+		}
+		return headers;
+	};
+
 	const upstream = (req: IncomingMessage) => {
-		const { headers, injected } = rewriteHeaders(req.rawHeaders, secrets);
+		const { headers, injected } = rewriteHeaders(
+			forwardedHeaders(req),
+			secrets,
+		);
 		const logInjected = () => {
 			for (const { header, env } of injected) {
 				log({
@@ -155,12 +264,17 @@ function tunnelServer(
 	});
 
 	server.on("request", (req: IncomingMessage, res: ServerResponse) => {
+		const refusal = refuse(req);
+		if (refusal !== null) {
+			res.writeHead(refusal.status, { connection: "close" }).end();
+			return;
+		}
 		const up = upstream(req);
 		up.on("response", (answer) => {
 			res.writeHead(
 				answer.statusCode ?? 502,
 				answer.statusMessage,
-				answer.rawHeaders,
+				withoutHopByHop(answer.rawHeaders),
 			);
 			answer.pipe(res);
 		});
