@@ -318,8 +318,9 @@ common package managers need, not a measurement. It stays a guess until a
   can push a branch full of secrets to a repo it controls. The fence stops
   unknown destinations; it says nothing about what an agent does with the ones
   it is allowed to reach.
-- **The project mount is the sharing channel, by design.** It was never part of
-  what the fence closes.
+- **The project mount is the sharing channel, by design,** and so is the
+  sandbox's Claude history directory, mounted at the guest's
+  `~/.claude/projects`. Neither was ever part of what the fence closes.
 - **DNS lookups happen at the gatekeeper**, not in the guest, for every program
   that uses the guest's own resolver: `--dns virtual` makes tun2proxy answer
   those itself, so a hostname is not a side channel around the policy. A root

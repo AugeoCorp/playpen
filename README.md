@@ -65,6 +65,11 @@ fence -- stop it and start it again), or `-` (stopped).
 skills, plugins, OAuth token). `--no-auth` withholds the token, API-key settings
 and account identity. `--no-sync` skips the rest.
 
+Claude's transcripts and memory are written straight to the host, to
+`$XDG_DATA_HOME/playpen/history/<sandbox>/` (`~/.local/share` by default),
+mounted at the guest's `~/.claude/projects`. A rebuild, `remove` or a crashed VM
+leaves them there for the next `start`.
+
 ## Config
 
 Optional `playpen.config.ts` in the project root:
