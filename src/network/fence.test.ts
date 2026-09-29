@@ -436,9 +436,16 @@ test("a masked file showing the placeholder's own inode is bound", async (t) => 
 
 test("a masked directory showing the placeholder's own inode is bound", async (t) => {
 	const { proc, view, placeholders } = await fakeProc(t);
-	await symlink(placeholders.emptyDir, join(view, "node_modules"));
+	const nodeModules = join(view, "node_modules");
+	await mkdir(nodeModules);
 	assert.deepEqual(
-		await boundMasks(QEMU, PROJECT, ["node_modules"], placeholders, proc),
+		await boundMasks(
+			QEMU,
+			PROJECT,
+			["node_modules"],
+			{ ...placeholders, emptyDir: nodeModules },
+			proc,
+		),
 		["node_modules"],
 	);
 });
@@ -446,10 +453,27 @@ test("a masked directory showing the placeholder's own inode is bound", async (t
 test("a masked file replaced on the host, so qemu now sees another inode there, is not bound", async (t) => {
 	const { proc, view, placeholders } = await fakeProc(t);
 	await link(placeholders.emptyFile, join(view, ".env"));
-	await writeFile(join(view, ".env.local"), "SECRET=2\n");
+	await rm(join(view, ".env"));
+	await writeFile(join(view, ".env"), "SECRET=2\n");
 	assert.deepEqual(
-		await boundMasks(QEMU, PROJECT, [".env", ".env.local"], placeholders, proc),
-		[".env"],
+		await boundMasks(QEMU, PROJECT, [".env"], placeholders, proc),
+		[],
+	);
+});
+
+test("a nested masked file that the guest swapped for a symlink to the placeholder is not bound", async (t) => {
+	const { proc, view, placeholders } = await fakeProc(t);
+	await mkdir(join(view, "config"));
+	await symlink(placeholders.emptyFile, join(view, "config", "secrets.json"));
+	assert.deepEqual(
+		await boundMasks(
+			QEMU,
+			PROJECT,
+			["config/secrets.json"],
+			placeholders,
+			proc,
+		),
+		[],
 	);
 });
 

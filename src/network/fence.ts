@@ -318,9 +318,11 @@ export function underMaskedDir(
  * namespace, which `/proc/<pid>/root` resolves into. A bound entry is the
  * placeholder's own inode; a host-side replace (rename over, `sed -i`,
  * `git checkout`) detaches the bind in qemu's namespace and leaves the new
- * file's inode there. An entry that cannot be read is not bound: what cannot be
- * shown to be hidden is not claimed to be. `procDir` is a parameter so a test
- * can lay out a fake one.
+ * file's inode there. The entry is not followed: a bind is never a symlink,
+ * and a guest that renames away the parent of a nested entry can plant one
+ * pointing at the placeholder, whose path it can work out. An entry that cannot
+ * be read is not bound: what cannot be shown to be hidden is not claimed to be.
+ * `procDir` is a parameter so a test can lay out a fake one.
  */
 export async function boundMasks(
 	qemu: number,
@@ -341,7 +343,7 @@ export async function boundMasks(
 	const bound: string[] = [];
 	for (const entry of entries) {
 		try {
-			const seen = await stat(
+			const seen = await lstat(
 				join(procDir, String(qemu), "root", project, entry),
 			);
 			if (sources.some((s) => s.dev === seen.dev && s.ino === seen.ino)) {
