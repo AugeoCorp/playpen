@@ -72,15 +72,18 @@ const fence = await import("./fence.ts");
 async function stoppedSandbox(t: TestContext): Promise<void> {
 	const root = await mkdtemp(join(tmpdir(), "playpen-bringup-"));
 	const before = {
-		xdg: process.env.XDG_DATA_HOME,
-		lima: process.env.LIMA_HOME,
+		XDG_DATA_HOME: process.env.XDG_DATA_HOME,
+		LIMA_HOME: process.env.LIMA_HOME,
 	};
 	process.env.XDG_DATA_HOME = join(root, "data");
 	process.env.LIMA_HOME = join(root, "lima");
 	helpersStarted = 0;
 	t.after(async () => {
-		process.env.XDG_DATA_HOME = before.xdg;
-		process.env.LIMA_HOME = before.lima;
+		// Assigning undefined would leave the string "undefined" behind.
+		for (const [name, value] of Object.entries(before)) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
 		await rm(root, { recursive: true, force: true });
 	});
 	await mkdir(fence.fencePaths(SANDBOX).dir, { recursive: true });

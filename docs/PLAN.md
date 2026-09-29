@@ -126,7 +126,8 @@ yet vary per sandbox. They are global defaults today.
 - [x] a sandbox on an older base than the newest is offered one too
 - [x] `~/.claude/projects` is archived on destroy and restored on create, so a
       rebuild keeps transcripts and the memory directory; round-trip verified on
-      the host 2026-09-15
+      the host 2026-09-15. A restore that fails warns, keeps the archive and
+      prints the command to restore it by hand; it does not fail the start
 - [x] verified on the host: a fresh sandbox clones and boots in 10s, with no
       package installs and no image download
 
