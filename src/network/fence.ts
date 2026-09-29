@@ -377,7 +377,10 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 	const changed = await writePolicy(sandbox, opts.policy);
 	const stamp = await policyStamp(sandbox);
 
-	const state = await fenceStatus(sandbox, instance);
+	const deadline = Date.now() + (opts.timeoutMs ?? 10 * 60_000);
+	let state = await fenceStatus(sandbox, instance);
+	if (state === "stopped")
+		state = await afterEarlierHelper(sandbox, instance, deadline);
 	if (state === "sealed" || state === "sealed-no-egress") {
 		if (changed) {
 			await applied(sandbox, stamp);
@@ -395,7 +398,6 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 		exit = code ?? 1;
 	});
 
-	const deadline = Date.now() + (opts.timeoutMs ?? 10 * 60_000);
 	for (;;) {
 		offset = await drain(paths.helperLog, offset, opts.log);
 		if ((await liveHelper(sandbox))?.ready === true) return;
@@ -407,6 +409,45 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 		if (Date.now() > deadline) {
 			throw new Error(
 				`the network helper for ${sandbox} did not come up; see ${paths.helperLog}`,
+			);
+		}
+		await sleep(250);
+	}
+}
+
+/**
+ * How long the VM may read stopped while an earlier helper still runs. One
+ * whose VM is gone notices on its next poll (`POLL_MS` in helper.ts), and one
+ * that is booting has qemu running within seconds, so this is several polls.
+ */
+const STOPPED_WINDOW_MS = 30_000;
+
+/**
+ * An earlier helper still running while the VM reads stopped is one of two
+ * things: a helper whose VM just went away, whose record says ready until its
+ * next poll -- a rebuild's history boot, just before the new clone starts --
+ * or one still booting the VM for a `playpen start` that was interrupted. A
+ * new helper would refuse to run beside either, and the earlier one's record
+ * would pass for its own, so this waits until it has exited or its VM is up,
+ * and returns the state the fence settled in.
+ */
+async function afterEarlierHelper(
+	sandbox: string,
+	instance: string,
+	deadline: number,
+): Promise<FenceState> {
+	let stoppedSince = Date.now();
+	for (;;) {
+		const state = await fenceStatus(sandbox, instance);
+		if (state === "sealed" || state === "sealed-no-egress") return state;
+		const helper = await liveHelper(sandbox);
+		if (helper === null || state === "unsealed") return state;
+		if (state !== "stopped") stoppedSince = Date.now();
+		const now = Date.now();
+		if (now - stoppedSince > STOPPED_WINDOW_MS || now > deadline) {
+			throw new Error(
+				`an earlier network helper for ${sandbox} (pid ${helper.pid}) has neither exited nor brought its VM up; see ${fencePaths(sandbox).helperLog}\n` +
+					`  if no other playpen is starting this sandbox, stop it with: kill ${helper.pid}`,
 			);
 		}
 		await sleep(250);

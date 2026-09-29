@@ -64,7 +64,10 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
 - `playpen stop` followed at once by `playpen start` can report "running" while
   the VM is still shutting down: Lima's status and `qemu.pid` lag the stop for a
   few seconds. Seen once in the container; the helper's record disappearing is
-  the reliable signal that the stop has finished.
+  the reliable signal that the stop has finished. Once `qemu.pid` is gone,
+  `bringUp` waits for that record before spawning a helper, so a VM started
+  again inside the gap (a rebuild's history boot, then the new clone) is not
+  taken as up on the last run's record.
 - The base's `claude code to be installed` readiness probe waits up to 600s for
   `claude` even when a provision layer already failed loudly in
   `cloud-init-output.log`, so a broken bake reports a timeout rather than its
