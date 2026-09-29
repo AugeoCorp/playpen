@@ -242,10 +242,39 @@ test("destroying a stopped sandbox boots it inside the fence with nothing allowe
 	status = "Stopped";
 	fenced = false;
 	fencedWith = null;
+	recordedMounts = { project: sb.cwd, masked: [] };
 	calls.length = 0;
 	await destroy(sb);
 	assert.deepEqual(fencedWith, { allow: [], mode: "enforce", ports: [] });
 	assert.equal(calls[0], "start behind the gatekeeper");
+});
+
+test("a stopped sandbox with no record of its masks is not booted to save its history, since it would boot unmasked", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await run();
+	const { destroy } = await import("./lifecycle.ts");
+	status = "Stopped";
+	fenced = false;
+	recordedMounts = null;
+	fencedMounts = null;
+	calls.length = 0;
+	await destroy(sb);
+	assert.equal(fencedMounts, null);
+	assert.deepEqual(calls, []);
+});
+
+test("a rebuild's history boot also hides a mask added to the config since the last start", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await run();
+	const { destroy } = await import("./lifecycle.ts");
+	status = "Stopped";
+	fenced = false;
+	recordedMounts = { project: sb.cwd, masked: [".env"] };
+	await destroy(sb, ["node_modules", ".env"]);
+	assert.deepEqual(fencedMounts, {
+		project: sb.cwd,
+		masked: [".env", "node_modules"],
+	});
 });
 
 test("a sandbox running with no gatekeeper gets one back", async (t) => {
