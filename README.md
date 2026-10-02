@@ -136,9 +136,15 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
   anything it imports changes. Approvals live outside the project, so a sandbox
   cannot approve its own edits.
 - On a change, a file you approved before is shown as a diff against the copy
-  you approved, which playpen keeps outside the project. If that copy is missing
-  or does not match the approval, the file is shown whole, with the reason. A
-  file the config no longer imports is named as removed.
+  you approved, which playpen keeps outside the project. Every line of the file
+  is shown, with the changed ones marked `-` and `+`, so an edit cannot change
+  what an untouched line does out of sight. Trailing spaces and tabs on a
+  changed line show as `·` and `→`.
+- A file is shown whole instead, every line marked `+`, when it is new, when the
+  approved copy is missing or does not match the approval, or when it is too
+  long to diff; the header says which. A change to only the newline at the end
+  of a file is named, since a line diff cannot show it. A file the config no
+  longer imports is named as removed.
 - The prompt shows control characters, format characters (bidi controls,
   zero-width joiners), the line separators and the Hangul fillers as escapes
   such as `\x1b` or `\u{200d}`, and names the files that held any. It starts a

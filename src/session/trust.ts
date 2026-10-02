@@ -145,10 +145,7 @@ function linesOf(contents: string): string[] {
 		.map((line) => line.replace(/\n$/, ""));
 }
 
-/**
- * The snapshot is under the data directory, which no guest mounts, but it is
- * still only used if it hashes to what the record says was approved.
- */
+/** The snapshot is in `trust/` under the data directory, which no guest mounts. */
 async function approvedCopy(
 	sandbox: string,
 	rel: string,
