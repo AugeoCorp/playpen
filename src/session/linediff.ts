@@ -84,3 +84,8 @@ export function unifiedDiff(
 	}
 	return out;
 }
+
+/** `b` as a diff from an empty file, so every line is marked as added. */
+export function allAdded(b: readonly string[]): string[] {
+	return [`@@ -0,0 +1,${b.length} @@`, ...b.map((line) => `+${line}`)];
+}

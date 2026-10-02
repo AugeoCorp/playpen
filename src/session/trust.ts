@@ -10,7 +10,7 @@ import {
 	sha256,
 } from "./configgraph.ts";
 import { assertSandboxName } from "./identity.ts";
-import { unifiedDiff } from "./linediff.ts";
+import { allAdded, unifiedDiff } from "./linediff.ts";
 import {
 	type ConfigResult,
 	findConfigFile,
@@ -168,12 +168,13 @@ async function approvedCopy(
 interface FileView {
 	note: string;
 	lines: string[];
-	diff: boolean;
 }
 
 /**
  * A changed file is diffed from the in-memory bytes that were just hashed,
- * never the file on disk, which the guest can rewrite after hashing.
+ * never the file on disk, which the guest can rewrite after hashing. A file
+ * shown whole is shown as all added, so none of its lines can pass for a
+ * removed or unchanged one.
  */
 async function viewOf(
 	sandbox: string,
@@ -182,12 +183,10 @@ async function viewOf(
 ): Promise<FileView> {
 	const whole = (note: string): FileView => ({
 		note,
-		lines: linesOf(f.contents),
-		diff: false,
+		lines: allAdded(linesOf(f.contents)),
 	});
 	if (approvedHash === undefined) return whole("new");
-	if (approvedHash === f.hash)
-		return { note: "unchanged", lines: [], diff: false };
+	if (approvedHash === f.hash) return { note: "unchanged", lines: [] };
 	const old = await approvedCopy(sandbox, f.rel, approvedHash);
 	if ("missing" in old) return whole(`changed, shown whole: ${old.missing}`);
 	const diff = unifiedDiff(linesOf(old.contents), linesOf(f.contents));
@@ -196,9 +195,8 @@ async function viewOf(
 		return {
 			note: "changed: only the newline at the end of the file",
 			lines: [],
-			diff: false,
 		};
-	return { note: "changed", lines: diff, diff: true };
+	return { note: "changed", lines: diff };
 }
 
 const COLOUR: Record<string, string> = { "-": "31", "+": "32", "@": "36" };
@@ -235,8 +233,7 @@ export async function previewApproval(
 		const shown = view.lines.map(escapeControls);
 		if (shown.some((line, i) => line !== view.lines[i]))
 			escaped.add(escapeControls(f.rel));
-		for (const line of shown)
-			out.push(`  │ ${colour && view.diff ? paint(line) : line}`);
+		for (const line of shown) out.push(`  │ ${colour ? paint(line) : line}`);
 	}
 	const kept = new Set(graph.files.map((f) => f.rel));
 	for (const rel of approved.keys()) {

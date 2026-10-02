@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { unifiedDiff } from "./linediff.ts";
+import { allAdded, unifiedDiff } from "./linediff.ts";
 
 const TEN = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"];
 
@@ -103,4 +103,8 @@ test("equal files have no hunks", () => {
 test("files too long to compare give null instead of a diff", () => {
 	const long = Array.from({ length: 1000 }, (_, i) => `line ${i}`);
 	assert.equal(unifiedDiff(long, long), null);
+});
+
+test("a file shown on its own is all added, with a header counting its lines from line 0", () => {
+	assert.deepEqual(allAdded(["-a", " b"]), ["@@ -0,0 +1,2 @@", "+-a", "+ b"]);
 });

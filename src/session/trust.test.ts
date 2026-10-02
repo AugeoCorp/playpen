@@ -225,7 +225,7 @@ test("the prompt shows an escape sequence in a config as text, so it cannot redr
 	});
 	const shown = await promptFor(dir, sandbox);
 	assert.ok(!shown.includes(ESC), `a raw ESC reached the terminal: ${shown}`);
-	assert.match(shown, /│ run\(\);\\x1b\[2K\\x1b\[1Ashown\(\);$/m);
+	assert.match(shown, /│ \+run\(\);\\x1b\[2K\\x1b\[1Ashown\(\);$/m);
 });
 
 test("a carriage return ends the line it is on, as it does for JavaScript, so the code after it is not shown as part of a comment", async (t) => {
@@ -236,7 +236,7 @@ test("a carriage return ends the line it is on, as it does for JavaScript, so th
 	assert.ok(!shown.includes("\r"), `a raw CR reached the terminal: ${shown}`);
 	assert.match(
 		shown,
-		/^ {2}│ \/\/ harmless note\\r\n {2}│ globalThis\.PWN_CR = 1;$/m,
+		/^ {2}│ \+\/\/ harmless note\\r\n {2}│ \+globalThis\.PWN_CR = 1;$/m,
 	);
 });
 
@@ -251,7 +251,7 @@ test("a line separator, U+2028, ends the line it is on, so the code after it is 
 	);
 	assert.match(
 		shown,
-		/^ {2}│ \/\/ harmless note\\u\{2028\}\n {2}│ globalThis\.PWN_LS = 1;$/m,
+		/^ {2}│ \+\/\/ harmless note\\u\{2028\}\n {2}│ \+globalThis\.PWN_LS = 1;$/m,
 	);
 });
 
@@ -266,7 +266,7 @@ test("a paragraph separator, U+2029, ends the line it is on, so the code after i
 	);
 	assert.match(
 		shown,
-		/^ {2}│ \/\/ harmless note\\u\{2029\}\n {2}│ globalThis\.PWN_PS = 1;$/m,
+		/^ {2}│ \+\/\/ harmless note\\u\{2029\}\n {2}│ \+globalThis\.PWN_PS = 1;$/m,
 	);
 });
 
@@ -276,7 +276,7 @@ test("a Windows line ending shows its carriage return at the end of the line, an
 	});
 	assert.match(
 		await promptFor(dir, sandbox),
-		/^ {2}│ first\(\);\\r\n {2}│ second\(\);\\r\n\n {2}warning:/m,
+		/^ {2}│ \+first\(\);\\r\n {2}│ \+second\(\);\\r\n\n {2}warning:/m,
 	);
 });
 
@@ -289,7 +289,7 @@ test("the prompt shows a right-to-left override as \\u{202e}, so the line reads 
 		!shown.includes("\u202e"),
 		`a raw U+202E reached the terminal: ${shown}`,
 	);
-	assert.match(shown, /│ const role = "user\\u\{202e\} \/\/ admin";$/m);
+	assert.match(shown, /│ \+const role = "user\\u\{202e\} \/\/ admin";$/m);
 });
 
 test("the prompt shows the one-character C1 control sequence introducer as \\u{9b}", async (t) => {
@@ -301,7 +301,7 @@ test("the prompt shows the one-character C1 control sequence introducer as \\u{9
 		!shown.includes("\u009b"),
 		`a raw U+009B reached the terminal: ${shown}`,
 	);
-	assert.match(shown, /│ run\(\);\\u\{9b\}2K$/m);
+	assert.match(shown, /│ \+run\(\);\\u\{9b\}2K$/m);
 });
 
 test("a zero-width joiner is shown, since it makes `false` followed by it a name rather than the keyword", async (t) => {
@@ -313,7 +313,7 @@ test("a zero-width joiner is shown, since it makes `false` followed by it a name
 		!shown.includes(ZERO_WIDTH_JOINER),
 		`a raw ZERO_WIDTH_JOINER reached the terminal: ${shown}`,
 	);
-	assert.match(shown, /│ if \(false\\u\{200d\}\) globalThis\.PWN_ZWJ = 1;$/m);
+	assert.match(shown, /│ \+if \(false\\u\{200d\}\) globalThis\.PWN_ZWJ = 1;$/m);
 });
 
 test("a left-to-right isolate, U+2066, is shown as an escape", async (t) => {
@@ -325,7 +325,7 @@ test("a left-to-right isolate, U+2066, is shown as an escape", async (t) => {
 		!shown.includes(LEFT_TO_RIGHT_ISOLATE),
 		`a raw LEFT_TO_RIGHT_ISOLATE reached the terminal: ${shown}`,
 	);
-	assert.match(shown, /│ const a = "x\\u\{2066\}y";$/m);
+	assert.match(shown, /│ \+const a = "x\\u\{2066\}y";$/m);
 });
 
 test("a left-to-right mark, U+200E, is shown as an escape", async (t) => {
@@ -337,7 +337,7 @@ test("a left-to-right mark, U+200E, is shown as an escape", async (t) => {
 		!shown.includes(LEFT_TO_RIGHT_MARK),
 		`a raw LEFT_TO_RIGHT_MARK reached the terminal: ${shown}`,
 	);
-	assert.match(shown, /│ const a = "x\\u\{200e\}y";$/m);
+	assert.match(shown, /│ \+const a = "x\\u\{200e\}y";$/m);
 });
 
 test("a tag character, U+E0041, is shown as one escape for the whole character", async (t) => {
@@ -349,7 +349,7 @@ test("a tag character, U+E0041, is shown as one escape for the whole character",
 		!shown.includes(TAG_LATIN_A),
 		`a raw TAG_LATIN_A reached the terminal: ${shown}`,
 	);
-	assert.match(shown, /│ const a = "x\\u\{e0041\}y";$/m);
+	assert.match(shown, /│ \+const a = "x\\u\{e0041\}y";$/m);
 });
 
 test("a Hangul filler, which JavaScript accepts in a name but draws as blank, is shown as an escape", async (t) => {
@@ -361,7 +361,7 @@ test("a Hangul filler, which JavaScript accepts in a name but draws as blank, is
 		!shown.includes(HANGUL_FILLER),
 		`a raw HANGUL_FILLER reached the terminal: ${shown}`,
 	);
-	assert.match(shown, /│ const \\u\{3164\} = 1;$/m);
+	assert.match(shown, /│ \+const \\u\{3164\} = 1;$/m);
 });
 
 test("escaping leaves tabs and newlines as they are, so a multi-line message keeps its shape", () => {
@@ -392,9 +392,10 @@ test("the prompt shows ordinary code exactly as written, tabs and non-ASCII lett
 		await promptFor(dir, sandbox),
 		[
 			"  ── playpen.config.js (new)",
-			"  │ export default {",
-			'  │ \tmasked: ["café", "漢字"],',
-			"  │ };",
+			"  │ @@ -0,0 +1,3 @@",
+			"  │ +export default {",
+			'  │ +\tmasked: ["café", "漢字"],',
+			"  │ +};",
 		].join("\n"),
 	);
 });
@@ -513,7 +514,8 @@ test("a changed file whose approved copy does not match its approved hash is sho
 		await promptFor(dir, sandbox),
 		[
 			"  ── playpen.config.js (changed, shown whole: the approved copy does not match its hash)",
-			"  │ changed();",
+			"  │ @@ -0,0 +1,1 @@",
+			"  │ +changed();",
 		].join("\n"),
 	);
 });
@@ -526,7 +528,8 @@ test("a changed file with no approved copy kept is shown whole, saying why", asy
 		await promptFor(dir, sandbox),
 		[
 			"  ── playpen.config.js (changed, shown whole: no approved copy to compare with)",
-			"  │ changed();",
+			"  │ @@ -0,0 +1,1 @@",
+			"  │ +changed();",
 		].join("\n"),
 	);
 });
@@ -569,13 +572,17 @@ test("with colour on, diff lines are coloured around their escaped text", async 
 	);
 });
 
-test("with colour on, a file shown whole is not coloured, even where a line starts with - or +", async (t) => {
+test("a new file is shown as all added, so a line of it that starts with - cannot pass for a removed line", async (t) => {
 	const { dir, sandbox } = await scenario(t, {
 		"playpen.config.js": "-1;\n+1;",
 	});
-	const graph = await readConfigGraph(dir, "playpen.config.js");
 	assert.equal(
-		await previewApproval(sandbox, graph, true),
-		["  ── playpen.config.js (new)", "  │ -1;", "  │ +1;"].join("\n"),
+		await promptFor(dir, sandbox),
+		[
+			"  ── playpen.config.js (new)",
+			"  │ @@ -0,0 +1,2 @@",
+			"  │ +-1;",
+			"  │ ++1;",
+		].join("\n"),
 	);
 });
