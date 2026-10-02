@@ -125,6 +125,18 @@ export function escapeControls(text: string): string {
 }
 
 /**
+ * A line ends wherever JavaScript ends one (ECMA-262, LineTerminator): at a
+ * lone `\r`, U+2028 and U+2029 as well as `\n`. Each terminator but `\n` stays
+ * on the line it ends, to be escaped there, so the code after it starts a line
+ * of its own on screen just as it does to the parser.
+ */
+function linesOf(contents: string): string[] {
+	return contents
+		.split(/(?<=\n|\r(?!\n)|\u2028|\u2029)/)
+		.map((line) => line.replace(/\n$/, ""));
+}
+
+/**
  * Names and contents come from a directory the guest can write, so both are
  * printed escaped, and a last line names the files that needed it.
  */
@@ -144,8 +156,7 @@ export async function previewApproval(
 				: before === f.hash
 					? "unchanged"
 					: "changed";
-		const lines =
-			status === "unchanged" ? [] : f.contents.replace(/\n$/, "").split("\n");
+		const lines = status === "unchanged" ? [] : linesOf(f.contents);
 		const name = escapeControls(f.rel);
 		const shown = lines.map(escapeControls);
 		if (name !== f.rel || shown.some((line, i) => line !== lines[i]))

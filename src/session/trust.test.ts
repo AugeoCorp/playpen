@@ -210,6 +210,8 @@ async function promptFor(dir: string, sandbox: string): Promise<string> {
 }
 
 const ESC = "\x1b";
+const LINE_SEPARATOR = String.fromCodePoint(0x2028);
+const PARAGRAPH_SEPARATOR = String.fromCodePoint(0x2029);
 
 test("the prompt shows an escape sequence in a config as text, so it cannot redraw the screen", async (t) => {
 	const { dir, sandbox } = await scenario(t, {
@@ -220,13 +222,56 @@ test("the prompt shows an escape sequence in a config as text, so it cannot redr
 	assert.match(shown, /│ run\(\);\\x1b\[2K\\x1b\[1Ashown\(\);$/m);
 });
 
-test("the prompt shows a carriage return as \\r, so a line cannot be overwritten from its start", async (t) => {
+test("a carriage return ends the line it is on, as it does for JavaScript, so the code after it is not shown as part of a comment", async (t) => {
 	const { dir, sandbox } = await scenario(t, {
-		"playpen.config.js": "run();\r// harmless",
+		"playpen.config.js": "// harmless note\rglobalThis.PWN_CR = 1;",
 	});
 	const shown = await promptFor(dir, sandbox);
 	assert.ok(!shown.includes("\r"), `a raw CR reached the terminal: ${shown}`);
-	assert.match(shown, /│ run\(\);\\r\/\/ harmless$/m);
+	assert.match(
+		shown,
+		/^ {2}│ \/\/ harmless note\\r\n {2}│ globalThis\.PWN_CR = 1;$/m,
+	);
+});
+
+test("a line separator, U+2028, ends the line it is on, so the code after it is not shown as part of a comment", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": `// harmless note${LINE_SEPARATOR}globalThis.PWN_LS = 1;`,
+	});
+	const shown = await promptFor(dir, sandbox);
+	assert.ok(
+		!shown.includes(LINE_SEPARATOR),
+		`a raw U+2028 reached the terminal: ${shown}`,
+	);
+	assert.match(
+		shown,
+		/^ {2}│ \/\/ harmless note\\u2028\n {2}│ globalThis\.PWN_LS = 1;$/m,
+	);
+});
+
+test("a paragraph separator, U+2029, ends the line it is on, so the code after it is not shown as part of a comment", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": `// harmless note${PARAGRAPH_SEPARATOR}globalThis.PWN_PS = 1;`,
+	});
+	const shown = await promptFor(dir, sandbox);
+	assert.ok(
+		!shown.includes(PARAGRAPH_SEPARATOR),
+		`a raw U+2029 reached the terminal: ${shown}`,
+	);
+	assert.match(
+		shown,
+		/^ {2}│ \/\/ harmless note\\u2029\n {2}│ globalThis\.PWN_PS = 1;$/m,
+	);
+});
+
+test("a Windows line ending shows its carriage return at the end of the line, and starts one line, not two", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": "first();\r\nsecond();\r\n",
+	});
+	assert.match(
+		await promptFor(dir, sandbox),
+		/^ {2}│ first\(\);\\r\n {2}│ second\(\);\\r\n\n {2}warning:/m,
+	);
 });
 
 test("the prompt shows a right-to-left override as \\u202e, so the line reads in the order it runs", async (t) => {
