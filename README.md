@@ -135,9 +135,11 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
 - playpen prints the file and asks before executing it, again whenever it or
   anything it imports changes. Approvals live outside the project, so a sandbox
   cannot approve its own edits.
-- The prompt prints control characters and bidi marks as escapes, `\x1b` or
-  `\u202e`, and names the files that held any, so a file cannot make the
-  terminal show code other than what it holds.
+- The prompt shows control characters, format characters (bidi controls,
+  zero-width joiners), the line separators and the Hangul fillers as escapes
+  such as `\x1b` or `\u{200d}`, and names the files that held any. It starts a
+  new line wherever JavaScript ends one, `\r` and U+2028 included. It does not
+  catch look-alike letters from other scripts.
 - No terminal, no approval: the file is not executed, and you get neither masks
   nor setup.
 
