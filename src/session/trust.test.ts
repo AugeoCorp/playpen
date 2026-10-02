@@ -509,6 +509,28 @@ test("an approved line far from any change is still shown, since a change elsewh
 	);
 });
 
+test("trailing spaces and tabs on a changed line are shown as · and →, so a change to them alone is visible; unchanged lines keep theirs", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": "keep(); \nrun();",
+	});
+	await approveAndLoad(dir, sandbox);
+	await writeFile(
+		join(dir, "playpen.config.js"),
+		"keep(); \nrun(); \t",
+		"utf8",
+	);
+	assert.equal(
+		await promptFor(dir, sandbox),
+		[
+			"  ── playpen.config.js (changed)",
+			"  │ @@ -1,2 +1,2 @@",
+			"  │  keep(); ",
+			"  │ -run();",
+			"  │ +run();·→",
+		].join("\n"),
+	);
+});
+
 test("the diff is of the bytes that were hashed, not of the file as it is on disk by the time it is shown", async (t) => {
 	const { dir, sandbox } = await scenario(t, { "playpen.config.js": CONFIG });
 	await approveAndLoad(dir, sandbox);

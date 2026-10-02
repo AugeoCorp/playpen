@@ -206,6 +206,14 @@ async function viewOf(
 	return { note: "changed", lines: diff };
 }
 
+/** On a `-` or `+` line, so a change to trailing whitespace alone shows. */
+function markTrailingWhitespace(line: string): string {
+	if (!(line.startsWith("-") || line.startsWith("+"))) return line;
+	return line.replace(/[ \t]+$/, (tail) =>
+		tail.replaceAll(" ", "·").replaceAll("\t", "→"),
+	);
+}
+
 const COLOUR: Record<string, string> = { "-": "31", "+": "32", "@": "36" };
 
 function paint(line: string): string {
@@ -240,7 +248,8 @@ export async function previewApproval(
 		const shown = view.lines.map(escapeControls);
 		if (shown.some((line, i) => line !== view.lines[i]))
 			escaped.add(escapeControls(f.rel));
-		for (const line of shown) out.push(`  │ ${colour ? paint(line) : line}`);
+		for (const line of shown.map(markTrailingWhitespace))
+			out.push(`  │ ${colour ? paint(line) : line}`);
 	}
 	const kept = new Set(graph.files.map((f) => f.rel));
 	for (const rel of approved.keys()) {
