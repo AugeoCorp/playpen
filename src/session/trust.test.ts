@@ -311,3 +311,152 @@ test("the prompt escapes the name of a file whose contents it does not show", as
 	assert.match(shown, /^ {2}── \\x1b\[8mhidden\.js \(unchanged\)$/m);
 	assert.ok(!shown.includes(ESC), `a raw ESC reached the terminal: ${shown}`);
 });
+
+/** Approve the project as it is, and load it once so the approved copy is kept. */
+async function approveAndLoad(dir: string, sandbox: string): Promise<void> {
+	await approve(dir, sandbox);
+	assert.equal((await loadTrustedConfig(dir, sandbox)).loaded, true);
+}
+
+const NETWORKED = [
+	"export default {",
+	'\tmasked: ["node_modules"],',
+	'\tsetup: ["npm ci"],',
+	"\tnetwork: {",
+	'\t\tallow: ["registry.npmjs.org"],',
+	"\t},",
+	"};",
+	"",
+].join("\n");
+
+test("a changed file is shown as a diff against the approved version, not whole", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": NETWORKED,
+	});
+	await approveAndLoad(dir, sandbox);
+	await writeFile(
+		join(dir, "playpen.config.js"),
+		NETWORKED.replace("registry.npmjs.org", "evil.example"),
+		"utf8",
+	);
+	assert.equal(
+		await promptFor(dir, sandbox),
+		[
+			"  ── playpen.config.js (changed)",
+			"  │ @@ -2,6 +2,6 @@",
+			'  │  \tmasked: ["node_modules"],',
+			'  │  \tsetup: ["npm ci"],',
+			"  │  \tnetwork: {",
+			'  │ -\t\tallow: ["registry.npmjs.org"],',
+			'  │ +\t\tallow: ["evil.example"],',
+			"  │  \t},",
+			"  │  };",
+		].join("\n"),
+	);
+});
+
+test("the diff is of the bytes that were hashed, not of the file as it is on disk by the time it is shown", async (t) => {
+	const { dir, sandbox } = await scenario(t, { "playpen.config.js": CONFIG });
+	await approveAndLoad(dir, sandbox);
+	await writeFile(join(dir, "playpen.config.js"), "hashed();", "utf8");
+	const graph = await readConfigGraph(dir, "playpen.config.js");
+	await writeFile(join(dir, "playpen.config.js"), "swapped();", "utf8");
+
+	const shown = await previewApproval(sandbox, graph);
+	assert.match(shown, /│ \+hashed\(\);$/m);
+	assert.doesNotMatch(shown, /swapped/);
+});
+
+test("a file the config no longer imports is named as removed", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js":
+			'import { m } from "./masks.js"; export default { masked: m };',
+		"masks.js": 'export const m = ["node_modules"];',
+	});
+	await approveAndLoad(dir, sandbox);
+	await writeFile(join(dir, "playpen.config.js"), CONFIG, "utf8");
+	assert.match(
+		await promptFor(dir, sandbox),
+		/^ {2}── masks\.js \(removed\)$/m,
+	);
+});
+
+test("a changed file whose approved copy does not match its approved hash is shown whole, saying why", async (t) => {
+	const { dir, sandbox } = await scenario(t, { "playpen.config.js": CONFIG });
+	await approveAndLoad(dir, sandbox);
+	await writeFile(
+		join(trustDir(), sandbox, "playpen.config.js"),
+		"export default {};",
+		"utf8",
+	);
+	await writeFile(join(dir, "playpen.config.js"), "changed();", "utf8");
+	assert.equal(
+		await promptFor(dir, sandbox),
+		[
+			"  ── playpen.config.js (changed, shown whole: the approved copy does not match its hash)",
+			"  │ changed();",
+		].join("\n"),
+	);
+});
+
+test("a changed file with no approved copy kept is shown whole, saying why", async (t) => {
+	const { dir, sandbox } = await scenario(t, { "playpen.config.js": CONFIG });
+	await approve(dir, sandbox);
+	await writeFile(join(dir, "playpen.config.js"), "changed();", "utf8");
+	assert.equal(
+		await promptFor(dir, sandbox),
+		[
+			"  ── playpen.config.js (changed, shown whole: no approved copy to compare with)",
+			"  │ changed();",
+		].join("\n"),
+	);
+});
+
+test("a change to only the newline at the end of a file is named, since a line diff cannot show it", async (t) => {
+	const { dir, sandbox } = await scenario(t, { "playpen.config.js": CONFIG });
+	await approveAndLoad(dir, sandbox);
+	await writeFile(join(dir, "playpen.config.js"), `${CONFIG}\n`, "utf8");
+	assert.equal(
+		await promptFor(dir, sandbox),
+		"  ── playpen.config.js (changed: only the newline at the end of the file)",
+	);
+});
+
+test("an escape sequence inside a diffed line is still shown escaped, and warned about", async (t) => {
+	const { dir, sandbox } = await scenario(t, { "playpen.config.js": CONFIG });
+	await approveAndLoad(dir, sandbox);
+	await writeFile(join(dir, "playpen.config.js"), `${CONFIG}${ESC}[2K`, "utf8");
+	const shown = await promptFor(dir, sandbox);
+	assert.ok(!shown.includes(ESC), `a raw ESC reached the terminal: ${shown}`);
+	assert.match(shown, /│ \+export default .*;\\x1b\[2K$/m);
+	assert.match(shown, /warning: [^\n]* in: playpen\.config\.js$/);
+});
+
+test("with colour on, diff lines are coloured around their escaped text", async (t) => {
+	const { dir, sandbox } = await scenario(t, { "playpen.config.js": "old();" });
+	await approveAndLoad(dir, sandbox);
+	await writeFile(join(dir, "playpen.config.js"), `new();${ESC}[2K`, "utf8");
+	const graph = await readConfigGraph(dir, "playpen.config.js");
+	assert.equal(
+		await previewApproval(sandbox, graph, true),
+		[
+			"  ── playpen.config.js (changed)",
+			`  │ ${ESC}[36m@@ -1,1 +1,1 @@${ESC}[0m`,
+			`  │ ${ESC}[31m-old();${ESC}[0m`,
+			`  │ ${ESC}[32m+new();\\x1b[2K${ESC}[0m`,
+			"",
+			"  warning: control characters, shown above as escapes like \\x1b or \\u202e, in: playpen.config.js",
+		].join("\n"),
+	);
+});
+
+test("with colour on, a file shown whole is not coloured, even where a line starts with - or +", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": "-1;\n+1;",
+	});
+	const graph = await readConfigGraph(dir, "playpen.config.js");
+	assert.equal(
+		await previewApproval(sandbox, graph, true),
+		["  ── playpen.config.js (new)", "  │ -1;", "  │ +1;"].join("\n"),
+	);
+});

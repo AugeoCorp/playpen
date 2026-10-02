@@ -3,8 +3,14 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 import { trustDir } from "../config.ts";
 import { confirm } from "../prompt.ts";
-import { type ConfigGraph, readConfigGraph } from "./configgraph.ts";
+import {
+	type ConfigGraph,
+	type GraphFile,
+	readConfigGraph,
+	sha256,
+} from "./configgraph.ts";
 import { assertSandboxName } from "./identity.ts";
+import { unifiedDiff } from "./linediff.ts";
 import {
 	type ConfigResult,
 	findConfigFile,
@@ -124,6 +130,73 @@ export function escapeControls(text: string): string {
 	});
 }
 
+function linesOf(contents: string): string[] {
+	return contents.replace(/\n$/, "").split("\n");
+}
+
+/**
+ * The snapshot is under the data directory, which no guest mounts, but it is
+ * still only used if it hashes to what the record says was approved.
+ */
+async function approvedCopy(
+	sandbox: string,
+	rel: string,
+	hash: string,
+): Promise<{ contents: string } | { missing: string }> {
+	let contents: string;
+	try {
+		contents = await readFile(join(snapshotDir(sandbox), rel), "utf8");
+	} catch {
+		return { missing: "no approved copy to compare with" };
+	}
+	return sha256(contents) === hash
+		? { contents }
+		: { missing: "the approved copy does not match its hash" };
+}
+
+interface FileView {
+	note: string;
+	lines: string[];
+	diff: boolean;
+}
+
+/**
+ * A changed file is diffed from the in-memory bytes that were just hashed,
+ * never the file on disk, which the guest can rewrite after hashing.
+ */
+async function viewOf(
+	sandbox: string,
+	f: GraphFile,
+	approvedHash: string | undefined,
+): Promise<FileView> {
+	const whole = (note: string): FileView => ({
+		note,
+		lines: linesOf(f.contents),
+		diff: false,
+	});
+	if (approvedHash === undefined) return whole("new");
+	if (approvedHash === f.hash)
+		return { note: "unchanged", lines: [], diff: false };
+	const old = await approvedCopy(sandbox, f.rel, approvedHash);
+	if ("missing" in old) return whole(`changed, shown whole: ${old.missing}`);
+	const diff = unifiedDiff(linesOf(old.contents), linesOf(f.contents));
+	if (diff === null) return whole("changed, shown whole: too long to diff");
+	if (diff.length === 0)
+		return {
+			note: "changed: only the newline at the end of the file",
+			lines: [],
+			diff: false,
+		};
+	return { note: "changed", lines: diff, diff: true };
+}
+
+const COLOUR: Record<string, string> = { "-": "31", "+": "32", "@": "36" };
+
+function paint(line: string): string {
+	const code = COLOUR[line[0] ?? ""];
+	return code === undefined ? line : `\x1b[${code}m${line}\x1b[0m`;
+}
+
 /**
  * Names and contents come from a directory the guest can write, so both are
  * printed escaped, and a last line names the files that needed it.
@@ -131,32 +204,38 @@ export function escapeControls(text: string): string {
 export async function previewApproval(
 	sandbox: string,
 	graph: ConfigGraph,
+	colour = false,
 ): Promise<string> {
 	const record = await readRecord(sandbox);
-	const approved = record?.file === graph.entry ? record.files : undefined;
+	const approved = new Map(
+		record?.file === graph.entry ? Object.entries(record.files) : [],
+	);
 	const out: string[] = [];
-	const escaped: string[] = [];
+	const escaped = new Set<string>();
+	const heading = (rel: string, note: string): void => {
+		const name = escapeControls(rel);
+		if (name !== rel) escaped.add(name);
+		out.push(`  ── ${name} (${note})`);
+	};
+
 	for (const f of graph.files) {
-		const before = approved?.[f.rel];
-		const status =
-			before === undefined
-				? "new"
-				: before === f.hash
-					? "unchanged"
-					: "changed";
-		const lines =
-			status === "unchanged" ? [] : f.contents.replace(/\n$/, "").split("\n");
-		const name = escapeControls(f.rel);
-		const shown = lines.map(escapeControls);
-		if (name !== f.rel || shown.some((line, i) => line !== lines[i]))
-			escaped.push(name);
-		out.push(`  ── ${name} (${status})`);
-		for (const line of shown) out.push(`  │ ${line}`);
+		const view = await viewOf(sandbox, f, approved.get(f.rel));
+		heading(f.rel, view.note);
+		const shown = view.lines.map(escapeControls);
+		if (shown.some((line, i) => line !== view.lines[i]))
+			escaped.add(escapeControls(f.rel));
+		for (const line of shown)
+			out.push(`  │ ${colour && view.diff ? paint(line) : line}`);
 	}
-	if (escaped.length > 0) {
+	const kept = new Set(graph.files.map((f) => f.rel));
+	for (const rel of approved.keys()) {
+		if (!kept.has(rel)) heading(rel, "removed");
+	}
+
+	if (escaped.size > 0) {
 		out.push(
 			"",
-			`  warning: control characters, shown above as escapes like \\x1b or \\u202e, in: ${escaped.join(", ")}`,
+			`  warning: control characters, shown above as escapes like \\x1b or \\u202e, in: ${[...escaped].join(", ")}`,
 		);
 	}
 	return out.join("\n");
@@ -247,7 +326,9 @@ export async function loadTrustedConfig(
 			`  ${count === 1 ? "1 file" : `${count} files`} will be executed:`,
 		);
 		console.error("");
-		console.error(await previewApproval(sandbox, graph));
+		console.error(
+			await previewApproval(sandbox, graph, process.stderr.isTTY === true),
+		);
 		console.error("");
 
 		const ok = await confirm(`  execute ${name} on the host? [y/N] `);

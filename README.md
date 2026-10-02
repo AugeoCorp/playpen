@@ -135,6 +135,10 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
 - playpen prints the file and asks before executing it, again whenever it or
   anything it imports changes. Approvals live outside the project, so a sandbox
   cannot approve its own edits.
+- On a change, a file you approved before is shown as a diff against the copy
+  you approved, which playpen keeps outside the project. If that copy is missing
+  or does not match the approval, the file is shown whole, with the reason. A
+  file the config no longer imports is named as removed.
 - The prompt prints control characters and bidi marks as escapes, `\x1b` or
   `\u202e`, and names the files that held any, so a file cannot make the
   terminal show code other than what it holds.
