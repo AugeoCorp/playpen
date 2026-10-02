@@ -36,10 +36,25 @@ test("a differing pin is 'changed'", () => {
 let counter = 0;
 
 /** A project dir plus an isolated data dir, so pins never leak between tests. */
+/** Make stderr report whether it is a terminal, for this test only. */
+function stderrIsTTY(t: TestContext, value: boolean): void {
+	const own = Object.getOwnPropertyDescriptor(process.stderr, "isTTY");
+	Object.defineProperty(process.stderr, "isTTY", {
+		value,
+		configurable: true,
+		writable: true,
+	});
+	t.after(() => {
+		if (own) Object.defineProperty(process.stderr, "isTTY", own);
+		else Reflect.deleteProperty(process.stderr, "isTTY");
+	});
+}
+
 async function scenario(
 	t: TestContext,
 	files: Record<string, string>,
 ): Promise<{ dir: string; sandbox: string }> {
+	stderrIsTTY(t, false);
 	const dir = await mkdtemp(join(tmpdir(), "playpen-trust-"));
 	const data = await mkdtemp(join(tmpdir(), "playpen-data-"));
 	const previous = process.env.XDG_DATA_HOME;
@@ -228,7 +243,7 @@ test("the prompt shows an escape sequence in a config as text, so it cannot redr
 	});
 	const shown = await promptFor(dir, sandbox);
 	assert.ok(!shown.includes(ESC), `a raw ESC reached the terminal: ${shown}`);
-	assert.match(shown, /│ run\(\);\\x1b\[2K\\x1b\[1Ashown\(\);$/m);
+	assert.match(shown, /│ \+run\(\);\\x1b\[2K\\x1b\[1Ashown\(\);$/m);
 });
 
 test("a carriage return ends the line it is on, as it does for JavaScript, so the code after it is not shown as part of a comment", async (t) => {
@@ -239,7 +254,7 @@ test("a carriage return ends the line it is on, as it does for JavaScript, so th
 	assert.ok(!shown.includes("\r"), `a raw CR reached the terminal: ${shown}`);
 	assert.match(
 		shown,
-		/^ {2}│ \/\/ harmless note\\r\n {2}│ globalThis\.PWN_CR = 1;$/m,
+		/^ {2}│ \+\/\/ harmless note\\r\n {2}│ \+globalThis\.PWN_CR = 1;$/m,
 	);
 });
 
@@ -254,7 +269,7 @@ test("a line separator, U+2028, ends the line it is on, so the code after it is 
 	);
 	assert.match(
 		shown,
-		/^ {2}│ \/\/ harmless note\\u\{2028\}\n {2}│ globalThis\.PWN_LS = 1;$/m,
+		/^ {2}│ \+\/\/ harmless note\\u\{2028\}\n {2}│ \+globalThis\.PWN_LS = 1;$/m,
 	);
 });
 
@@ -269,7 +284,7 @@ test("a paragraph separator, U+2029, ends the line it is on, so the code after i
 	);
 	assert.match(
 		shown,
-		/^ {2}│ \/\/ harmless note\\u\{2029\}\n {2}│ globalThis\.PWN_PS = 1;$/m,
+		/^ {2}│ \+\/\/ harmless note\\u\{2029\}\n {2}│ \+globalThis\.PWN_PS = 1;$/m,
 	);
 });
 
@@ -279,7 +294,7 @@ test("a Windows line ending shows its carriage return at the end of the line, an
 	});
 	assert.match(
 		await promptFor(dir, sandbox),
-		/^ {2}│ first\(\);\\r\n {2}│ second\(\);\\r\n\n {2}warning:/m,
+		/^ {2}│ \+first\(\);\\r\n {2}│ \+second\(\);\\r\n\n {2}warning:/m,
 	);
 });
 
@@ -292,7 +307,7 @@ test("the prompt shows a right-to-left override as \\u{202e}, so the line reads 
 		!shown.includes("\u202e"),
 		`a raw U+202E reached the terminal: ${shown}`,
 	);
-	assert.match(shown, /│ const role = "user\\u\{202e\} \/\/ admin";$/m);
+	assert.match(shown, /│ \+const role = "user\\u\{202e\} \/\/ admin";$/m);
 });
 
 test("the prompt shows the one-character C1 control sequence introducer as \\u{9b}", async (t) => {
@@ -304,7 +319,7 @@ test("the prompt shows the one-character C1 control sequence introducer as \\u{9
 		!shown.includes("\u009b"),
 		`a raw U+009B reached the terminal: ${shown}`,
 	);
-	assert.match(shown, /│ run\(\);\\u\{9b\}2K$/m);
+	assert.match(shown, /│ \+run\(\);\\u\{9b\}2K$/m);
 });
 
 test("a zero-width joiner is shown, since it makes `false` followed by it a name rather than the keyword", async (t) => {
@@ -316,7 +331,7 @@ test("a zero-width joiner is shown, since it makes `false` followed by it a name
 		!shown.includes(ZERO_WIDTH_JOINER),
 		`a raw ZERO_WIDTH_JOINER reached the terminal: ${shown}`,
 	);
-	assert.match(shown, /│ if \(false\\u\{200d\}\) globalThis\.PWN_ZWJ = 1;$/m);
+	assert.match(shown, /│ \+if \(false\\u\{200d\}\) globalThis\.PWN_ZWJ = 1;$/m);
 });
 
 test("a left-to-right isolate, U+2066, is shown as an escape", async (t) => {
@@ -328,7 +343,7 @@ test("a left-to-right isolate, U+2066, is shown as an escape", async (t) => {
 		!shown.includes(LEFT_TO_RIGHT_ISOLATE),
 		`a raw LEFT_TO_RIGHT_ISOLATE reached the terminal: ${shown}`,
 	);
-	assert.match(shown, /│ const a = "x\\u\{2066\}y";$/m);
+	assert.match(shown, /│ \+const a = "x\\u\{2066\}y";$/m);
 });
 
 test("a left-to-right mark, U+200E, is shown as an escape", async (t) => {
@@ -340,7 +355,7 @@ test("a left-to-right mark, U+200E, is shown as an escape", async (t) => {
 		!shown.includes(LEFT_TO_RIGHT_MARK),
 		`a raw LEFT_TO_RIGHT_MARK reached the terminal: ${shown}`,
 	);
-	assert.match(shown, /│ const a = "x\\u\{200e\}y";$/m);
+	assert.match(shown, /│ \+const a = "x\\u\{200e\}y";$/m);
 });
 
 test("a tag character, U+E0041, is shown as one escape for the whole character", async (t) => {
@@ -352,7 +367,7 @@ test("a tag character, U+E0041, is shown as one escape for the whole character",
 		!shown.includes(TAG_LATIN_A),
 		`a raw TAG_LATIN_A reached the terminal: ${shown}`,
 	);
-	assert.match(shown, /│ const a = "x\\u\{e0041\}y";$/m);
+	assert.match(shown, /│ \+const a = "x\\u\{e0041\}y";$/m);
 });
 
 test("a Hangul filler, which JavaScript accepts in a name but draws as blank, is shown as an escape", async (t) => {
@@ -364,7 +379,7 @@ test("a Hangul filler, which JavaScript accepts in a name but draws as blank, is
 		!shown.includes(HANGUL_FILLER),
 		`a raw HANGUL_FILLER reached the terminal: ${shown}`,
 	);
-	assert.match(shown, /│ const \\u\{3164\} = 1;$/m);
+	assert.match(shown, /│ \+const \\u\{3164\} = 1;$/m);
 });
 
 test("a variation selector, U+FE0F, is shown, since it makes `false` followed by it a name rather than the keyword", async (t) => {
@@ -376,7 +391,7 @@ test("a variation selector, U+FE0F, is shown, since it makes `false` followed by
 		!shown.includes(VARIATION_SELECTOR_16),
 		`a raw U+FE0F reached the terminal: ${shown}`,
 	);
-	assert.match(shown, /│ if \(false\\u\{fe0f\}\) globalThis\.PWN_VS = 1;$/m);
+	assert.match(shown, /│ \+if \(false\\u\{fe0f\}\) globalThis\.PWN_VS = 1;$/m);
 	assert.match(shown, /warning: [^\n]* in: playpen\.config\.js$/);
 });
 
@@ -389,7 +404,7 @@ test("a supplementary variation selector, U+E0100, is shown as one escape", asyn
 		!shown.includes(VARIATION_SELECTOR_17),
 		`a raw U+E0100 reached the terminal: ${shown}`,
 	);
-	assert.match(shown, /│ const a = "x\\u\{e0100\}y";$/m);
+	assert.match(shown, /│ \+const a = "x\\u\{e0100\}y";$/m);
 });
 
 test("an interlinear annotation anchor, U+FFF9, a format character that is not default-ignorable, is shown as an escape", async (t) => {
@@ -401,7 +416,7 @@ test("an interlinear annotation anchor, U+FFF9, a format character that is not d
 		!shown.includes(ANNOTATION_ANCHOR),
 		`a raw U+FFF9 reached the terminal: ${shown}`,
 	);
-	assert.match(shown, /│ const a = "x\\u\{fff9\}y";$/m);
+	assert.match(shown, /│ \+const a = "x\\u\{fff9\}y";$/m);
 });
 
 test("escaping leaves tabs and newlines as they are, so a multi-line message keeps its shape", () => {
@@ -432,9 +447,10 @@ test("the prompt shows ordinary code exactly as written, tabs and non-ASCII lett
 		await promptFor(dir, sandbox),
 		[
 			"  ── playpen.config.js (new)",
-			"  │ export default {",
-			'  │ \tmasked: ["café", "漢字"],',
-			"  │ };",
+			"  │ @@ -0,0 +1,3 @@",
+			"  │ +export default {",
+			'  │ +\tmasked: ["café", "漢字"],',
+			"  │ +};",
 		].join("\n"),
 	);
 });
@@ -469,4 +485,243 @@ test("the prompt escapes the name of a file whose contents it does not show", as
 	const shown = await promptFor(dir, sandbox);
 	assert.match(shown, /^ {2}── \\x1b\[8mhidden\.js \(unchanged\)$/m);
 	assert.ok(!shown.includes(ESC), `a raw ESC reached the terminal: ${shown}`);
+});
+
+/** Approve the project as it is, and load it once so the approved copy is kept. */
+async function approveAndLoad(dir: string, sandbox: string): Promise<void> {
+	await approve(dir, sandbox);
+	assert.equal((await loadTrustedConfig(dir, sandbox)).loaded, true);
+}
+
+const NETWORKED = [
+	"export default {",
+	'\tmasked: ["node_modules"],',
+	'\tsetup: ["npm ci"],',
+	"\tnetwork: {",
+	'\t\tallow: ["registry.npmjs.org"],',
+	"\t},",
+	"};",
+	"",
+].join("\n");
+
+test("a changed file is shown as a diff against the approved version, every line of it, with the change marked", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": NETWORKED,
+	});
+	await approveAndLoad(dir, sandbox);
+	await writeFile(
+		join(dir, "playpen.config.js"),
+		NETWORKED.replace("registry.npmjs.org", "evil.example"),
+		"utf8",
+	);
+	assert.equal(
+		await promptFor(dir, sandbox),
+		[
+			"  ── playpen.config.js (changed)",
+			"  │ @@ -1,7 +1,7 @@",
+			"  │  export default {",
+			'  │  \tmasked: ["node_modules"],',
+			'  │  \tsetup: ["npm ci"],',
+			"  │  \tnetwork: {",
+			'  │ -\t\tallow: ["registry.npmjs.org"],',
+			'  │ +\t\tallow: ["evil.example"],',
+			"  │  \t},",
+			"  │  };",
+		].join("\n"),
+	);
+});
+
+test("an approved line far from any change is still shown, since a change elsewhere can make it run", async (t) => {
+	const approved = [
+		"export default {};",
+		"const notes = `",
+		"// 1",
+		"// 2",
+		"// 3",
+		"// 4",
+		"globalThis.PWN = 1;",
+		"// 5",
+		"// 6",
+		"// 7",
+		"// 8",
+		"`;",
+	];
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": approved.join("\n"),
+	});
+	await approveAndLoad(dir, sandbox);
+	await writeFile(
+		join(dir, "playpen.config.js"),
+		approved
+			.join("\n")
+			.replace("const notes = `", "const notes = ``;")
+			.replace(/`;$/, "const end = ``;"),
+		"utf8",
+	);
+	assert.match(
+		await promptFor(dir, sandbox),
+		/^ {2}│ {2}globalThis\.PWN = 1;$/m,
+	);
+});
+
+test("trailing spaces and tabs on a changed line are shown as · and →, so a change to them alone is visible; unchanged lines keep theirs", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": "keep(); \nrun();",
+	});
+	await approveAndLoad(dir, sandbox);
+	await writeFile(
+		join(dir, "playpen.config.js"),
+		"keep(); \nrun(); \t",
+		"utf8",
+	);
+	assert.equal(
+		await promptFor(dir, sandbox),
+		[
+			"  ── playpen.config.js (changed)",
+			"  │ @@ -1,2 +1,2 @@",
+			"  │  keep(); ",
+			"  │ -run();",
+			"  │ +run();·→",
+		].join("\n"),
+	);
+});
+
+test("the diff is of the bytes that were hashed, not of the file as it is on disk by the time it is shown", async (t) => {
+	const { dir, sandbox } = await scenario(t, { "playpen.config.js": CONFIG });
+	await approveAndLoad(dir, sandbox);
+	await writeFile(join(dir, "playpen.config.js"), "hashed();", "utf8");
+	const graph = await readConfigGraph(dir, "playpen.config.js");
+	await writeFile(join(dir, "playpen.config.js"), "swapped();", "utf8");
+
+	const shown = await previewApproval(sandbox, graph);
+	assert.match(shown, /│ \+hashed\(\);$/m);
+	assert.doesNotMatch(shown, /swapped/);
+});
+
+test("a file the config no longer imports is named as removed", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js":
+			'import { m } from "./masks.js"; export default { masked: m };',
+		"masks.js": 'export const m = ["node_modules"];',
+	});
+	await approveAndLoad(dir, sandbox);
+	await writeFile(join(dir, "playpen.config.js"), CONFIG, "utf8");
+	assert.match(
+		await promptFor(dir, sandbox),
+		/^ {2}── masks\.js \(removed\)$/m,
+	);
+});
+
+test("a changed file whose approved copy does not match its approved hash is shown whole, saying why", async (t) => {
+	const { dir, sandbox } = await scenario(t, { "playpen.config.js": CONFIG });
+	await approveAndLoad(dir, sandbox);
+	await writeFile(
+		join(trustDir(), sandbox, "playpen.config.js"),
+		"export default {};",
+		"utf8",
+	);
+	await writeFile(join(dir, "playpen.config.js"), "changed();", "utf8");
+	assert.equal(
+		await promptFor(dir, sandbox),
+		[
+			"  ── playpen.config.js (changed, shown whole: the approved copy does not match its hash)",
+			"  │ @@ -0,0 +1,1 @@",
+			"  │ +changed();",
+		].join("\n"),
+	);
+});
+
+test("a changed file with no approved copy kept is shown whole, saying why", async (t) => {
+	const { dir, sandbox } = await scenario(t, { "playpen.config.js": CONFIG });
+	await approve(dir, sandbox);
+	await writeFile(join(dir, "playpen.config.js"), "changed();", "utf8");
+	assert.equal(
+		await promptFor(dir, sandbox),
+		[
+			"  ── playpen.config.js (changed, shown whole: no approved copy to compare with)",
+			"  │ @@ -0,0 +1,1 @@",
+			"  │ +changed();",
+		].join("\n"),
+	);
+});
+
+test("a change to only the newline at the end of a file is named as a line-ending change, since a line diff cannot show it", async (t) => {
+	const { dir, sandbox } = await scenario(t, { "playpen.config.js": CONFIG });
+	await approveAndLoad(dir, sandbox);
+	await writeFile(join(dir, "playpen.config.js"), `${CONFIG}\n`, "utf8");
+	assert.equal(
+		await promptFor(dir, sandbox),
+		"  ── playpen.config.js (changed: only line endings, which a line diff cannot show)",
+	);
+});
+
+test("a CRLF turned into a lone CR mid-file is named as a line-ending change, not as a change to the end of the file", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": "a();\r\nb();",
+	});
+	await approveAndLoad(dir, sandbox);
+	await writeFile(join(dir, "playpen.config.js"), "a();\rb();", "utf8");
+	assert.equal(
+		await promptFor(dir, sandbox),
+		"  ── playpen.config.js (changed: only line endings, which a line diff cannot show)",
+	);
+});
+
+test("an escape sequence inside a diffed line is still shown escaped, and warned about", async (t) => {
+	const { dir, sandbox } = await scenario(t, { "playpen.config.js": CONFIG });
+	await approveAndLoad(dir, sandbox);
+	await writeFile(join(dir, "playpen.config.js"), `${CONFIG}${ESC}[2K`, "utf8");
+	const shown = await promptFor(dir, sandbox);
+	assert.ok(!shown.includes(ESC), `a raw ESC reached the terminal: ${shown}`);
+	assert.match(shown, /│ \+export default .*;\\x1b\[2K$/m);
+	assert.match(shown, /warning: [^\n]* in: playpen\.config\.js$/);
+});
+
+test("on a terminal, diff lines are coloured around their escaped text", async (t) => {
+	const { dir, sandbox } = await scenario(t, { "playpen.config.js": "old();" });
+	await approveAndLoad(dir, sandbox);
+	await writeFile(join(dir, "playpen.config.js"), `new();${ESC}[2K`, "utf8");
+	stderrIsTTY(t, true);
+	assert.equal(
+		await promptFor(dir, sandbox),
+		[
+			"  ── playpen.config.js (changed)",
+			`  │ ${ESC}[36m@@ -1,1 +1,1 @@${ESC}[0m`,
+			`  │ ${ESC}[31m-old();${ESC}[0m`,
+			`  │ ${ESC}[32m+new();\\x1b[2K${ESC}[0m`,
+			"",
+			"  warning: invisible or control characters, shown above as escapes like \\x1b or \\u{200d}, in: playpen.config.js",
+		].join("\n"),
+	);
+});
+
+test("off a terminal, the same diff has no colour", async (t) => {
+	const { dir, sandbox } = await scenario(t, { "playpen.config.js": "old();" });
+	await approveAndLoad(dir, sandbox);
+	await writeFile(join(dir, "playpen.config.js"), "new();", "utf8");
+	stderrIsTTY(t, false);
+	assert.equal(
+		await promptFor(dir, sandbox),
+		[
+			"  ── playpen.config.js (changed)",
+			"  │ @@ -1,1 +1,1 @@",
+			"  │ -old();",
+			"  │ +new();",
+		].join("\n"),
+	);
+});
+
+test("a new file is shown as all added, so a line of it that starts with - cannot pass for a removed line", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": "-1;\n+1;",
+	});
+	assert.equal(
+		await promptFor(dir, sandbox),
+		[
+			"  ── playpen.config.js (new)",
+			"  │ @@ -0,0 +1,2 @@",
+			"  │ +-1;",
+			"  │ ++1;",
+		].join("\n"),
+	);
 });

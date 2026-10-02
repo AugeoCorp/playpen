@@ -50,7 +50,7 @@ export function findSpecifiers(source: string): string[] {
 	return found;
 }
 
-function sha256(contents: string): string {
+export function sha256(contents: string): string {
 	return createHash("sha256").update(contents).digest("hex");
 }
 
