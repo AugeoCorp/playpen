@@ -100,11 +100,15 @@ test("equal files have no hunks", () => {
 	assert.deepEqual(unifiedDiff(TEN, [...TEN]), []);
 });
 
-test("files too long to compare give null instead of a diff", () => {
-	const long = Array.from({ length: 1000 }, (_, i) => `line ${i}`);
-	assert.equal(unifiedDiff(long, long), null);
+test("files whose comparison table is exactly at the cap are still compared", () => {
+	const lines = Array.from({ length: 999 }, (_, i) => `line ${i}`);
+	assert.deepEqual(unifiedDiff(lines, [...lines]), []);
 });
 
+test("files one line past the cap give null instead of a diff", () => {
+	const lines = Array.from({ length: 999 }, (_, i) => `line ${i}`);
+	assert.equal(unifiedDiff(lines, [...lines, "one more"]), null);
+});
 test("a file shown on its own is all added, with a header counting its lines from line 0", () => {
 	assert.deepEqual(allAdded(["-a", " b"]), ["@@ -0,0 +1,2 @@", "+-a", "+ b"]);
 });

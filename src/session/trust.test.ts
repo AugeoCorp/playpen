@@ -36,10 +36,25 @@ test("a differing pin is 'changed'", () => {
 let counter = 0;
 
 /** A project dir plus an isolated data dir, so pins never leak between tests. */
+/** Make stderr report whether it is a terminal, for this test only. */
+function stderrIsTTY(t: TestContext, value: boolean): void {
+	const own = Object.getOwnPropertyDescriptor(process.stderr, "isTTY");
+	Object.defineProperty(process.stderr, "isTTY", {
+		value,
+		configurable: true,
+		writable: true,
+	});
+	t.after(() => {
+		if (own) Object.defineProperty(process.stderr, "isTTY", own);
+		else Reflect.deleteProperty(process.stderr, "isTTY");
+	});
+}
+
 async function scenario(
 	t: TestContext,
 	files: Record<string, string>,
 ): Promise<{ dir: string; sandbox: string }> {
+	stderrIsTTY(t, false);
 	const dir = await mkdtemp(join(tmpdir(), "playpen-trust-"));
 	const data = await mkdtemp(join(tmpdir(), "playpen-data-"));
 	const previous = process.env.XDG_DATA_HOME;
@@ -610,13 +625,13 @@ test("an escape sequence inside a diffed line is still shown escaped, and warned
 	assert.match(shown, /warning: [^\n]* in: playpen\.config\.js$/);
 });
 
-test("with colour on, diff lines are coloured around their escaped text", async (t) => {
+test("on a terminal, diff lines are coloured around their escaped text", async (t) => {
 	const { dir, sandbox } = await scenario(t, { "playpen.config.js": "old();" });
 	await approveAndLoad(dir, sandbox);
 	await writeFile(join(dir, "playpen.config.js"), `new();${ESC}[2K`, "utf8");
-	const graph = await readConfigGraph(dir, "playpen.config.js");
+	stderrIsTTY(t, true);
 	assert.equal(
-		await previewApproval(sandbox, graph, true),
+		await promptFor(dir, sandbox),
 		[
 			"  ── playpen.config.js (changed)",
 			`  │ ${ESC}[36m@@ -1,1 +1,1 @@${ESC}[0m`,
@@ -624,6 +639,22 @@ test("with colour on, diff lines are coloured around their escaped text", async 
 			`  │ ${ESC}[32m+new();\\x1b[2K${ESC}[0m`,
 			"",
 			"  warning: invisible or control characters, shown above as escapes like \\x1b or \\u{200d}, in: playpen.config.js",
+		].join("\n"),
+	);
+});
+
+test("off a terminal, the same diff has no colour", async (t) => {
+	const { dir, sandbox } = await scenario(t, { "playpen.config.js": "old();" });
+	await approveAndLoad(dir, sandbox);
+	await writeFile(join(dir, "playpen.config.js"), "new();", "utf8");
+	stderrIsTTY(t, false);
+	assert.equal(
+		await promptFor(dir, sandbox),
+		[
+			"  ── playpen.config.js (changed)",
+			"  │ @@ -1,1 +1,1 @@",
+			"  │ -old();",
+			"  │ +new();",
 		].join("\n"),
 	);
 });

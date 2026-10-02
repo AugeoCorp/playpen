@@ -228,8 +228,8 @@ function paint(line: string): string {
 export async function previewApproval(
 	sandbox: string,
 	graph: ConfigGraph,
-	colour = false,
 ): Promise<string> {
+	const colour = process.stderr.isTTY === true;
 	const record = await readRecord(sandbox);
 	const approved = new Map(
 		record?.file === graph.entry ? Object.entries(record.files) : [],
@@ -350,9 +350,7 @@ export async function loadTrustedConfig(
 			`  ${count === 1 ? "1 file" : `${count} files`} will be executed:`,
 		);
 		console.error("");
-		console.error(
-			await previewApproval(sandbox, graph, process.stderr.isTTY === true),
-		);
+		console.error(await previewApproval(sandbox, graph));
 		console.error("");
 
 		const ok = await confirm(`  execute ${name} on the host? [y/N] `);
