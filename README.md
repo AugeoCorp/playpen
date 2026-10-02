@@ -139,9 +139,11 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
   you approved, which playpen keeps outside the project. If that copy is missing
   or does not match the approval, the file is shown whole, with the reason. A
   file the config no longer imports is named as removed.
-- The prompt prints control characters and bidi marks as escapes, `\x1b` or
-  `\u202e`, and names the files that held any, so a file cannot make the
-  terminal show code other than what it holds.
+- The prompt shows control characters, format characters (bidi controls,
+  zero-width joiners), the line separators and the Hangul fillers as escapes
+  such as `\x1b` or `\u{200d}`, and names the files that held any. It starts a
+  new line wherever JavaScript ends one, `\r` and U+2028 included. It does not
+  catch look-alike letters from other scripts.
 - No terminal, no approval: the file is not executed, and you get neither masks
   nor setup.
 

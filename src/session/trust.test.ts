@@ -7,6 +7,7 @@ import { trustDir } from "../config.ts";
 import { readConfigGraph } from "./configgraph.ts";
 import {
 	decideTrust,
+	escapeControls,
 	loadTrustedConfig,
 	pinConfig,
 	previewApproval,
@@ -210,6 +211,13 @@ async function promptFor(dir: string, sandbox: string): Promise<string> {
 }
 
 const ESC = "\x1b";
+const LINE_SEPARATOR = String.fromCodePoint(0x2028);
+const PARAGRAPH_SEPARATOR = String.fromCodePoint(0x2029);
+const ZERO_WIDTH_JOINER = String.fromCodePoint(0x200d);
+const LEFT_TO_RIGHT_ISOLATE = String.fromCodePoint(0x2066);
+const LEFT_TO_RIGHT_MARK = String.fromCodePoint(0x200e);
+const TAG_LATIN_A = String.fromCodePoint(0xe0041);
+const HANGUL_FILLER = String.fromCodePoint(0x3164);
 
 test("the prompt shows an escape sequence in a config as text, so it cannot redraw the screen", async (t) => {
 	const { dir, sandbox } = await scenario(t, {
@@ -220,16 +228,59 @@ test("the prompt shows an escape sequence in a config as text, so it cannot redr
 	assert.match(shown, /│ run\(\);\\x1b\[2K\\x1b\[1Ashown\(\);$/m);
 });
 
-test("the prompt shows a carriage return as \\r, so a line cannot be overwritten from its start", async (t) => {
+test("a carriage return ends the line it is on, as it does for JavaScript, so the code after it is not shown as part of a comment", async (t) => {
 	const { dir, sandbox } = await scenario(t, {
-		"playpen.config.js": "run();\r// harmless",
+		"playpen.config.js": "// harmless note\rglobalThis.PWN_CR = 1;",
 	});
 	const shown = await promptFor(dir, sandbox);
 	assert.ok(!shown.includes("\r"), `a raw CR reached the terminal: ${shown}`);
-	assert.match(shown, /│ run\(\);\\r\/\/ harmless$/m);
+	assert.match(
+		shown,
+		/^ {2}│ \/\/ harmless note\\r\n {2}│ globalThis\.PWN_CR = 1;$/m,
+	);
 });
 
-test("the prompt shows a right-to-left override as \\u202e, so the line reads in the order it runs", async (t) => {
+test("a line separator, U+2028, ends the line it is on, so the code after it is not shown as part of a comment", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": `// harmless note${LINE_SEPARATOR}globalThis.PWN_LS = 1;`,
+	});
+	const shown = await promptFor(dir, sandbox);
+	assert.ok(
+		!shown.includes(LINE_SEPARATOR),
+		`a raw U+2028 reached the terminal: ${shown}`,
+	);
+	assert.match(
+		shown,
+		/^ {2}│ \/\/ harmless note\\u\{2028\}\n {2}│ globalThis\.PWN_LS = 1;$/m,
+	);
+});
+
+test("a paragraph separator, U+2029, ends the line it is on, so the code after it is not shown as part of a comment", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": `// harmless note${PARAGRAPH_SEPARATOR}globalThis.PWN_PS = 1;`,
+	});
+	const shown = await promptFor(dir, sandbox);
+	assert.ok(
+		!shown.includes(PARAGRAPH_SEPARATOR),
+		`a raw U+2029 reached the terminal: ${shown}`,
+	);
+	assert.match(
+		shown,
+		/^ {2}│ \/\/ harmless note\\u\{2029\}\n {2}│ globalThis\.PWN_PS = 1;$/m,
+	);
+});
+
+test("a Windows line ending shows its carriage return at the end of the line, and starts one line, not two", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": "first();\r\nsecond();\r\n",
+	});
+	assert.match(
+		await promptFor(dir, sandbox),
+		/^ {2}│ first\(\);\\r\n {2}│ second\(\);\\r\n\n {2}warning:/m,
+	);
+});
+
+test("the prompt shows a right-to-left override as \\u{202e}, so the line reads in the order it runs", async (t) => {
 	const { dir, sandbox } = await scenario(t, {
 		"playpen.config.js": 'const role = "user\u202e // admin";',
 	});
@@ -238,10 +289,10 @@ test("the prompt shows a right-to-left override as \\u202e, so the line reads in
 		!shown.includes("\u202e"),
 		`a raw U+202E reached the terminal: ${shown}`,
 	);
-	assert.match(shown, /│ const role = "user\\u202e \/\/ admin";$/m);
+	assert.match(shown, /│ const role = "user\\u\{202e\} \/\/ admin";$/m);
 });
 
-test("the prompt shows the one-character C1 control sequence introducer as \\u009b", async (t) => {
+test("the prompt shows the one-character C1 control sequence introducer as \\u{9b}", async (t) => {
 	const { dir, sandbox } = await scenario(t, {
 		"playpen.config.js": "run();\u009b2K",
 	});
@@ -250,10 +301,78 @@ test("the prompt shows the one-character C1 control sequence introducer as \\u00
 		!shown.includes("\u009b"),
 		`a raw U+009B reached the terminal: ${shown}`,
 	);
-	assert.match(shown, /│ run\(\);\\u009b2K$/m);
+	assert.match(shown, /│ run\(\);\\u\{9b\}2K$/m);
 });
 
-test("the prompt ends with a warning naming only the files that held control characters", async (t) => {
+test("a zero-width joiner is shown, since it makes `false` followed by it a name rather than the keyword", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": `if (false${ZERO_WIDTH_JOINER}) globalThis.PWN_ZWJ = 1;`,
+	});
+	const shown = await promptFor(dir, sandbox);
+	assert.ok(
+		!shown.includes(ZERO_WIDTH_JOINER),
+		`a raw ZERO_WIDTH_JOINER reached the terminal: ${shown}`,
+	);
+	assert.match(shown, /│ if \(false\\u\{200d\}\) globalThis\.PWN_ZWJ = 1;$/m);
+});
+
+test("a left-to-right isolate, U+2066, is shown as an escape", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": `const a = "x${LEFT_TO_RIGHT_ISOLATE}y";`,
+	});
+	const shown = await promptFor(dir, sandbox);
+	assert.ok(
+		!shown.includes(LEFT_TO_RIGHT_ISOLATE),
+		`a raw LEFT_TO_RIGHT_ISOLATE reached the terminal: ${shown}`,
+	);
+	assert.match(shown, /│ const a = "x\\u\{2066\}y";$/m);
+});
+
+test("a left-to-right mark, U+200E, is shown as an escape", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": `const a = "x${LEFT_TO_RIGHT_MARK}y";`,
+	});
+	const shown = await promptFor(dir, sandbox);
+	assert.ok(
+		!shown.includes(LEFT_TO_RIGHT_MARK),
+		`a raw LEFT_TO_RIGHT_MARK reached the terminal: ${shown}`,
+	);
+	assert.match(shown, /│ const a = "x\\u\{200e\}y";$/m);
+});
+
+test("a tag character, U+E0041, is shown as one escape for the whole character", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": `const a = "x${TAG_LATIN_A}y";`,
+	});
+	const shown = await promptFor(dir, sandbox);
+	assert.ok(
+		!shown.includes(TAG_LATIN_A),
+		`a raw TAG_LATIN_A reached the terminal: ${shown}`,
+	);
+	assert.match(shown, /│ const a = "x\\u\{e0041\}y";$/m);
+});
+
+test("a Hangul filler, which JavaScript accepts in a name but draws as blank, is shown as an escape", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": `const ${HANGUL_FILLER} = 1;`,
+	});
+	const shown = await promptFor(dir, sandbox);
+	assert.ok(
+		!shown.includes(HANGUL_FILLER),
+		`a raw HANGUL_FILLER reached the terminal: ${shown}`,
+	);
+	assert.match(shown, /│ const \\u\{3164\} = 1;$/m);
+});
+
+test("escaping leaves tabs and newlines as they are, so a multi-line message keeps its shape", () => {
+	assert.equal(escapeControls("a\tb\nc"), "a\tb\nc");
+});
+
+test("a lone surrogate, which no UTF-8 file can hold but a string can, is shown as an escape", () => {
+	assert.equal(escapeControls("a\ud800b"), "a\\u{d800}b");
+});
+
+test("the prompt ends with a warning naming only the files that held invisible or control characters", async (t) => {
 	const { dir, sandbox } = await scenario(t, {
 		"playpen.config.js":
 			'import "./clean.js"; import "./tricky.js"; export default {};',
@@ -262,7 +381,7 @@ test("the prompt ends with a warning naming only the files that held control cha
 	});
 	assert.match(
 		await promptFor(dir, sandbox),
-		/\n\n {2}warning: control characters, [^\n]* in: tricky\.js$/,
+		/\n\n {2}warning: invisible or control characters, [^\n]* in: tricky\.js$/,
 	);
 });
 
@@ -445,7 +564,7 @@ test("with colour on, diff lines are coloured around their escaped text", async 
 			`  │ ${ESC}[31m-old();${ESC}[0m`,
 			`  │ ${ESC}[32m+new();\\x1b[2K${ESC}[0m`,
 			"",
-			"  warning: control characters, shown above as escapes like \\x1b or \\u202e, in: playpen.config.js",
+			"  warning: invisible or control characters, shown above as escapes like \\x1b or \\u{200d}, in: playpen.config.js",
 		].join("\n"),
 	);
 });

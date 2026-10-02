@@ -110,28 +110,39 @@ async function snapshot(sandbox: string, graph: ConfigGraph): Promise<string> {
 }
 
 /**
- * What a terminal would act on rather than show: C0 controls but tab and
- * newline, DEL, C1 controls, and the bidi marks, embeddings, overrides and
- * isolates that reorder a line on screen. U+2028 and U+2029 are here too:
- * JavaScript ends a line at them (ECMA-262, LineTerminator), a terminal does
- * not, so a `//` comment could end there invisibly.
+ * Characters that draw as nothing, or that a terminal acts on instead of
+ * drawing: controls (Cc) other than tab and newline, format characters (Cf:
+ * bidi controls, zero-width joiners, tag characters), the line and paragraph
+ * separators (Zl, Zp), lone surrogates (Cs), and the Hangul fillers, which
+ * JavaScript accepts inside a name but which draw as blank space.
+ *
+ * Escaping a line terminator does not stop it ending a line for the parser,
+ * so it alone cannot keep code from hiding behind a `//`; `linesOf` breaks
+ * the displayed line there too.
  */
 const UNSHOWABLE =
-	// biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point
-	/[\x00-\x08\x0b-\x1f\x7f-\x9f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
+	/(?![\t\n])[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}\u115F\u1160\u3164\uFFA0]/gu;
 
 export function escapeControls(text: string): string {
 	return text.replace(UNSHOWABLE, (c) => {
 		if (c === "\r") return "\\r";
-		const code = c.charCodeAt(0);
+		const code = c.codePointAt(0) ?? 0;
 		return code < 0x80
 			? `\\x${code.toString(16).padStart(2, "0")}`
-			: `\\u${code.toString(16).padStart(4, "0")}`;
+			: `\\u{${code.toString(16)}}`;
 	});
 }
 
+/**
+ * A line ends wherever JavaScript ends one (ECMA-262, LineTerminator): at a
+ * lone `\r`, U+2028 and U+2029 as well as `\n`. Each terminator but `\n` stays
+ * on the line it ends, to be escaped there, so the code after it starts a line
+ * of its own on screen just as it does to the parser.
+ */
 function linesOf(contents: string): string[] {
-	return contents.replace(/\n$/, "").split("\n");
+	return contents
+		.split(/(?<=\n|\r(?!\n)|\u2028|\u2029)/)
+		.map((line) => line.replace(/\n$/, ""));
 }
 
 /**
@@ -235,7 +246,7 @@ export async function previewApproval(
 	if (escaped.size > 0) {
 		out.push(
 			"",
-			`  warning: control characters, shown above as escapes like \\x1b or \\u202e, in: ${[...escaped].join(", ")}`,
+			`  warning: invisible or control characters, shown above as escapes like \\x1b or \\u{200d}, in: ${[...escaped].join(", ")}`,
 		);
 	}
 	return out.join("\n");
