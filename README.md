@@ -142,9 +142,9 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
   changed line show as `·` and `→`.
 - A file is shown whole instead, every line marked `+`, when it is new, when the
   approved copy is missing or does not match the approval, or when it is too
-  long to diff; the header says which. A change to only the newline at the end
-  of a file is named, since a line diff cannot show it. A file the config no
-  longer imports is named as removed.
+  long to diff; the header says which. A change to only line endings, such as
+  the newline at the end of the file, is named, since a line diff cannot show
+  it. A file the config no longer imports is named as removed.
 - The prompt shows control characters, format characters (bidi controls,
   zero-width joiners), the line separators and every default-ignorable code
   point (variation selectors, Hangul fillers) as escapes such as `\x1b` or

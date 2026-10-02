@@ -645,13 +645,25 @@ test("a changed file with no approved copy kept is shown whole, saying why", asy
 	);
 });
 
-test("a change to only the newline at the end of a file is named, since a line diff cannot show it", async (t) => {
+test("a change to only the newline at the end of a file is named as a line-ending change, since a line diff cannot show it", async (t) => {
 	const { dir, sandbox } = await scenario(t, { "playpen.config.js": CONFIG });
 	await approveAndLoad(dir, sandbox);
 	await writeFile(join(dir, "playpen.config.js"), `${CONFIG}\n`, "utf8");
 	assert.equal(
 		await promptFor(dir, sandbox),
-		"  ── playpen.config.js (changed: only the newline at the end of the file)",
+		"  ── playpen.config.js (changed: only line endings, which a line diff cannot show)",
+	);
+});
+
+test("a CRLF turned into a lone CR mid-file is named as a line-ending change, not as a change to the end of the file", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": "a();\r\nb();",
+	});
+	await approveAndLoad(dir, sandbox);
+	await writeFile(join(dir, "playpen.config.js"), "a();\rb();", "utf8");
+	assert.equal(
+		await promptFor(dir, sandbox),
+		"  ── playpen.config.js (changed: only line endings, which a line diff cannot show)",
 	);
 });
 

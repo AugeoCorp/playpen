@@ -199,7 +199,7 @@ async function viewOf(
 	if (diff === null) return whole("changed, shown whole: too long to diff");
 	if (diff.length === 0)
 		return {
-			note: "changed: only the newline at the end of the file",
+			note: "changed: only line endings, which a line diff cannot show",
 			lines: [],
 		};
 	return { note: "changed", lines: diff };
