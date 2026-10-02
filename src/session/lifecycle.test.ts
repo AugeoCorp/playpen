@@ -598,7 +598,7 @@ test("a config that cannot be loaded is reported with the control characters in 
 	);
 	assert.match(
 		lines,
-		/not loaded \(.*"\.\.\/\\u202eevil\.js", which is outside/,
+		/not loaded \(.*"\.\.\/\\u\{202e\}evil\.js", which is outside/,
 	);
 });
 
