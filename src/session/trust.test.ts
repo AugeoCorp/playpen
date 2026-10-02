@@ -5,7 +5,12 @@ import { join } from "node:path";
 import { type TestContext, test } from "node:test";
 import { trustDir } from "../config.ts";
 import { readConfigGraph } from "./configgraph.ts";
-import { decideTrust, loadTrustedConfig, pinConfig } from "./trust.ts";
+import {
+	decideTrust,
+	loadTrustedConfig,
+	pinConfig,
+	previewApproval,
+} from "./trust.ts";
 
 test("no file on disk is 'absent', whatever is pinned", () => {
 	assert.equal(decideTrust(null, null), "absent");
@@ -194,4 +199,115 @@ test("rejects a sandbox name that would escape the trust directory", async (t) =
 		() => pinConfig("../../etc/passwd", graph),
 		/invalid sandbox name/,
 	);
+});
+
+/** What the approval prompt would print for the project as it is now. */
+async function promptFor(dir: string, sandbox: string): Promise<string> {
+	return previewApproval(
+		sandbox,
+		await readConfigGraph(dir, "playpen.config.js"),
+	);
+}
+
+const ESC = "\x1b";
+
+test("the prompt shows an escape sequence in a config as text, so it cannot redraw the screen", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": `run();${ESC}[2K${ESC}[1Ashown();`,
+	});
+	const shown = await promptFor(dir, sandbox);
+	assert.ok(!shown.includes(ESC), `a raw ESC reached the terminal: ${shown}`);
+	assert.match(shown, /│ run\(\);\\x1b\[2K\\x1b\[1Ashown\(\);$/m);
+});
+
+test("the prompt shows a carriage return as \\r, so a line cannot be overwritten from its start", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": "run();\r// harmless",
+	});
+	const shown = await promptFor(dir, sandbox);
+	assert.ok(!shown.includes("\r"), `a raw CR reached the terminal: ${shown}`);
+	assert.match(shown, /│ run\(\);\\r\/\/ harmless$/m);
+});
+
+test("the prompt shows a right-to-left override as \\u202e, so the line reads in the order it runs", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": 'const role = "user\u202e // admin";',
+	});
+	const shown = await promptFor(dir, sandbox);
+	assert.ok(
+		!shown.includes("\u202e"),
+		`a raw U+202E reached the terminal: ${shown}`,
+	);
+	assert.match(shown, /│ const role = "user\\u202e \/\/ admin";$/m);
+});
+
+test("the prompt shows the one-character C1 control sequence introducer as \\u009b", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": "run();\u009b2K",
+	});
+	const shown = await promptFor(dir, sandbox);
+	assert.ok(
+		!shown.includes("\u009b"),
+		`a raw U+009B reached the terminal: ${shown}`,
+	);
+	assert.match(shown, /│ run\(\);\\u009b2K$/m);
+});
+
+test("the prompt ends with a warning naming only the files that held control characters", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js":
+			'import "./clean.js"; import "./tricky.js"; export default {};',
+		"clean.js": "export const a = 1;",
+		"tricky.js": `export const b = 1;${ESC}[8m`,
+	});
+	assert.match(
+		await promptFor(dir, sandbox),
+		/\n\n {2}warning: control characters, [^\n]* in: tricky\.js$/,
+	);
+});
+
+test("the prompt shows ordinary code exactly as written, tabs and non-ASCII letters included, with no warning", async (t) => {
+	const code = 'export default {\n\tmasked: ["café", "漢字"],\n};';
+	const { dir, sandbox } = await scenario(t, { "playpen.config.js": code });
+	assert.equal(
+		await promptFor(dir, sandbox),
+		[
+			"  ── playpen.config.js (new)",
+			"  │ export default {",
+			'  │ \tmasked: ["café", "漢字"],',
+			"  │ };",
+		].join("\n"),
+	);
+});
+
+test("the prompt escapes a file name, and names that file in its warning", async (t) => {
+	const tricky = `${ESC}[8mhidden.js`;
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": `import "./${tricky}"; export default {};`,
+		[tricky]: "export {};",
+	});
+	const shown = await promptFor(dir, sandbox);
+	assert.ok(!shown.includes(ESC), `a raw ESC reached the terminal: ${shown}`);
+	assert.match(shown, /^ {2}── \\x1b\[8mhidden\.js \(new\)$/m);
+	assert.match(
+		shown,
+		/warning: .* in: \\x1b\[8mhidden\.js, playpen\.config\.js$/m,
+	);
+});
+
+test("the prompt escapes the name of a file whose contents it does not show", async (t) => {
+	const tricky = `${ESC}[8mhidden.js`;
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": `import "./${tricky}"; export default {};`,
+		[tricky]: "export {};",
+	});
+	await approve(dir, sandbox);
+	await writeFile(
+		join(dir, "playpen.config.js"),
+		`import "./${tricky}"; export default { masked: [] };`,
+		"utf8",
+	);
+	const shown = await promptFor(dir, sandbox);
+	assert.match(shown, /^ {2}── \\x1b\[8mhidden\.js \(unchanged\)$/m);
+	assert.ok(!shown.includes(ESC), `a raw ESC reached the terminal: ${shown}`);
 });

@@ -103,11 +103,39 @@ async function snapshot(sandbox: string, graph: ConfigGraph): Promise<string> {
 	return join(dir, graph.entry);
 }
 
-function preview(
+/**
+ * What a terminal would act on rather than show: C0 controls but tab and
+ * newline, DEL, C1 controls, and the bidi marks, embeddings, overrides and
+ * isolates that reorder a line on screen. U+2028 and U+2029 are here too:
+ * JavaScript ends a line at them (ECMA-262, LineTerminator), a terminal does
+ * not, so a `//` comment could end there invisibly.
+ */
+const UNSHOWABLE =
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: matching them is the point
+	/[\x00-\x08\x0b-\x1f\x7f-\x9f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
+
+export function escapeControls(text: string): string {
+	return text.replace(UNSHOWABLE, (c) => {
+		if (c === "\r") return "\\r";
+		const code = c.charCodeAt(0);
+		return code < 0x80
+			? `\\x${code.toString(16).padStart(2, "0")}`
+			: `\\u${code.toString(16).padStart(4, "0")}`;
+	});
+}
+
+/**
+ * Names and contents come from a directory the guest can write, so both are
+ * printed escaped, and a last line names the files that needed it.
+ */
+export async function previewApproval(
+	sandbox: string,
 	graph: ConfigGraph,
-	approved: Record<string, string> | undefined,
-): string {
+): Promise<string> {
+	const record = await readRecord(sandbox);
+	const approved = record?.file === graph.entry ? record.files : undefined;
 	const out: string[] = [];
+	const escaped: string[] = [];
 	for (const f of graph.files) {
 		const before = approved?.[f.rel];
 		const status =
@@ -116,10 +144,20 @@ function preview(
 				: before === f.hash
 					? "unchanged"
 					: "changed";
-		out.push(`  ── ${f.rel} (${status})`);
-		if (status === "unchanged") continue;
-		for (const line of f.contents.replace(/\n$/, "").split("\n"))
-			out.push(`  │ ${line}`);
+		const lines =
+			status === "unchanged" ? [] : f.contents.replace(/\n$/, "").split("\n");
+		const name = escapeControls(f.rel);
+		const shown = lines.map(escapeControls);
+		if (name !== f.rel || shown.some((line, i) => line !== lines[i]))
+			escaped.push(name);
+		out.push(`  ── ${name} (${status})`);
+		for (const line of shown) out.push(`  │ ${line}`);
+	}
+	if (escaped.length > 0) {
+		out.push(
+			"",
+			`  warning: control characters, shown above as escapes like \\x1b or \\u202e, in: ${escaped.join(", ")}`,
+		);
 	}
 	return out.join("\n");
 }
@@ -209,7 +247,7 @@ export async function loadTrustedConfig(
 			`  ${count === 1 ? "1 file" : `${count} files`} will be executed:`,
 		);
 		console.error("");
-		console.error(preview(graph, pinned === null ? undefined : record?.files));
+		console.error(await previewApproval(sandbox, graph));
 		console.error("");
 
 		const ok = await confirm(`  execute ${name} on the host? [y/N] `);

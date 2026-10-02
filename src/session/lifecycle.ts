@@ -24,7 +24,7 @@ import {
 	type LoadedNetwork,
 } from "./projectconfig.ts";
 import * as store from "./store.ts";
-import { loadTrustedConfig } from "./trust.ts";
+import { escapeControls, loadTrustedConfig } from "./trust.ts";
 
 export interface Sandbox {
 	sandbox: string;
@@ -66,7 +66,9 @@ async function loadConfig(sb: Sandbox): Promise<{
 		legacyIgnore,
 	} = await loadTrustedConfig(sb.cwd, sb.sandbox);
 	if (error) {
-		console.error(`warning: ${CONFIG_FILE} not loaded (${error})`);
+		console.error(
+			`warning: ${CONFIG_FILE} not loaded (${escapeControls(error)})`,
+		);
 		console.error(
 			`  continuing with no masks and no setup; everything is shared over 9p.`,
 		);

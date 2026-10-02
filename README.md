@@ -135,6 +135,9 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
 - playpen prints the file and asks before executing it, again whenever it or
   anything it imports changes. Approvals live outside the project, so a sandbox
   cannot approve its own edits.
+- The prompt prints control characters and bidi marks as escapes, `\x1b` or
+  `\u202e`, and names the files that held any, so a file cannot make the
+  terminal show code other than what it holds.
 - No terminal, no approval: the file is not executed, and you get neither masks
   nor setup.
 
