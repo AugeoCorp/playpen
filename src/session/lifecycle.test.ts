@@ -582,6 +582,26 @@ test("a bad secret fails the config load, so the sandbox starts with no project 
 	assert.equal(fencedWith?.allow.includes("example.com"), false);
 });
 
+test("a config that cannot be loaded is reported with the control characters in its import paths escaped", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await writeFile(
+		join(sb.cwd, "playpen.config.js"),
+		'import "../\u202eevil.js"; export default {};',
+		"utf8",
+	);
+	const said = t.mock.method(console, "error", () => {});
+	await run();
+	const lines = said.mock.calls.map((c) => String(c.arguments[0])).join("\n");
+	assert.ok(
+		!lines.includes("\u202e"),
+		`a raw U+202E reached the terminal: ${lines}`,
+	);
+	assert.match(
+		lines,
+		/not loaded \(.*"\.\.\/\\u\{202e\}evil\.js", which is outside/,
+	);
+});
+
 test("a guest port nothing could listen on is named in a warning, and the sandbox still starts", async (t) => {
 	const { run } = await sandboxFor(
 		t,

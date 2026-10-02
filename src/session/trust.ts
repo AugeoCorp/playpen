@@ -103,11 +103,56 @@ async function snapshot(sandbox: string, graph: ConfigGraph): Promise<string> {
 	return join(dir, graph.entry);
 }
 
-function preview(
+/**
+ * Characters that draw as nothing, or that a terminal acts on instead of
+ * drawing: controls (Cc) other than tab and newline, format characters (Cf:
+ * bidi controls, zero-width joiners, tag characters), the line and paragraph
+ * separators (Zl, Zp), lone surrogates (Cs), and every default-ignorable
+ * code point, which a renderer may draw as nothing. Several of those, such as
+ * variation selectors and the Hangul fillers, are legal inside a JavaScript
+ * name, so `false` followed by one is a name and not the keyword.
+ *
+ * Escaping a line terminator does not stop it ending a line for the parser,
+ * so it alone cannot keep code from hiding behind a `//`; `linesOf` breaks
+ * the displayed line there too.
+ */
+const UNSHOWABLE =
+	/(?![\t\n])[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}\p{Default_Ignorable_Code_Point}]/gu;
+
+export function escapeControls(text: string): string {
+	return text.replace(UNSHOWABLE, (c) => {
+		if (c === "\r") return "\\r";
+		const code = c.codePointAt(0) ?? 0;
+		return code < 0x80
+			? `\\x${code.toString(16).padStart(2, "0")}`
+			: `\\u{${code.toString(16)}}`;
+	});
+}
+
+/**
+ * A line ends wherever JavaScript ends one (ECMA-262, LineTerminator): at a
+ * lone `\r`, U+2028 and U+2029 as well as `\n`. Each terminator but `\n` stays
+ * on the line it ends, to be escaped there, so the code after it starts a line
+ * of its own on screen just as it does to the parser.
+ */
+function linesOf(contents: string): string[] {
+	return contents
+		.split(/(?<=\n|\r(?!\n)|\u2028|\u2029)/)
+		.map((line) => line.replace(/\n$/, ""));
+}
+
+/**
+ * Names and contents come from a directory the guest can write, so both are
+ * printed escaped, and a last line names the files that needed it.
+ */
+export async function previewApproval(
+	sandbox: string,
 	graph: ConfigGraph,
-	approved: Record<string, string> | undefined,
-): string {
+): Promise<string> {
+	const record = await readRecord(sandbox);
+	const approved = record?.file === graph.entry ? record.files : undefined;
 	const out: string[] = [];
+	const escaped: string[] = [];
 	for (const f of graph.files) {
 		const before = approved?.[f.rel];
 		const status =
@@ -116,10 +161,19 @@ function preview(
 				: before === f.hash
 					? "unchanged"
 					: "changed";
-		out.push(`  ── ${f.rel} (${status})`);
-		if (status === "unchanged") continue;
-		for (const line of f.contents.replace(/\n$/, "").split("\n"))
-			out.push(`  │ ${line}`);
+		const lines = status === "unchanged" ? [] : linesOf(f.contents);
+		const name = escapeControls(f.rel);
+		const shown = lines.map(escapeControls);
+		if (name !== f.rel || shown.some((line, i) => line !== lines[i]))
+			escaped.push(name);
+		out.push(`  ── ${name} (${status})`);
+		for (const line of shown) out.push(`  │ ${line}`);
+	}
+	if (escaped.length > 0) {
+		out.push(
+			"",
+			`  warning: invisible or control characters, shown above as escapes like \\x1b or \\u{200d}, in: ${escaped.join(", ")}`,
+		);
 	}
 	return out.join("\n");
 }
@@ -209,7 +263,7 @@ export async function loadTrustedConfig(
 			`  ${count === 1 ? "1 file" : `${count} files`} will be executed:`,
 		);
 		console.error("");
-		console.error(preview(graph, pinned === null ? undefined : record?.files));
+		console.error(await previewApproval(sandbox, graph));
 		console.error("");
 
 		const ok = await confirm(`  execute ${name} on the host? [y/N] `);
