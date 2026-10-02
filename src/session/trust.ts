@@ -172,7 +172,10 @@ interface FileView {
 
 /**
  * A changed file is diffed from the in-memory bytes that were just hashed,
- * never the file on disk, which the guest can rewrite after hashing. A file
+ * never the file on disk, which the guest can rewrite after hashing. Every
+ * line is shown, not just those near a change: an edit can change what an
+ * untouched line far from it means, such as closing a template literal that
+ * held it. A file
  * shown whole is shown as all added, so none of its lines can pass for a
  * removed or unchanged one.
  */
@@ -189,7 +192,11 @@ async function viewOf(
 	if (approvedHash === f.hash) return { note: "unchanged", lines: [] };
 	const old = await approvedCopy(sandbox, f.rel, approvedHash);
 	if ("missing" in old) return whole(`changed, shown whole: ${old.missing}`);
-	const diff = unifiedDiff(linesOf(old.contents), linesOf(f.contents));
+	const diff = unifiedDiff(
+		linesOf(old.contents),
+		linesOf(f.contents),
+		Number.POSITIVE_INFINITY,
+	);
 	if (diff === null) return whole("changed, shown whole: too long to diff");
 	if (diff.length === 0)
 		return {

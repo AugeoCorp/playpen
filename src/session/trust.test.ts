@@ -449,7 +449,7 @@ const NETWORKED = [
 	"",
 ].join("\n");
 
-test("a changed file is shown as a diff against the approved version, not whole", async (t) => {
+test("a changed file is shown as a diff against the approved version, every line of it, with the change marked", async (t) => {
 	const { dir, sandbox } = await scenario(t, {
 		"playpen.config.js": NETWORKED,
 	});
@@ -463,7 +463,8 @@ test("a changed file is shown as a diff against the approved version, not whole"
 		await promptFor(dir, sandbox),
 		[
 			"  ── playpen.config.js (changed)",
-			"  │ @@ -2,6 +2,6 @@",
+			"  │ @@ -1,7 +1,7 @@",
+			"  │  export default {",
 			'  │  \tmasked: ["node_modules"],',
 			'  │  \tsetup: ["npm ci"],',
 			"  │  \tnetwork: {",
@@ -472,6 +473,39 @@ test("a changed file is shown as a diff against the approved version, not whole"
 			"  │  \t},",
 			"  │  };",
 		].join("\n"),
+	);
+});
+
+test("an approved line far from any change is still shown, since a change elsewhere can make it run", async (t) => {
+	const approved = [
+		"export default {};",
+		"const notes = `",
+		"// 1",
+		"// 2",
+		"// 3",
+		"// 4",
+		"globalThis.PWN = 1;",
+		"// 5",
+		"// 6",
+		"// 7",
+		"// 8",
+		"`;",
+	];
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": approved.join("\n"),
+	});
+	await approveAndLoad(dir, sandbox);
+	await writeFile(
+		join(dir, "playpen.config.js"),
+		approved
+			.join("\n")
+			.replace("const notes = `", "const notes = ``;")
+			.replace(/`;$/, "const end = ``;"),
+		"utf8",
+	);
+	assert.match(
+		await promptFor(dir, sandbox),
+		/^ {2}│ {2}globalThis\.PWN = 1;$/m,
 	);
 });
 
