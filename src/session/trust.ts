@@ -113,15 +113,17 @@ async function snapshot(sandbox: string, graph: ConfigGraph): Promise<string> {
  * Characters that draw as nothing, or that a terminal acts on instead of
  * drawing: controls (Cc) other than tab and newline, format characters (Cf:
  * bidi controls, zero-width joiners, tag characters), the line and paragraph
- * separators (Zl, Zp), lone surrogates (Cs), and the Hangul fillers, which
- * JavaScript accepts inside a name but which draw as blank space.
+ * separators (Zl, Zp), lone surrogates (Cs), and every default-ignorable
+ * code point, which a renderer may draw as nothing. Several of those, such as
+ * variation selectors and the Hangul fillers, are legal inside a JavaScript
+ * name, so `false` followed by one is a name and not the keyword.
  *
  * Escaping a line terminator does not stop it ending a line for the parser,
  * so it alone cannot keep code from hiding behind a `//`; `linesOf` breaks
  * the displayed line there too.
  */
 const UNSHOWABLE =
-	/(?![\t\n])[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}\u115F\u1160\u3164\uFFA0]/gu;
+	/(?![\t\n])[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}\p{Default_Ignorable_Code_Point}]/gu;
 
 export function escapeControls(text: string): string {
 	return text.replace(UNSHOWABLE, (c) => {
