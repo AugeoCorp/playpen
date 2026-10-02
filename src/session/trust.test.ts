@@ -218,6 +218,9 @@ const LEFT_TO_RIGHT_ISOLATE = String.fromCodePoint(0x2066);
 const LEFT_TO_RIGHT_MARK = String.fromCodePoint(0x200e);
 const TAG_LATIN_A = String.fromCodePoint(0xe0041);
 const HANGUL_FILLER = String.fromCodePoint(0x3164);
+const VARIATION_SELECTOR_16 = String.fromCodePoint(0xfe0f);
+const VARIATION_SELECTOR_17 = String.fromCodePoint(0xe0100);
+const ANNOTATION_ANCHOR = String.fromCodePoint(0xfff9);
 
 test("the prompt shows an escape sequence in a config as text, so it cannot redraw the screen", async (t) => {
 	const { dir, sandbox } = await scenario(t, {
@@ -362,6 +365,43 @@ test("a Hangul filler, which JavaScript accepts in a name but draws as blank, is
 		`a raw HANGUL_FILLER reached the terminal: ${shown}`,
 	);
 	assert.match(shown, /│ const \\u\{3164\} = 1;$/m);
+});
+
+test("a variation selector, U+FE0F, is shown, since it makes `false` followed by it a name rather than the keyword", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": `globalThis["false${VARIATION_SELECTOR_16}"] = true;\nif (false${VARIATION_SELECTOR_16}) globalThis.PWN_VS = 1;`,
+	});
+	const shown = await promptFor(dir, sandbox);
+	assert.ok(
+		!shown.includes(VARIATION_SELECTOR_16),
+		`a raw U+FE0F reached the terminal: ${shown}`,
+	);
+	assert.match(shown, /│ if \(false\\u\{fe0f\}\) globalThis\.PWN_VS = 1;$/m);
+	assert.match(shown, /warning: [^\n]* in: playpen\.config\.js$/);
+});
+
+test("a supplementary variation selector, U+E0100, is shown as one escape", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": `const a = "x${VARIATION_SELECTOR_17}y";`,
+	});
+	const shown = await promptFor(dir, sandbox);
+	assert.ok(
+		!shown.includes(VARIATION_SELECTOR_17),
+		`a raw U+E0100 reached the terminal: ${shown}`,
+	);
+	assert.match(shown, /│ const a = "x\\u\{e0100\}y";$/m);
+});
+
+test("an interlinear annotation anchor, U+FFF9, a format character that is not default-ignorable, is shown as an escape", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": `const a = "x${ANNOTATION_ANCHOR}y";`,
+	});
+	const shown = await promptFor(dir, sandbox);
+	assert.ok(
+		!shown.includes(ANNOTATION_ANCHOR),
+		`a raw U+FFF9 reached the terminal: ${shown}`,
+	);
+	assert.match(shown, /│ const a = "x\\u\{fff9\}y";$/m);
 });
 
 test("escaping leaves tabs and newlines as they are, so a multi-line message keeps its shape", () => {

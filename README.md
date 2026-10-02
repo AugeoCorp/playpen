@@ -136,10 +136,13 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
   anything it imports changes. Approvals live outside the project, so a sandbox
   cannot approve its own edits.
 - The prompt shows control characters, format characters (bidi controls,
-  zero-width joiners), the line separators and the Hangul fillers as escapes
-  such as `\x1b` or `\u{200d}`, and names the files that held any. It starts a
-  new line wherever JavaScript ends one, `\r` and U+2028 included. It does not
-  catch look-alike letters from other scripts.
+  zero-width joiners), the line separators and every default-ignorable code
+  point (variation selectors, Hangul fillers) as escapes such as `\x1b` or
+  `\u{fe0f}`, and names the files that held any. It starts a new line wherever
+  JavaScript ends one, `\r` and U+2028 included. Look-alike letters from other
+  scripts, such as a Cyrillic `а`, are not caught.
+- An emoji written with U+FE0F, as many are, is shown escaped and triggers the
+  warning too.
 - No terminal, no approval: the file is not executed, and you get neither masks
   nor setup.
 
