@@ -10,8 +10,24 @@ description:
 # Testing playpen against a real VM in a cloud container
 
 The container has no `/dev/kvm`, so QEMU runs under software emulation (TCG). It
-works, slowly: the first `playpen start` bakes the base image in about 11
-minutes, and later boots take about 3.
+works, slowly. Later boots take about 3 minutes. Baking the base image took
+about 11 minutes in one container, and in another it ran past the 20 minutes
+`createAndStart` in `src/lima/client.ts` allows, so playpen deleted the
+half-built base.
+
+If `start` or `image build` fails with
+`did not receive an event with the running status`, bake the base by hand from
+the template playpen kept, with more time, and stop it. playpen finds a base by
+its name, so the next `start` clones it as usual:
+
+```
+T=$(ls /home/runner/pp-data/playpen/templates/playpen-base-*.yaml)
+N=$(basename "$T" .yaml)
+su runner -c "limactl start --name=$N --tty=false --timeout=60m $T && limactl stop $N"
+```
+
+To see where provisioning is while it runs:
+`su runner -c "limactl shell --workdir / $N sudo tail /var/log/cloud-init-output.log"`.
 
 ## Set up
 
@@ -67,6 +83,6 @@ the fuller fence test; read its header for the environment it needs.
 
 Only stop or delete playpen's own instances: `pp stop`, or `pp remove --yes` in
 the scratch project. Leave the scratch sandbox stopped when done. The baked base
-is kept, so the next `start` skips the 11 minutes.
+is kept, so the next `start` skips the bake.
 
 Say in the PR which parts ran against the VM and which did not.
