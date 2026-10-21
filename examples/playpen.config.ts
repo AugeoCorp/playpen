@@ -3,6 +3,9 @@ export default {
 	// Guest-local storage for paths that are slow or platform-specific on the share.
 	masked: ["node_modules"],
 
+	// Host directories the guest may read, each at its own path. Each one is approved separately.
+	mounts: ["../shared-lib"],
+
 	// Run in the guest on create and after a rebuild. `playpen setup` re-runs them.
 	setup: ["npm ci"],
 

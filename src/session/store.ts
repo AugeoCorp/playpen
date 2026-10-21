@@ -12,6 +12,8 @@ export interface SessionMeta {
 	/** Base this sandbox was cloned from. The image hash is what decides staleness. */
 	baseInstance?: string;
 	pinned?: boolean;
+	/** Read-only mounts written into the clone. Absent on sandboxes made before they existed, which have none. */
+	mounts?: string[];
 	/** Fingerprint of the ~/.claude subset last copied in; skips unchanged re-pushes. */
 	configHash?: string;
 }

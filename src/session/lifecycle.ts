@@ -17,14 +17,14 @@ import * as history from "./history.ts";
 import { instanceName, sandboxName } from "./identity.ts";
 import * as leases from "./leases.ts";
 import { withLock } from "./lock.ts";
-import { checkMount } from "./mountguard.ts";
+import { checkMount, checkReadOnlyMount } from "./mountguard.ts";
 import {
 	CONFIG_FILE,
 	LEGACY_IGNORE_FILE,
 	type LoadedNetwork,
 } from "./projectconfig.ts";
 import * as store from "./store.ts";
-import { loadTrustedConfig } from "./trust.ts";
+import { approveMounts, loadTrustedConfig } from "./trust.ts";
 
 export interface Sandbox {
 	sandbox: string;
@@ -52,18 +52,22 @@ function renderFor(sb: Sandbox) {
 
 async function loadConfig(sb: Sandbox): Promise<{
 	masked: string[];
+	mounts: string[];
 	setup: string[];
 	network: LoadedNetwork;
 }> {
 	const {
 		masked,
+		mounts: requested,
 		setup,
 		network,
 		rejected,
+		rejectedMounts,
 		rejectedSetup,
 		rejectedNetwork,
 		error,
 		legacyIgnore,
+		loaded,
 	} = await loadTrustedConfig(sb.cwd, sb.sandbox);
 	if (error) {
 		console.error(`warning: ${CONFIG_FILE} not loaded (${error})`);
@@ -81,6 +85,9 @@ async function loadConfig(sb: Sandbox): Promise<{
 	}
 	for (const bad of rejected) {
 		console.error(`warning: ignoring invalid \`masked\` entry: ${bad}`);
+	}
+	for (const bad of rejectedMounts) {
+		console.error(`warning: ignoring invalid \`mounts\` entry: ${bad}`);
 	}
 	for (const bad of rejectedSetup) {
 		console.error(`warning: ignoring invalid \`setup\` entry: ${bad}`);
@@ -111,7 +118,26 @@ async function loadConfig(sb: Sandbox): Promise<{
 	for (const { env, hosts } of network.secrets) {
 		console.error(`naming ${env} for ${hosts.join(", ")} (not injected yet)`);
 	}
-	return { masked, setup, network };
+	// An unloaded config names nothing, and approving nothing would forget
+	// every path approved before.
+	const mounts = loaded ? await grantMounts(sb, requested) : [];
+	if (mounts.length > 0) {
+		console.error(`mounting read-only: ${mounts.join(", ")}`);
+	}
+	return { masked, mounts, setup, network };
+}
+
+async function grantMounts(
+	sb: Sandbox,
+	requested: readonly string[],
+): Promise<string[]> {
+	const resolved: string[] = [];
+	for (const entry of requested) {
+		const result = await checkReadOnlyMount(entry, sb.cwd);
+		if (!result.ok) console.error(`warning: ${result.reason}`);
+		else if (!resolved.includes(result.path)) resolved.push(result.path);
+	}
+	return approveMounts(sb.sandbox, resolved);
 }
 
 /**
@@ -150,18 +176,21 @@ interface Template {
 	yaml: string;
 	hash: string;
 	masks: string[];
+	/** Approved and resolved, so these are exactly the paths Lima is given. */
+	mounts: string[];
 	setup: string[];
 	network: LoadedNetwork;
 }
 
 /** Loads the project config, so it is read once per command and reused. */
 async function renderTemplate(sb: Sandbox): Promise<Template> {
-	const { masked, setup, network } = await loadConfig(sb);
+	const { masked, mounts, setup, network } = await loadConfig(sb);
 	const rendered = renderFor(sb);
 	return {
 		yaml: `${serialize(rendered)}\n`,
 		hash: rendered.contentHash,
 		masks: masked,
+		mounts,
 		setup,
 		network,
 	};
@@ -181,7 +210,12 @@ async function writeTemplate(sb: Sandbox, template: Template): Promise<void> {
  */
 const NO_MOUNTS = /"?mounts"?\s*:\s*\[\s*\]/g;
 
-function mountsFor(sb: Sandbox): string {
+/**
+ * Read-only holds only because Lima passes `readonly=on` to QEMU's 9p share,
+ * so the host refuses the write. Under virtiofs it would be the guest's own
+ * mount flag, which its passwordless root can lift.
+ */
+function mountsFor(sb: Sandbox, readOnly: readonly string[]): string {
 	// JSON is valid YAML in either style, and quotes the paths correctly.
 	return `"mounts": ${JSON.stringify([
 		{ location: sb.cwd, writable: true },
@@ -191,6 +225,7 @@ function mountsFor(sb: Sandbox): string {
 			writable: true,
 			"9p": { securityModel: history.SECURITY_MODEL },
 		},
+		...readOnly.map((location) => ({ location, writable: false })),
 	])}`;
 }
 
@@ -203,7 +238,10 @@ function mountsFor(sb: Sandbox): string {
  * Provisioning stays skipped: the guard markers are on the cloned disk and the
  * image hash has not changed.
  */
-async function giveCloneItsMount(sb: Sandbox): Promise<void> {
+async function giveCloneItsMounts(
+	sb: Sandbox,
+	readOnly: readonly string[],
+): Promise<void> {
 	const path = join(limaHome(), sb.instance, "lima.yaml");
 	const yaml = await readFile(path, "utf8");
 	const found = yaml.match(NO_MOUNTS)?.length ?? 0;
@@ -214,7 +252,7 @@ async function giveCloneItsMount(sb: Sandbox): Promise<void> {
 	}
 	await writeAtomic(
 		path,
-		yaml.replace(NO_MOUNTS, () => mountsFor(sb)),
+		yaml.replace(NO_MOUNTS, () => mountsFor(sb, readOnly)),
 	);
 }
 
@@ -254,6 +292,25 @@ async function changedTemplate(
 	}
 	if (current.yaml === previous) return null;
 	return `the image or ${CONFIG_FILE} changed since this sandbox was created.`;
+}
+
+/**
+ * Mounts are written into a clone once, when it is made, so a changed list
+ * only reaches a new one. Compared as sets: the order is not something Lima
+ * or the guest can tell apart.
+ */
+async function changedMounts(
+	sb: Sandbox,
+	current: Template,
+): Promise<string | null> {
+	const meta = await store.load(sb.sandbox);
+	if (meta === null) return null;
+	const before = meta.mounts ?? [];
+	const same =
+		before.length === current.mounts.length &&
+		current.mounts.every((p) => before.includes(p));
+	if (same) return null;
+	return `the read-only mounts changed since this sandbox was created.`;
 }
 
 /**
@@ -399,7 +456,9 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 	if (existing) {
 		template = await renderTemplate(sb);
 		const reason =
-			(await changedTemplate(sb, template)) ?? (await outdatedBase(sb));
+			(await changedTemplate(sb, template)) ??
+			(await changedMounts(sb, template)) ??
+			(await outdatedBase(sb));
 		rebuilding = reason !== null && (await confirmRebuild(sb, reason));
 		if (!rebuilding) {
 			const fence = lima.isRunning(existing)
@@ -447,7 +506,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 	await lima.clone(base.instance, sb.instance);
 	try {
 		await history.makeHostDir(sb.sandbox);
-		await giveCloneItsMount(sb);
+		await giveCloneItsMounts(sb, current.mounts);
 		await startFenced(sb, current);
 	} catch (err) {
 		await lima
@@ -473,6 +532,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 		lastUsed: now,
 		imageHash: current.hash,
 		baseInstance: base.instance,
+		mounts: current.mounts,
 	});
 
 	// Not on every start, so `run` and `shell` stay fast. A rebuild reaches here

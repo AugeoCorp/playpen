@@ -88,6 +88,19 @@ export interface PlaypenConfig {
 	masked?: string[];
 
 	/**
+	 * Host directories mounted read-only into the guest, each at its own path.
+	 * An entry is absolute, `~/`-relative, or relative to the project, so a
+	 * sibling checkout is `../shared-lib`.
+	 *
+	 * The guest can write this file, so naming a path here is a request, not a
+	 * grant: `start` asks for each new one before mounting it, and a path that
+	 * is refused or not yet approved is left out. Home, every `~/.*`
+	 * directory, the system directories and playpen's own state are refused
+	 * outright, as is anything overlapping the project. Changing the list needs a rebuild, which `start` offers.
+	 */
+	mounts?: string[];
+
+	/**
 	 * Shell commands run in the guest, in order, on create and after a rebuild.
 	 * `playpen setup` re-runs them.
 	 *
@@ -122,10 +135,14 @@ export interface LoadedNetwork {
 
 export interface LoadedConfig {
 	masked: string[];
+	/** As written: resolving and approving a path needs the host, not the schema. */
+	mounts: string[];
 	setup: string[];
 	network: LoadedNetwork;
 	/** `masked` entries dropped by validation, verbatim, for warning about. */
 	rejected: string[];
+	/** `mounts` entries dropped by validation, verbatim. */
+	rejectedMounts: string[];
 	/** `setup` entries dropped by validation, verbatim. */
 	rejectedSetup: string[];
 	/** `network.allow` entries dropped by validation, verbatim. */
@@ -175,6 +192,15 @@ const maskEntry = z
 			!clean.startsWith("..") &&
 			!clean.includes("*"),
 	);
+
+/**
+ * Only shape here. Where a path points is decided on the host when the sandbox
+ * starts, because it depends on the project directory and the filesystem.
+ */
+const mountEntry = z
+	.string()
+	.trim()
+	.refine((entry) => entry !== "" && !entry.includes("*"));
 
 /**
  * Only shape is checked. The command itself is not parsed or restricted: it
@@ -298,6 +324,7 @@ const configSchema = z
 	.object(
 		{
 			masked: lenientList(maskEntry),
+			mounts: lenientList(mountEntry),
 			setup: lenientList(setupEntry),
 			network: networkSchema,
 		},
@@ -311,13 +338,16 @@ const configSchema = z
 	.transform(
 		({
 			masked,
+			mounts,
 			setup,
 			network: { allow, mode, ports, secrets },
 		}): LoadedConfig => ({
 			masked: masked.kept,
+			mounts: [...new Set(mounts.kept)],
 			setup: setup.kept,
 			network: { allow: [...new Set(allow.kept)], mode, ports, secrets },
 			rejected: masked.dropped,
+			rejectedMounts: mounts.dropped,
 			rejectedSetup: setup.dropped,
 			rejectedNetwork: allow.dropped,
 		}),
@@ -326,6 +356,11 @@ const configSchema = z
 export function validateMasks(entries: readonly unknown[]) {
 	const { masked, rejected } = configSchema.parse({ masked: entries });
 	return { masked, rejected };
+}
+
+export function validateMounts(entries: readonly unknown[]) {
+	const { mounts, rejectedMounts } = configSchema.parse({ mounts: entries });
+	return { mounts, rejected: rejectedMounts };
 }
 
 export function validateSetup(entries: readonly unknown[]) {
@@ -384,9 +419,11 @@ export async function importConfig(file: string): Promise<LoadedConfig> {
 	const name = basename(file);
 	const empty: LoadedConfig = {
 		masked: [],
+		mounts: [],
 		setup: [],
 		network: { allow: [], mode: "enforce", ports: [], secrets: [] },
 		rejected: [],
+		rejectedMounts: [],
 		rejectedSetup: [],
 		rejectedNetwork: [],
 	};
@@ -414,9 +451,11 @@ export async function loadProjectConfig(
 	if (name === null)
 		return {
 			masked: [],
+			mounts: [],
 			setup: [],
 			network: { allow: [], mode: "enforce", ports: [], secrets: [] },
 			rejected: [],
+			rejectedMounts: [],
 			rejectedSetup: [],
 			rejectedNetwork: [],
 			legacyIgnore,
