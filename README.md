@@ -97,10 +97,12 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
 - `mounts` entries are absolute, `~/`-relative, or relative to the project, so a
   sibling checkout is `../shared-lib`. The guest can write the config, so an
   entry is only a request: `start` asks before mounting each new path, and
-  without a terminal it is left out. Home, the system directories, playpen's and
-  Lima's own state, `~/.claude`, and anything overlapping the project are
-  refused, symlinks followed first. Changing the list takes a rebuild, which
-  `start` offers. Read-only is enforced by QEMU on the host, not by the guest.
+  without a terminal it is left out. Home, every `~/.*` directory (where
+  credentials live, package caches like `~/.m2` included), the system
+  directories, playpen's and Lima's own state, and anything overlapping the
+  project are refused, symlinks followed first. Changing the list takes a
+  rebuild, which `start` offers. Read-only is enforced by QEMU on the host, not
+  by the guest.
 - `setup` runs on create and after a rebuild, never on start. Nothing is
   inferred from a lockfile. `playpen setup` re-runs it.
 - `network.allow` is a list of names, not addresses: an entry is a hostname,

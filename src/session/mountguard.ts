@@ -1,6 +1,6 @@
 import { realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, parse, resolve } from "node:path";
+import { join, parse, relative, resolve } from "node:path";
 import { dataDir, limaHome } from "../config.ts";
 import { exists } from "../fs.ts";
 
@@ -147,13 +147,25 @@ export async function checkReadOnlyMount(
 		};
 	}
 
+	const home = await real(env.home);
 	const reason = refusal(
 		abs,
-		await real(env.home),
+		home,
 		await Promise.all(env.protectedDirs.map(real)),
 		"read",
 	);
 	if (reason !== null) return { ok: false, reason };
+
+	// Credentials live in ~/.ssh, ~/.aws, ~/.config/<tool> and wherever else a
+	// tool chose, so no list of them is ever complete. Every top-level dot
+	// directory is refused instead, package caches like ~/.m2 with them.
+	const hidden = contains(home, abs) && relative(home, abs).startsWith(".");
+	if (hidden) {
+		return {
+			ok: false,
+			reason: `refusing to mount ${abs}: directories under ~/.* are where credentials live`,
+		};
+	}
 
 	const shared = await real(project);
 	if (abs === shared || contains(abs, shared) || contains(shared, abs)) {

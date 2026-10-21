@@ -94,9 +94,9 @@ export interface PlaypenConfig {
 	 *
 	 * The guest can write this file, so naming a path here is a request, not a
 	 * grant: `start` asks for each new one before mounting it, and a path that
-	 * is refused or not yet approved is left out. Home, the system directories
-	 * and playpen's own state are refused outright, as is anything overlapping
-	 * the project. Changing the list needs a rebuild, which `start` offers.
+	 * is refused or not yet approved is left out. Home, every `~/.*`
+	 * directory, the system directories and playpen's own state are refused
+	 * outright, as is anything overlapping the project. Changing the list needs a rebuild, which `start` offers.
 	 */
 	mounts?: string[];
 
