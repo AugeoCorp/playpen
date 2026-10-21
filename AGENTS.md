@@ -24,7 +24,8 @@ still asks for `.ts` after compilation. Run that file on a Node with type
 stripping.
 
 Anything touching a real VM is verified by hand with `playpen start`. Say when
-you could not.
+you could not. In a Claude Code cloud container, the `cloud-vm-test` skill
+(`.claude/skills/cloud-vm-test/`) sets that up.
 
 ## Do not relitigate
 
