@@ -51,7 +51,8 @@ makes the guest trust the container's interception CAs: the certificates in
 agent proxy and an egress gateway the guest's direct traffic goes through, so it
 takes them all. It also puts `NODE_EXTRA_CA_CERTS` in the template's `env` for
 npm, which keeps its own CA list. It uses the name playpen looks for. Bake it,
-then stop it, since `limactl clone` refuses a running source:
+then stop it, since `limactl clone` refuses a running source. It took 28 minutes
+from nothing:
 
 ```
 set -- $(setpriv --reuid runner --regid runner --init-groups env -i \
