@@ -10,8 +10,8 @@ description:
 # Testing playpen against a real VM in a cloud container
 
 The container has no `/dev/kvm`, so QEMU runs under software emulation (TCG). It
-works, slowly: the first `playpen start` bakes the base image in about 11
-minutes, and later boots take about 3.
+works, slowly: a sandbox boot takes a few minutes, and baking the base image
+much longer.
 
 ## Set up
 
@@ -35,6 +35,42 @@ from `env -i`, so the container's tokens never reach the test user.
 Downloads go to github.com, nodejs.org and cloud-images.ubuntu.com. The session
 needs read access to lima-vm/lima, or the proxy answers 403.
 
+## Bake the base
+
+Do not let `pp start` bake it. The container's outbound HTTPS is intercepted,
+and the guest does not trust the interceptor's certificate, so every
+`curl https://…` in provisioning fails. Claude Code, Node and tun2proxy never
+install, the readiness probe for `claude` waits until Lima's timeout, and
+playpen deletes the half-built base. The error is only
+`did not receive an event with the running status`; it is not a timeout to
+raise.
+
+`bake-base.ts` writes playpen's own base template with one extra first step that
+makes the guest trust the container's interception CAs: the certificates in
+`/opt/ca-bundle.crt` that are not public roots. There are two interceptors, the
+agent proxy and an egress gateway the guest's direct traffic goes through, so it
+takes them all. It also puts `NODE_EXTRA_CA_CERTS` in the template's `env` for
+npm, which keeps its own CA list. It uses the name playpen looks for. Bake it,
+then stop it, since `limactl clone` refuses a running source. It took 28 minutes
+from nothing:
+
+```
+set -- $(setpriv --reuid runner --regid runner --init-groups env -i \
+  HOME=/home/runner PATH=/opt/node/bin:/usr/bin:/bin \
+  XDG_DATA_HOME=/home/runner/pp-data \
+  node .claude/skills/cloud-vm-test/bake-base.ts)
+su runner -c "limactl start --name=$1 --tty=false --timeout=60m $2 && limactl stop $1"
+```
+
+Every sandbox cloned from that base trusts the interceptors too, which its own
+`curl`s need. The base is otherwise playpen's, so a test of anything but
+provisioning is unaffected; say so in the PR if provisioning is what changed.
+
+Follow provisioning while it runs with
+`su runner -c "limactl shell --workdir / $1 sudo tail /var/log/cloud-init-output.log"`.
+A step that failed shows as
+`WARNING: Failed to execute /mnt/lima-cidata/provision.system/0000000N`.
+
 ## Run
 
 Put a `playpen.config.js` in the scratch project, then `pp start`.
@@ -44,8 +80,8 @@ There are two ways around that:
 
 - Answer the prompts for real, which tests the prompts themselves. Run under
   `script` and feed answers with a delay, one per prompt:
-  `(sleep 20; echo y; sleep 20; echo y; sleep 3000) | script -qfec 'pp start' start.log`.
-  The trailing `sleep` keeps the terminal open through the bake.
+  `(sleep 20; echo y; sleep 20; echo y; sleep 1800) | script -qfec 'pp start' start.log`.
+  The trailing `sleep` keeps the terminal open until the sandbox is up.
 - Pre-approve, when the prompts are not what you are testing. Call `pinConfig`
   on the result of `readConfigGraph`, and `pinMounts` for read-only mounts, both
   from `src/session/trust.ts`. Run it as `runner`, with the same
@@ -67,6 +103,6 @@ the fuller fence test; read its header for the environment it needs.
 
 Only stop or delete playpen's own instances: `pp stop`, or `pp remove --yes` in
 the scratch project. Leave the scratch sandbox stopped when done. The baked base
-is kept, so the next `start` skips the 11 minutes.
+is kept, so the next `start` clones it.
 
 Say in the PR which parts ran against the VM and which did not.
