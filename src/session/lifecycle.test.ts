@@ -233,6 +233,70 @@ test("a new sandbox mounts its own host directory, writable, over the guest's ~/
 	]);
 });
 
+const SHARED = 'export default { mounts: ["../shared"] };';
+
+/** The sibling checkout SHARED names, next to the project. */
+async function sharedDir(sb: Sandbox): Promise<string> {
+	const dir = join(dirname(sb.cwd), "shared");
+	await mkdir(dir, { recursive: true });
+	return dir;
+}
+
+async function approveMount(sb: Sandbox, path: string): Promise<void> {
+	const { pinMounts } = await import("./trust.ts");
+	await pinMounts(sb.sandbox, [path]);
+}
+
+test("a new sandbox mounts an approved directory read-only, at the same path in the guest", async (t) => {
+	const { sb, run } = await sandboxFor(t, SHARED);
+	const shared = await sharedDir(sb);
+	await approveMount(sb, shared);
+	t.mock.method(console, "error", () => {});
+	await run();
+	assert.deepEqual((await limaMounts(sb)) as unknown[], [
+		{ location: sb.cwd, writable: true },
+		{
+			location: historyDirOf(sb),
+			mountPoint: "{{.Home}}/.claude/projects",
+			writable: true,
+			"9p": { securityModel: "mapped-xattr" },
+		},
+		{ location: shared, writable: false },
+	]);
+});
+
+test("a directory the project names but nobody approved is not mounted, and the sandbox still starts", async (t) => {
+	const { sb, run } = await sandboxFor(t, SHARED);
+	await sharedDir(sb);
+	const said = t.mock.method(console, "error", () => {});
+	const result = (await run()) as { created: boolean };
+	assert.equal(result.created, true);
+	assert.equal(((await limaMounts(sb)) as unknown[]).length, 2);
+	const lines = said.mock.calls.map((c) => String(c.arguments[0])).join("\n");
+	assert.match(lines, /not mounting .*shared: it is not yet approved/);
+});
+
+test("a sandbox is offered a rebuild once a read-only mount is approved after it was made", async (t) => {
+	const { sb, run } = await sandboxFor(t, SHARED);
+	const shared = await sharedDir(sb);
+	t.mock.method(console, "error", () => {});
+	await run();
+	await approveMount(sb, shared);
+	await run();
+	assert.deepEqual(asked, [
+		"  rebuild it now? ~10s, discards packages and masked dirs [y/N] ",
+	]);
+});
+
+test("a sandbox whose read-only mounts are unchanged is not offered a rebuild", async (t) => {
+	const { sb, run } = await sandboxFor(t, SHARED);
+	await approveMount(sb, await sharedDir(sb));
+	t.mock.method(console, "error", () => {});
+	await run();
+	await run();
+	assert.deepEqual(asked, []);
+});
+
 test("a clone's lima.yaml is replaced whole, so a reader holding it never sees it half-written", async (t) => {
 	const { sb, run } = await sandboxFor(t, BOTH);
 	await run();

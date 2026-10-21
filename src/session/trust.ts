@@ -146,9 +146,11 @@ export async function loadTrustedConfig(
 	const name = await findConfigFile(projectDir);
 	const skipped = (state: TrustState, error?: string): TrustedConfig => ({
 		masked: [],
+		mounts: [],
 		setup: [],
 		network: { allow: [], mode: "enforce", ports: [], secrets: [] },
 		rejected: [],
+		rejectedMounts: [],
 		rejectedSetup: [],
 		rejectedNetwork: [],
 		legacyIgnore,
@@ -200,6 +202,9 @@ export async function loadTrustedConfig(
 			`  its \`setup\` commands, if any, then run inside the sandbox.`,
 		);
 		console.error(
+			`  its \`mounts\` ask for host directories to be readable in the sandbox; each is asked about separately.`,
+		);
+		console.error(
 			`  its \`network\` entries decide what the sandbox reaches, ports on this machine included,`,
 		);
 		console.error(
@@ -222,4 +227,72 @@ export async function loadTrustedConfig(
 
 	const entry = await snapshot(sandbox, graph);
 	return { ...(await importConfig(entry)), legacyIgnore, state, loaded: true };
+}
+
+const mountRecord = z.object({ paths: z.array(z.string()) });
+
+function mountRecordPath(sandbox: string): string {
+	assertSandboxName(sandbox);
+	return join(trustDir(), `${sandbox}.mounts.json`);
+}
+
+export async function pinMounts(
+	sandbox: string,
+	paths: readonly string[],
+): Promise<void> {
+	await mkdir(trustDir(), { recursive: true });
+	await writeFile(
+		mountRecordPath(sandbox),
+		`${JSON.stringify({ paths }, null, 2)}\n`,
+		"utf8",
+	);
+}
+
+/**
+ * The paths a sandbox may mount read-only, asking about each one not approved
+ * before. Separate from approving the config: that decides whether the file
+ * runs, and only running it says which paths it names.
+ *
+ * Fails closed like the config: no terminal, or a no, leaves the path out.
+ * The record is rewritten to what is approved now, so a path dropped from the
+ * config and named again later is asked about again.
+ */
+export async function approveMounts(
+	sandbox: string,
+	paths: readonly string[],
+): Promise<string[]> {
+	let before: string[] = [];
+	try {
+		before = mountRecord.parse(
+			JSON.parse(await readFile(mountRecordPath(sandbox), "utf8")),
+		).paths;
+	} catch {
+		// Never approved anything, or a record we cannot read: ask again.
+	}
+
+	const approved: string[] = [];
+	for (const dir of paths) {
+		if (before.includes(dir)) {
+			approved.push(dir);
+			continue;
+		}
+		if (!process.stdin.isTTY) {
+			console.error(
+				`warning: not mounting ${dir}: it is not yet approved, and there is no terminal to ask.`,
+			);
+			console.error(`  approve it with an interactive: playpen start`);
+			continue;
+		}
+		console.error("");
+		console.error(`this project asks to mount ${dir} read-only.`);
+		console.error(`  everything in it becomes readable by the sandbox.`);
+		if (await confirm(`  allow it? [y/N] `)) approved.push(dir);
+		else console.error(`  declined; not mounting it.`);
+	}
+
+	const changed =
+		before.some((p) => !approved.includes(p)) ||
+		approved.some((p) => !before.includes(p));
+	if (changed) await pinMounts(sandbox, approved);
+	return approved;
 }

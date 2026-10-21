@@ -7,6 +7,7 @@ import {
 	LEGACY_IGNORE_FILE,
 	loadProjectConfig,
 	validateMasks,
+	validateMounts,
 	validateNetwork,
 	validateSetup,
 } from "./projectconfig.ts";
@@ -237,6 +238,39 @@ test("an invalid setup entry is dropped, not fatal", async (t) => {
 	assert.deepEqual(r.setup, ["npm ci"]);
 	assert.deepEqual(r.rejectedSetup, [""]);
 	assert.equal(r.error, undefined);
+});
+
+test("keeps mount paths as written, trimmed, whatever form they take", () => {
+	const r = validateMounts(["../shared-lib", " ~/notes ", "/opt/data"]);
+	assert.deepEqual(r.mounts, ["../shared-lib", "~/notes", "/opt/data"]);
+	assert.deepEqual(r.rejected, []);
+});
+
+test("names a mount path once, however often it is listed", () => {
+	assert.deepEqual(validateMounts(["../lib", "../lib"]).mounts, ["../lib"]);
+});
+
+test("rejects empty, glob and non-string mount entries", () => {
+	const r = validateMounts(["", "  ", "../*", 42, "../lib"]);
+	assert.deepEqual(r.mounts, ["../lib"]);
+	assert.deepEqual(r.rejected, ["", "  ", "../*", "42"]);
+});
+
+test("reads mounts from a default export", async (t) => {
+	const dir = await project(t, {
+		"playpen.config.js": 'export default { mounts: ["../shared-lib"] };',
+	});
+	const r = await loadProjectConfig(dir);
+	assert.deepEqual(r.mounts, ["../shared-lib"]);
+	assert.equal(r.error, undefined);
+});
+
+test("reports a non-array mounts instead of throwing", async (t) => {
+	const dir = await project(t, {
+		"playpen.config.js": 'export default { mounts: "../shared-lib" };',
+	});
+	const r = await loadProjectConfig(dir);
+	assert.match(r.error ?? "", /`mounts` must be an array/);
 });
 
 test("allows a hostname on its own or with a port", () => {

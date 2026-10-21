@@ -1,3 +1,4 @@
+import { realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, parse, resolve } from "node:path";
 import { dataDir, limaHome } from "../config.ts";
@@ -35,6 +36,40 @@ function contains(parent: string, child: string): boolean {
 }
 
 /**
+ * The same lines hold for a read-only mount: reading the data directory gives
+ * away every other sandbox's history, and Lima's home holds its SSH keys.
+ */
+function refusal(
+	abs: string,
+	home: string,
+	protectedDirs: readonly string[],
+	access: "read" | "write",
+): string | null {
+	if (abs === parse(abs).root) return "refusing to mount the filesystem root";
+	if (abs === home) {
+		return access === "write"
+			? `refusing to mount your home directory (${home}) read-write into a sandbox. ` +
+					`Run playpen from inside a project instead.`
+			: `refusing to mount your home directory (${home}) into a sandbox`;
+	}
+	if (contains(abs, home)) {
+		return `refusing to mount ${abs}: it contains your home directory`;
+	}
+	if (SYSTEM_DIRS.includes(abs)) {
+		return `refusing to mount system directory ${abs}`;
+	}
+	for (const guarded of protectedDirs) {
+		if (abs === guarded || contains(abs, guarded)) {
+			return `refusing to mount ${abs}: it contains ${guarded}, which the sandbox must not be able to ${access}`;
+		}
+		if (contains(guarded, abs)) {
+			return `refusing to mount ${abs}: it is inside ${guarded}, which the sandbox must not be able to ${access}`;
+		}
+	}
+	return null;
+}
+
+/**
  * Refuse to mount directories where a writable mount would be reckless.
  *
  * The sandbox exists to keep an agent away from your host filesystem. Mounting
@@ -46,43 +81,13 @@ export async function checkMount(
 	env: GuardEnv = hostEnv(),
 ): Promise<GuardResult> {
 	const abs = resolve(dir);
-	const home = resolve(env.home);
-
-	if (abs === parse(abs).root) {
-		return { ok: false, reason: "refusing to mount the filesystem root" };
-	}
-	if (abs === home) {
-		return {
-			ok: false,
-			reason:
-				`refusing to mount your home directory (${home}) read-write into a sandbox. ` +
-				`Run playpen from inside a project instead.`,
-		};
-	}
-	if (contains(abs, home)) {
-		return {
-			ok: false,
-			reason: `refusing to mount ${abs}: it contains your home directory`,
-		};
-	}
-	if (SYSTEM_DIRS.includes(abs)) {
-		return { ok: false, reason: `refusing to mount system directory ${abs}` };
-	}
-
-	for (const guarded of env.protectedDirs.map((p) => resolve(p))) {
-		if (abs === guarded || contains(abs, guarded)) {
-			return {
-				ok: false,
-				reason: `refusing to mount ${abs}: it contains ${guarded}, which the sandbox must not be able to write`,
-			};
-		}
-		if (contains(guarded, abs)) {
-			return {
-				ok: false,
-				reason: `refusing to mount ${abs}: it is inside ${guarded}, which the sandbox must not be able to write`,
-			};
-		}
-	}
+	const reason = refusal(
+		abs,
+		resolve(env.home),
+		env.protectedDirs.map((p) => resolve(p)),
+		"write",
+	);
+	if (reason !== null) return { ok: false, reason };
 
 	if (!(await exists(join(abs, ".git")))) {
 		return {
@@ -91,4 +96,71 @@ export async function checkMount(
 		};
 	}
 	return { ok: true };
+}
+
+export type ReadOnlyMount =
+	| { ok: true; path: string }
+	| { ok: false; reason: string };
+
+/** Compared by real path, so a symlink to a protected directory is caught too. */
+async function real(path: string): Promise<string> {
+	return realpath(path).catch(() => resolve(path));
+}
+
+/**
+ * Where a `mounts` entry points on this machine, or why it cannot be mounted.
+ *
+ * Resolved through symlinks before any check, because the guest sees the
+ * directory, not the link: a link inside a sibling repo to ~/.ssh is ~/.ssh.
+ * Overlap with the project is refused both ways, since one 9p share inside
+ * another, writable over read-only or the reverse, makes either flag a lie.
+ */
+export async function checkReadOnlyMount(
+	entry: string,
+	project: string,
+	env: GuardEnv = hostEnv(),
+): Promise<ReadOnlyMount> {
+	if (entry.startsWith("~") && entry !== "~" && !entry.startsWith("~/")) {
+		return {
+			ok: false,
+			reason: `not mounting ${entry}: only ~/ is expanded, not another user's ~name`,
+		};
+	}
+	const written =
+		entry === "~" || entry.startsWith("~/")
+			? join(env.home, entry.slice(1))
+			: resolve(project, entry);
+
+	let abs: string;
+	try {
+		abs = await realpath(written);
+		if (!(await stat(abs)).isDirectory()) {
+			return {
+				ok: false,
+				reason: `not mounting ${entry}: ${abs} is not a directory`,
+			};
+		}
+	} catch {
+		return {
+			ok: false,
+			reason: `not mounting ${entry}: ${written} does not exist`,
+		};
+	}
+
+	const reason = refusal(
+		abs,
+		await real(env.home),
+		await Promise.all(env.protectedDirs.map(real)),
+		"read",
+	);
+	if (reason !== null) return { ok: false, reason };
+
+	const shared = await real(project);
+	if (abs === shared || contains(abs, shared) || contains(shared, abs)) {
+		return {
+			ok: false,
+			reason: `refusing to mount ${abs} read-only: it overlaps the project, which is mounted read-write`,
+		};
+	}
+	return { ok: true, path: abs };
 }
