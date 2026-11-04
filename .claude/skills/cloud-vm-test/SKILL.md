@@ -7,13 +7,13 @@ description:
   verified by hand.
 ---
 
-# Testing playpen against a real VM in a cloud container
+# Testing Playpen Against a Real VM in a Cloud Container
 
 The container has no `/dev/kvm`, so QEMU runs under software emulation (TCG). It
 works, slowly: the first `playpen start` bakes the base image in about 11
 minutes, and later boots take about 3.
 
-## Set up
+## Set Up
 
 ```
 sh .claude/skills/cloud-vm-test/setup.sh
@@ -63,7 +63,7 @@ host not on the allow list is refused and logged in
 `$XDG_DATA_HOME/playpen/net/<sandbox>/gatekeeper.log`. `src/network/e2e.ts` is
 the fuller fence test; read its header for the environment it needs.
 
-## Clean up
+## Clean Up
 
 Only stop or delete playpen's own instances: `pp stop`, or `pp remove --yes` in
 the scratch project. Leave the scratch sandbox stopped when done. The baked base

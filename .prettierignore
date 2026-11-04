@@ -5,3 +5,10 @@
 !*/
 
 node_modules
+
+# Copied from seanhealy/nam-shub by the sync-nam-shub skill and replaced whole
+# on each sync, so they stay byte-identical to their source.
+.claude/skills/manager-mode/
+.claude/skills/pr-review/
+.claude/skills/sync-nam-shub/
+.claude/skills/testing/
