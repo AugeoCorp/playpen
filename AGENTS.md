@@ -118,7 +118,7 @@ Optimize only after it works and a measurement says it matters.
 <!-- prettier-ignore-end -->
 <!-- END:nam-shub -->
 
-# Working in this repo
+# Working in This Repo
 
 Read `docs/PLAN.md` first; update it when you change what it describes.
 
@@ -129,8 +129,8 @@ npm run typecheck
 npm test
 ```
 
-The sandbox runs these directly. On a Node built without Amaro — most distro
-builds, and any base baked before Node 26 — importing `.ts` fails with
+The sandbox runs these directly. On a Node built without Amaro (most distro
+builds, and any base baked before Node 26), importing `.ts` fails with
 `ERR_NO_TYPESCRIPT`; compile out instead:
 
 ```
@@ -143,11 +143,11 @@ runtime string, which `--rewriteRelativeImportExtensions` does not touch, so it
 still asks for `.ts` after compilation. Run that file on a Node with type
 stripping.
 
-Anything touching a real VM is verified by hand with `playpen start`. Say when
-you could not. In a Claude Code cloud container, the `cloud-vm-test` skill
+Anything touching a real VM is verified by hand with `playpen start`. In a
+Claude Code cloud container, the `cloud-vm-test` skill
 (`.claude/skills/cloud-vm-test/`) sets that up.
 
-## Do not relitigate
+## Do Not Relitigate
 
 - A mask is not a privacy control. Never call `masked` entries hidden.
 - Project config runs on the host only via `loadTrustedConfig` in
@@ -162,6 +162,3 @@ you could not. In a Claude Code cloud container, the `cloud-vm-test` skill
 Strict tsconfig with `erasableSyntaxOnly`: no enums, no namespaces, `.ts`
 extensions on imports, `import type` for types. Spawn with argv, never `sh -c`
 interpolation; secrets via stdin.
-
-Before finishing, apply `docs/comment-quality-rubric.md` and
-`docs/test-quality-rubric.md`. Report what you verified and what you did not.
