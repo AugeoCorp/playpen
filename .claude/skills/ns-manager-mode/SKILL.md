@@ -1,5 +1,5 @@
 ---
-name: manager-mode
+name: ns-manager-mode
 description: Running a session as the manager of background agents. Use when The Operator turns manager mode on, or when briefing, tracking or cleaning up after subagents.
 ---
 
@@ -27,7 +27,7 @@ codemod can't regenerate.
   PR; once the reviews are done and nothing is left for the manager, it moves
   to `review requested` even while CI runs, and back to `working` if CI fails.
 - **Stack sections stay current.** Whenever a PR is opened, retargeted or
-  merged, refresh each open PR's Stack section from `pr-tree --description`.
+  merged, refresh each open PR's Stack section with `pr-describe`.
 - **A fresh reviewer before `review requested`.** A different agent reviews
   every PR and drafts description fixes for the manager to post. It starts right
   away; open questions go in its brief as things to report, not change.
@@ -41,10 +41,11 @@ codemod can't regenerate.
   its completion notification. Merging includes removing the worktree and local
   branch.
 
-The PR scripts (`pr-state`, `pr-tree`, `pr-status`, `pr-comment`) run from the
-repo's checkout as `node ${CLAUDE_SKILL_DIR}/scripts/<name>.mjs`; see
-[SCRIPTS.md](SCRIPTS.md). For walking The Operator through pages in the
-browser, see [WALKTHROUGH.md](WALKTHROUGH.md).
+The PR scripts (`pr-state`, `pr-tree`, `pr-describe`, `pr-status`,
+`pr-comment`) run from the repo's checkout as
+`node ${CLAUDE_SKILL_DIR}/scripts/<name>.ts`; see [SCRIPTS.md](SCRIPTS.md). For
+walking The Operator through pages in the browser, see
+[WALKTHROUGH.md](WALKTHROUGH.md).
 
 ## In a Cloud Session
 
@@ -80,4 +81,4 @@ keeping the scripts' rules.
 - **Isolated agents** can only run git in their own worktree, and one that stops
   without changes loses it, so relaunch rather than resume.
 
-@.claude/extensions/skills/manager-mode/BRIEFS.md
+@.claude/extensions/skills/ns-manager-mode/BRIEFS.md

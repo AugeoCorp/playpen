@@ -1,4 +1,4 @@
-// labels.mjs: The labels the PR scripts know, shared so pr-state sets the
+// labels.ts: The labels the PR scripts know, shared so pr-state sets the
 // same names pr-tree explains. Each has the colour (hex, no #) and description
 // it was created with on GitHub. States come first in workflow order, then the
 // branch labels; pr-tree's legend follows this order.
