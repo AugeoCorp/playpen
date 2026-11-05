@@ -1,5 +1,5 @@
 ---
-name: testing
+name: ns-testing
 description: Write or change tests to the shared conventions, and grade them against the test rubric. Use when writing, changing or reviewing tests.
 ---
 
