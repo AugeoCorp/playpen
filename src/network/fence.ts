@@ -274,9 +274,23 @@ export function looksLikeQemu(cmdline: string): boolean {
 	return basename(argv0).startsWith("qemu-system");
 }
 
+/**
+ * The mount points a `/proc/<pid>/mountinfo` lists: its fifth field, with the
+ * kernel's octal escapes for space, tab, newline and backslash undone.
+ */
+export function mountPoints(mountinfo: string): Set<string> {
+	return new Set(
+		[...mountinfo.matchAll(/^(?:\S+ ){4}(\S+)/gm)].map(([, point = ""]) =>
+			point.replace(/\\(040|011|012|134)/g, (_, octal: string) =>
+				String.fromCharCode(Number.parseInt(octal, 8)),
+			),
+		),
+	);
+}
+
 /** Lima's own file, and it outlives the process it names, so nothing here
  * trusts the number beyond asking /proc whether it is still qemu. */
-async function qemuPid(instance: string): Promise<number | null> {
+export async function qemuPid(instance: string): Promise<number | null> {
 	let raw: string;
 	try {
 		raw = await readFile(join(limaHome(), instance, "qemu.pid"), "utf8");

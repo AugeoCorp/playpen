@@ -162,7 +162,19 @@ entry added later is bound on the next start of the VM.
 
 A bind is made over the inode at the path. A host-side replace unlinks that
 inode, the kernel drops a mount whose mount point is unlinked, in every
-namespace, and qemu then serves the new contents. Nothing notices that yet.
+namespace, and qemu then serves the new contents. So the helper reads
+`/proc/<qemu pid>/mountinfo` just before it reports `ready`, and again on every
+poll, and checks that a mount point is still listed at each bound path (the
+kernel writes a space, tab, newline or backslash there as `\040`, `\011`, `\012`
+or `\134`). A fresh helper checks the paths it gave bwrap; a reattaching one
+checks the masked paths qemu's table still lists when it attaches. A table it
+cannot read lists nothing, so every bind reads as lost. A rename of a bound
+path's parent moves the mount along with it, so that reads as lost too.
+
+On a loss the helper stops the VM with `limactl stop -f`, forced so the guest
+gets no clean shutdown in which to read the new contents, then tears the fence
+down and exits 1. If the stop fails, the fence comes down all the same: the VM
+keeps running with no network, and the helper exits 1.
 
 ## Lifecycle
 

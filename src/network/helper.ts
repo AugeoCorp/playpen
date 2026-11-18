@@ -1,5 +1,12 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { lstat, mkdir, realpath, unlink, writeFile } from "node:fs/promises";
+import {
+	lstat,
+	mkdir,
+	readFile,
+	realpath,
+	unlink,
+	writeFile,
+} from "node:fs/promises";
 import { exists, readAppended, sizeOrZero, writeAtomic } from "../fs.ts";
 import * as lima from "../lima/client.ts";
 import { self } from "../session/proc.ts";
@@ -14,7 +21,9 @@ import {
 	type HelperRecord,
 	killFenceLeftovers,
 	liveHelper,
+	mountPoints,
 	policyStamp,
+	qemuPid,
 	readPolicy,
 	removeSocket,
 	writeHelper,
@@ -106,21 +115,24 @@ async function reloadPolicy(sandbox: string): Promise<Policy> {
  * the file `playpen start` writes -- which is how a sandbox that is already up
  * picks up a tightened allow list. `stamp` is the file the current policy
  * came from; `swap` is told the new stamp with the policy so it can report
- * what is now applied.
+ * what is now applied. False as soon as a bound masked path is lost.
  */
 async function serveWhileRunning(
 	sandbox: string,
 	instance: string,
 	stamp: string,
+	bound: readonly string[],
 	swap: (policy: Policy, stamp: string) => Promise<void>,
-): Promise<void> {
+): Promise<boolean> {
 	while (await vmRunning(instance)) {
 		await sleep(POLL_MS);
+		if (!(await keptOut(instance, bound))) return false;
 		const now = await policyStamp(sandbox);
 		if (now === stamp) continue;
 		stamp = now;
 		await swap(await reloadPolicy(sandbox), stamp);
 	}
+	return true;
 }
 
 /**
@@ -150,7 +162,7 @@ async function hiddenResolverDirs(): Promise<string[]> {
 async function maskBinds(
 	paths: FencePaths,
 	masked: readonly string[],
-): Promise<string[]> {
+): Promise<[source: string, path: string][]> {
 	await writeFile(paths.placeholderFile, "");
 	await mkdir(paths.placeholderDirectory, { recursive: true });
 	const binds = await Promise.all(
@@ -159,7 +171,10 @@ async function maskBinds(
 	return binds.flat();
 }
 
-async function maskBind(paths: FencePaths, path: string): Promise<string[]> {
+async function maskBind(
+	paths: FencePaths,
+	path: string,
+): Promise<[source: string, path: string][]> {
 	const info = await lstat(path).catch(() => undefined);
 	if (info === undefined) {
 		say(
@@ -172,13 +187,46 @@ async function maskBind(paths: FencePaths, path: string): Promise<string[]> {
 			`masked: ${path} is reached through a symlink on the host; mask the path it leads to instead`,
 		);
 	}
-	if (info.isFile()) return ["--ro-bind", paths.placeholderFile, path];
-	if (info.isDirectory())
-		return ["--ro-bind", paths.placeholderDirectory, path];
+	if (info.isFile()) return [[paths.placeholderFile, path]];
+	if (info.isDirectory()) return [[paths.placeholderDirectory, path]];
 	say(
 		`masked: ${path} is neither a file nor a directory, so the host's copy is not kept out of the guest`,
 	);
 	return [];
+}
+
+/**
+ * Stops the VM when a bound path no longer has a mount point in qemu's
+ * namespace. A host-side replace unlinks the inode the bind was made over, the
+ * kernel drops the bind, and qemu then serves the new contents. Forced, so the
+ * guest gets no shutdown in which to read them. False once a path is lost,
+ * whether or not the stop worked.
+ */
+async function keptOut(
+	instance: string,
+	bound: readonly string[],
+): Promise<boolean> {
+	const mounted = await qemuMountPoints(instance);
+	const lost = bound.filter((path) => !mounted.has(path));
+	// A VM that stopped since the last look has no qemu left to read.
+	if (lost.length === 0 || !(await vmRunning(instance))) return true;
+	lost.forEach((path) => {
+		say(`masked: ${path} was replaced on the host; stopping ${instance}`);
+	});
+	await lima
+		.stop(instance, true)
+		.catch((err: unknown) => say(`could not stop ${instance}: ${err}`));
+	return false;
+}
+
+/** An unreadable table lists none, so every bind reads as lost. */
+async function qemuMountPoints(instance: string): Promise<Set<string>> {
+	const pid = (await qemuPid(instance)) ?? undefined;
+	const mountinfo =
+		pid === undefined
+			? ""
+			: await readFile(`/proc/${pid}/mountinfo`, "utf8").catch(() => "");
+	return mountPoints(mountinfo);
 }
 
 /** Appends are serialized so the log keeps the order the verdicts happened in. */
@@ -227,6 +275,12 @@ export async function runHelper(
 	if (reattach) say(`${instance} is already fenced; reattaching`);
 	// Before anything starts, so a refused entry leaves nothing running.
 	const binds = reattach ? [] : await maskBinds(paths, masked);
+	// A reattach cannot know what the helper before it bound, so it holds what
+	// qemu's namespace still shows.
+	const mounted = await qemuMountPoints(instance);
+	const bound = reattach
+		? masked.filter((path) => mounted.has(path))
+		: binds.map(([, path]) => path);
 
 	const logFrom = await sizeOrZero(paths.gatekeeperLog);
 	const gatekeeper = await startGatekeeper({
@@ -248,7 +302,7 @@ export async function runHelper(
 				"--dev-bind",
 				"/",
 				"/",
-				...binds,
+				...binds.flatMap(([source, path]) => ["--ro-bind", source, path]),
 				...(await hiddenResolverDirs()),
 				"--die-with-parent",
 				"--",
@@ -314,6 +368,10 @@ export async function runHelper(
 		reattach ? null : [],
 		forwarded,
 	);
+	if (!(await keptOut(instance, bound))) {
+		await teardown(!(await vmRunning(instance)));
+		return 1;
+	}
 	await report({ ready: true, egress, unboundPorts });
 	say(`${instance} is up and fenced`);
 	if (egress) {
@@ -325,15 +383,25 @@ export async function runHelper(
 		for (const line of NO_EGRESS_ADVICE) say(`  ${line}`);
 	}
 
-	await serveWhileRunning(sandbox, instance, stamp, async (next, applied) => {
-		policy = next;
-		// After the swap, so a new listener's first connection already finds
-		// its `localhost:<host>` entry; and before the stamp is reported, so
-		// `bringUp` returns with the listeners in place.
-		const unboundPorts = await forwardPorts(instance, forwarded, next.ports);
-		forwarded = next.ports;
-		await report({ policy: applied, unboundPorts });
-	});
+	const served = await serveWhileRunning(
+		sandbox,
+		instance,
+		stamp,
+		bound,
+		async (next, applied) => {
+			policy = next;
+			// After the swap, so a new listener's first connection already finds
+			// its `localhost:<host>` entry; and before the stamp is reported, so
+			// `bringUp` returns with the listeners in place.
+			const unboundPorts = await forwardPorts(instance, forwarded, next.ports);
+			forwarded = next.ports;
+			await report({ policy: applied, unboundPorts });
+		},
+	);
+	if (!served) {
+		await teardown(!(await vmRunning(instance)));
+		return 1;
+	}
 	say(`${instance} is no longer running; shutting the fence down`);
 	await teardown(true);
 	return 0;

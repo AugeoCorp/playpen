@@ -96,8 +96,13 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
 - The host's contents at a masked path stay out of the guest, guest root
   included, for a file or directory there when the VM starts. That lasts until
   the host replaces the path (a rename over it, `sed -i`, `git checkout`,
-  `rm -rf` and recreate); after that the guest can read the new contents, and
-  nothing stops it yet. Keep secrets outside the project for now.
+  `rm -rf` and recreate), which stops the sandbox within one poll, about 3 s.
+  The guest can read the new contents until it stops. Editing in place keeps it
+  running.
+- An editor that saves by writing a new file and renaming it over the old one,
+  as many do, stops the sandbox each time it saves a masked file such as `.env`.
+- A replace during boot fails the start, but it is only noticed once the guest
+  answers, and the guest can read the new contents until then.
 - Which paths are kept out is fixed when the VM starts, so an entry added to a
   running sandbox needs `playpen stop && playpen start`.
 - An entry inside a directory the guest can write, such as `config/secret.json`,

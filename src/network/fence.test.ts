@@ -9,6 +9,7 @@ import {
 	fencePaths,
 	liveHelper,
 	looksLikeQemu,
+	mountPoints,
 	policyStamp,
 	readPolicy,
 	writeHelper,
@@ -378,4 +379,23 @@ test("a recycled pid now running an unrelated process is not mistaken for qemu",
 
 test("an empty cmdline, as a zombie or an unreadable process reads, is not qemu", () => {
 	assert.equal(looksLikeQemu(""), false);
+});
+
+test("mountinfo gives the mount point of each mount", () => {
+	assert.deepEqual(
+		mountPoints(
+			"25 1 0:22 / / rw,relatime - ext4 /dev/sda1 rw\n" +
+				"40 25 0:22 /placeholder-file /home/u/proj/.env ro,relatime - ext4 /dev/sda1 rw\n",
+		),
+		new Set(["/", "/home/u/proj/.env"]),
+	);
+});
+
+test("a mount point's escaped space, tab, newline and backslash are read as themselves", () => {
+	assert.deepEqual(
+		mountPoints(
+			"40 25 0:22 /placeholder-file /home/u/my\\040proj/a\\011b\\012c\\134d ro - ext4 /dev/sda1 rw\n",
+		),
+		new Set(["/home/u/my proj/a\tb\nc\\d"]),
+	);
 });
