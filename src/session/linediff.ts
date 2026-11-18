@@ -19,22 +19,30 @@ export function markChanges(
 	function sharedFrom(beforeIndex: number, afterIndex: number): number {
 		return shared[beforeIndex * width + afterIndex] ?? 0;
 	}
-	for (let beforeIndex = before.length - 1; beforeIndex >= 0; beforeIndex--) {
-		for (let afterIndex = after.length - 1; afterIndex >= 0; afterIndex--) {
-			shared[beforeIndex * width + afterIndex] =
-				before[beforeIndex] === after[afterIndex]
-					? sharedFrom(beforeIndex + 1, afterIndex + 1) + 1
-					: Math.max(
-							sharedFrom(beforeIndex + 1, afterIndex),
-							sharedFrom(beforeIndex, afterIndex + 1),
-						);
-		}
-	}
+	before.reduceRight(
+		(below, removed, beforeIndex) => {
+			const row = shared.subarray(
+				beforeIndex * width,
+				(beforeIndex + 1) * width,
+			);
+			after.reduceRight((right, added, afterIndex) => {
+				const cell =
+					removed === added
+						? (below[afterIndex + 1] ?? 0) + 1
+						: Math.max(below[afterIndex] ?? 0, right);
+				row[afterIndex] = cell;
+				return cell;
+			}, 0);
+			return row;
+		},
+		shared.subarray(before.length * width),
+	);
 
 	const marked: string[] = [];
 	let beforeIndex = 0;
 	let afterIndex = 0;
-	while (beforeIndex < before.length || afterIndex < after.length) {
+	// Each step takes at least one line until both are used up.
+	Array.from({ length: before.length + after.length }).forEach(() => {
 		const removed = before[beforeIndex];
 		const added = after[afterIndex];
 		if (removed !== undefined && removed === added) {
@@ -49,10 +57,10 @@ export function markChanges(
 		) {
 			marked.push(`-${removed}`);
 			beforeIndex++;
-		} else {
+		} else if (added !== undefined) {
 			marked.push(`+${added}`);
 			afterIndex++;
 		}
-	}
+	});
 	return marked;
 }

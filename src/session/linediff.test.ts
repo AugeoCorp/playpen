@@ -43,3 +43,8 @@ test("files with too many lines to compare have every line marked +", () => {
 	const lines = Array.from({ length: 1000 }, () => "same");
 	assert.equal(markChanges(lines, lines)[0], "+same");
 });
+
+test("one line against very many under the cap is compared without running out of stack", () => {
+	const lines = Array.from({ length: 400_000 }, () => "b");
+	assert.doesNotThrow(() => markChanges(["a"], lines));
+});
