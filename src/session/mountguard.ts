@@ -83,8 +83,8 @@ export async function checkMount(
 	const abs = resolve(dir);
 	const reason = refusal(
 		abs,
-		resolve(env.home),
-		env.protectedDirs.map((p) => resolve(p)),
+		await real(env.home),
+		await Promise.all(env.protectedDirs.map(real)),
 		"write",
 	);
 	if (reason !== null) return { ok: false, reason };
