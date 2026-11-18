@@ -417,18 +417,21 @@ header or any part of a body.
   the host's nameservers, and inside the fence there is no route to them. Every
   verdict the gatekeeper makes, allowed or refused, is logged with the host it
   named.
-- **Nothing inspects content.** The gatekeeper decides on the `CONNECT` target
-  and then pipes the connection through untouched; it never terminates TLS, so
-  it cannot see or alter what travels inside an allowed connection.
+- **Nothing inspects content, except on a secret's host.** The gatekeeper
+  decides on the `CONNECT` target and pipes the connection through untouched. It
+  terminates TLS only for port 443 of a host that a held secret names ("Secrets"
+  above), and there it reads request headers only to swap the placeholder and
+  apply the one-host rules.
 - **An allowed name can front for a different one.** Many names sit behind the
   same shared CDN, so a client can open a tunnel to a name the policy allows and
   then, inside it, ask for a different site -- in the TLS handshake's SNI or the
   HTTP `Host` header -- and the gatekeeper never reads inside the tunnel to
   notice the mismatch: it already decided on the name in the `CONNECT`, before
-  any of that is visible. That follows from not terminating TLS, which is the
-  right call for a proxy that must not itself be able to read what it relays,
-  but it means "allow `github.com`" is wider than it looks: names like
-  `objects.githubusercontent.com` sit behind shared front ends too.
+  any of that is visible. That follows from not terminating TLS for those
+  tunnels, but it means "allow `github.com`" is wider than it looks: names like
+  `objects.githubusercontent.com` sit behind shared front ends too. A secret's
+  host is the exception: there a different server name is refused, and every
+  request goes to the approved host alone.
 
 ## What was measured, and where
 

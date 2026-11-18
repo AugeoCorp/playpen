@@ -76,9 +76,10 @@ async function readCa(): Promise<Ca | undefined> {
 		);
 	}
 	const certPath = join(caDir(), CERT_FILE);
-	const certPem = await readFile(certPath, "utf8").catch(() => {
+	const certPem = await readFile(certPath, "utf8").catch((cause: unknown) => {
 		throw new Error(
 			`${certPath} cannot be read, though its key is there; delete the ca directory to start over`,
+			{ cause },
 		);
 	});
 	return { keyPem, certPem };
