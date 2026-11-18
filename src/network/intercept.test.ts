@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { X509Certificate } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { once } from "node:events";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import http, { type ServerResponse } from "node:http";
 import https from "node:https";
 import * as net from "node:net";
@@ -283,6 +285,43 @@ test("a TLS server name other than the approved host is refused, and the refusal
 				"deny",
 				"TLS server name other.example is not api.example, the host this tunnel was allowed for",
 			],
+		],
+	);
+});
+
+test("a guest that does not trust the playpen CA leaves an error line saying so", async (t) => {
+	const { port, log } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+	});
+	const dir = await mkdtemp(join(tmpdir(), "playpen-distrust-"));
+	t.after(() => rm(dir, { recursive: true, force: true }));
+	await writeFile(join(dir, "ca.crt"), publicCa.certPem);
+
+	// openssl, as curl and Python do, verifies inside the handshake and says
+	// why it stopped; Node's own client only hangs up.
+	const openssl = spawn(
+		"openssl",
+		[
+			"s_client",
+			"-proxy",
+			`127.0.0.1:${port}`,
+			"-connect",
+			"api.example:443",
+			"-servername",
+			"api.example",
+			"-CAfile",
+			join(dir, "ca.crt"),
+			"-verify_return_error",
+		],
+		{ stdio: "ignore" },
+	);
+	await once(openssl, "exit");
+
+	assert.deepEqual(
+		log.map((line) => [line.verdict, line.reason]),
+		[
+			["allow", log[0]?.reason],
+			["error", "ERR_SSL_TLSV1_ALERT_UNKNOWN_CA"],
 		],
 	);
 });

@@ -130,6 +130,7 @@ function tunnelServer(
 		pipeline(request, upstream, () => {});
 	}
 
+	let refusedName = false;
 	const server = https.createServer(
 		{
 			SNICallback(servername, done) {
@@ -137,6 +138,7 @@ function tunnelServer(
 					done(null, contextFor(host));
 					return;
 				}
+				refusedName = true;
 				const reason = `TLS server name ${servername} is not ${host}, the host this tunnel was allowed for`;
 				logLine("deny", reason);
 				done(new Error(reason));
@@ -148,6 +150,11 @@ function tunnelServer(
 		},
 		relay,
 	);
+	// Most often a guest tool with a CA bundle of its own, which does not hold
+	// the install's CA: without this line the log would say nothing.
+	server.on("tlsClientError", (error: NodeJS.ErrnoException) => {
+		if (!refusedName) logLine("error", error.code ?? error.message);
+	});
 	server.on("connection", (socket: Duplex) => {
 		socket.once("close", () => agent.destroy());
 	});
