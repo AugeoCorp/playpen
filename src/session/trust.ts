@@ -133,10 +133,9 @@ export interface TrustedConfig extends ConfigResult {
 /**
  * Load the project config, but only after its import graph has been approved.
  *
- * Fails closed in both directions that matter: without a TTY there is nobody to
- * ask, so the config is not executed; and declining leaves the sandbox unmasked
- * rather than aborting, because masks are a performance feature and losing them
- * is a degraded run, not a broken one.
+ * Without a TTY there is nobody to ask, so the config is not executed, and
+ * declining does the same. Either way the sandbox starts with no masks rather
+ * than aborting, so the host's contents at every masked path reach the guest.
  */
 export async function loadTrustedConfig(
 	projectDir: string,

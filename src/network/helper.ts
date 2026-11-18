@@ -7,6 +7,7 @@ import {
 	unlink,
 	writeFile,
 } from "node:fs/promises";
+import { z } from "zod";
 import { exists, readAppended, sizeOrZero, writeAtomic } from "../fs.ts";
 import * as lima from "../lima/client.ts";
 import { self } from "../session/proc.ts";
@@ -21,11 +22,11 @@ import {
 	type HelperRecord,
 	killFenceLeftovers,
 	liveHelper,
-	mountPoints,
 	policyStamp,
-	qemuPid,
+	qemuMountinfo,
 	readPolicy,
 	removeSocket,
+	unmounted,
 	writeHelper,
 } from "./fence.ts";
 import {
@@ -126,7 +127,7 @@ async function serveWhileRunning(
 ): Promise<boolean> {
 	while (await vmRunning(instance)) {
 		await sleep(POLL_MS);
-		if (!(await keptOut(instance, bound))) return false;
+		if (!(await stopIfReplaced(instance, bound))) return false;
 		const now = await policyStamp(sandbox);
 		if (now === stamp) continue;
 		stamp = now;
@@ -196,37 +197,30 @@ async function maskBind(
 }
 
 /**
- * Stops the VM when a bound path no longer has a mount point in qemu's
- * namespace. A host-side replace unlinks the inode the bind was made over, the
- * kernel drops the bind, and qemu then serves the new contents. Forced, so the
+ * A host-side replace unlinks the inode a bind was made over, the kernel drops
+ * the bind, and qemu then serves the new contents. The stop is forced, so the
  * guest gets no shutdown in which to read them. False once a path is lost,
  * whether or not the stop worked.
  */
-async function keptOut(
+async function stopIfReplaced(
 	instance: string,
 	bound: readonly string[],
 ): Promise<boolean> {
-	const mounted = await qemuMountPoints(instance);
-	const lost = bound.filter((path) => !mounted.has(path));
+	const mountinfo = await qemuMountinfo(instance);
+	const lost = unmounted(bound, mountinfo ?? "");
 	// A VM that stopped since the last look has no qemu left to read.
 	if (lost.length === 0 || !(await vmRunning(instance))) return true;
-	lost.forEach((path) => {
-		say(`masked: ${path} was replaced on the host; stopping ${instance}`);
-	});
+	if (mountinfo === undefined) {
+		say(`masked: cannot read ${instance}'s mount table; stopping it`);
+	} else {
+		lost.forEach((path) => {
+			say(`masked: ${path} was replaced on the host; stopping ${instance}`);
+		});
+	}
 	await lima
 		.stop(instance, true)
 		.catch((err: unknown) => say(`could not stop ${instance}: ${err}`));
 	return false;
-}
-
-/** An unreadable table lists none, so every bind reads as lost. */
-async function qemuMountPoints(instance: string): Promise<Set<string>> {
-	const pid = (await qemuPid(instance)) ?? undefined;
-	const mountinfo =
-		pid === undefined
-			? ""
-			: await readFile(`/proc/${pid}/mountinfo`, "utf8").catch(() => "");
-	return mountPoints(mountinfo);
 }
 
 /** Appends are serialized so the log keeps the order the verdicts happened in. */
@@ -275,12 +269,12 @@ export async function runHelper(
 	if (reattach) say(`${instance} is already fenced; reattaching`);
 	// Before anything starts, so a refused entry leaves nothing running.
 	const binds = reattach ? [] : await maskBinds(paths, masked);
-	// A reattach cannot know what the helper before it bound, so it holds what
-	// qemu's namespace still shows.
-	const mounted = await qemuMountPoints(instance);
+	// Kept beside the fence, out of the guest's reach, so a reattach checks
+	// what bwrap bound and a replace no helper saw still stops the VM.
 	const bound = reattach
-		? masked.filter((path) => mounted.has(path))
+		? z.array(z.string()).parse(JSON.parse(await readFile(paths.masks, "utf8")))
 		: binds.map(([, path]) => path);
+	if (!reattach) await writeAtomic(paths.masks, JSON.stringify(bound));
 
 	const logFrom = await sizeOrZero(paths.gatekeeperLog);
 	const gatekeeper = await startGatekeeper({
@@ -341,6 +335,7 @@ export async function runHelper(
 		// does, so what a reattach found running is killed along with it.
 		if (vmGone) {
 			await killFenceLeftovers(sandbox);
+			await unlink(paths.masks).catch(() => {});
 			await removeSocket(paths.control);
 		}
 		await unlink(paths.helper).catch(() => {});
@@ -368,7 +363,7 @@ export async function runHelper(
 		reattach ? null : [],
 		forwarded,
 	);
-	if (!(await keptOut(instance, bound))) {
+	if (!(await stopIfReplaced(instance, bound))) {
 		await teardown(!(await vmRunning(instance)));
 		return 1;
 	}

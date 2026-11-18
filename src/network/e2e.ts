@@ -44,9 +44,8 @@ const tun2proxy = process.env.PLAYPEN_E2E_TUN2PROXY ?? "";
 const allowedHost = process.env.PLAYPEN_E2E_ALLOWED ?? "nodejs.org";
 const deniedHost = process.env.PLAYPEN_E2E_DENIED ?? "example.com";
 const paths = fencePaths(sandbox);
-/** With spaces, so the bind and the mountinfo check meet an escaped path. */
-const maskedDirectory = await mkdtemp(join(tmpdir(), "playpen e2e "));
-const maskedFile = join(maskedDirectory, "masked .env");
+/** Set in `main`. With spaces, so the bind and the check meet an escaped path. */
+let maskedDirectory = "";
 
 /**
  * Argv substrings that identify a process as belonging to this sandbox's
@@ -155,7 +154,7 @@ async function up(
 			ports,
 			secrets: [],
 		},
-		masked: [maskedFile],
+		masked: [maskedFile()],
 		log: (text) => process.stderr.write(text),
 	});
 }
@@ -166,7 +165,8 @@ async function main(): Promise<void> {
 		process.exit(2);
 	}
 	console.log(`sandbox ${sandbox} (${instance}), runtime dir ${paths.dir}`);
-	await writeFile(maskedFile, "SECRET=1\n");
+	maskedDirectory = await mkdtemp(join(tmpdir(), "playpen e2e "));
+	await writeFile(maskedFile(), "SECRET=1\n");
 
 	try {
 		console.log("\n1. the sandbox comes up behind the gatekeeper");
@@ -497,9 +497,13 @@ async function reattach(): Promise<string | null> {
 	return wanted("fence state", "sealed", await fenceStatus(sandbox, instance));
 }
 
+function maskedFile(): string {
+	return join(maskedDirectory, "masked .env");
+}
+
 async function renamedOver(): Promise<string | null> {
-	await writeFile(`${maskedFile}.new`, "SECRET=2\n");
-	await rename(`${maskedFile}.new`, maskedFile);
+	await writeFile(`${maskedFile()}.new`, "SECRET=2\n");
+	await rename(`${maskedFile()}.new`, maskedFile());
 	return waitFor(
 		"the VM stopping",
 		10,
