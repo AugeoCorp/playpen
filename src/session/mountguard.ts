@@ -1,6 +1,6 @@
 import { realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join, parse, relative, resolve } from "node:path";
+import { basename, dirname, join, parse, relative, resolve } from "node:path";
 import { dataDir, limaHome } from "../config.ts";
 import { exists } from "../fs.ts";
 
@@ -80,13 +80,9 @@ export async function checkMount(
 	dir: string,
 	env: GuardEnv = hostEnv(),
 ): Promise<GuardResult> {
-	const abs = resolve(dir);
-	const reason = refusal(
-		abs,
-		await real(env.home),
-		await Promise.all(env.protectedDirs.map(real)),
-		"write",
-	);
+	const abs = await real(dir);
+	const { home, protectedDirs } = await realEnv(env);
+	const reason = refusal(abs, home, protectedDirs, "write");
 	if (reason !== null) return { ok: false, reason };
 
 	if (!(await exists(join(abs, ".git")))) {
@@ -102,9 +98,25 @@ export type ReadOnlyMount =
 	| { ok: true; path: string }
 	| { ok: false; reason: string };
 
-/** Compared by real path, so a symlink to a protected directory is caught too. */
+/**
+ * Compared by real path, so a symlink to a protected directory is caught too.
+ * A path that does not exist yet keeps its nearest existing ancestor's real
+ * path, so a protected directory playpen has not created still compares.
+ */
 async function real(path: string): Promise<string> {
-	return realpath(path).catch(() => resolve(path));
+	const absolute = resolve(path);
+	const parent = dirname(absolute);
+	if (parent === absolute) return absolute;
+	return realpath(absolute).catch(async () =>
+		join(await real(parent), basename(absolute)),
+	);
+}
+
+async function realEnv(env: GuardEnv): Promise<GuardEnv> {
+	return {
+		home: await real(env.home),
+		protectedDirs: await Promise.all(env.protectedDirs.map(real)),
+	};
 }
 
 /**
@@ -147,13 +159,8 @@ export async function checkReadOnlyMount(
 		};
 	}
 
-	const home = await real(env.home);
-	const reason = refusal(
-		abs,
-		home,
-		await Promise.all(env.protectedDirs.map(real)),
-		"read",
-	);
+	const { home, protectedDirs } = await realEnv(env);
+	const reason = refusal(abs, home, protectedDirs, "read");
 	if (reason !== null) return { ok: false, reason };
 
 	// Credentials live in ~/.ssh, ~/.aws, ~/.config/<tool> and wherever else a

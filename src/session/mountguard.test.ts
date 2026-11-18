@@ -48,6 +48,15 @@ test("refuses the home directory when HOME is spelled through a symlink, as on F
 	assert.match(result.reason ?? "", /home directory/);
 });
 
+test("refuses the home directory when the project is spelled through a symlink", async (t) => {
+	const { home } = await tempHome(t);
+	const link = join(await tempProject(t), "home");
+	await symlink(home, link);
+	const result = await checkMount(link, { home, protectedDirs: [] });
+	assert.equal(result.ok, false);
+	assert.match(result.reason ?? "", /home directory/);
+});
+
 test("refuses a parent of the home directory", async () => {
 	const result = await checkMount("/home", ENV);
 	assert.equal(result.ok, false);
@@ -67,10 +76,23 @@ test("refuses playpen's own data directory, where config approvals live", async 
 });
 
 test("refuses playpen's data directory when its path is spelled through a symlink", async (t) => {
-	const { data, env } = await tempHome(t);
+	const { home, data } = await tempHome(t);
 	const link = join(await tempProject(t), "playpen");
 	await symlink(data, link);
-	const result = await checkMount(data, { ...env, protectedDirs: [link] });
+	const result = await checkMount(data, { home, protectedDirs: [link] });
+	assert.equal(result.ok, false);
+	assert.match(result.reason ?? "", /must not be able to write/);
+});
+
+test("refuses a directory that will contain playpen's data directory once it is made", async (t) => {
+	const { home, data } = await tempHome(t);
+	await rm(data, { recursive: true });
+	const link = join(await tempProject(t), "home");
+	await symlink(home, link);
+	const result = await checkMount(join(home, ".local"), {
+		home: link,
+		protectedDirs: [join(link, ".local", "share", "playpen")],
+	});
 	assert.equal(result.ok, false);
 	assert.match(result.reason ?? "", /must not be able to write/);
 });
