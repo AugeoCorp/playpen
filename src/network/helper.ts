@@ -1,8 +1,9 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { unlink } from "node:fs/promises";
+import { lstat, mkdir, realpath, unlink, writeFile } from "node:fs/promises";
 import { exists, readAppended, sizeOrZero, writeAtomic } from "../fs.ts";
 import * as lima from "../lima/client.ts";
 import { self } from "../session/proc.ts";
+import { outermostMasks } from "../session/projectconfig.ts";
 import { attach, capture } from "../sh.ts";
 import { sleep } from "../time.ts";
 import {
@@ -136,6 +137,50 @@ async function hiddenResolverDirs(): Promise<string[]> {
 	return args;
 }
 
+/**
+ * One `--ro-bind` per masked path that is a real file or directory on the
+ * host, laying an empty placeholder over it in the mount table bwrap gives
+ * qemu. qemu is the 9p server, so the share has nothing of the host's there,
+ * even once guest root unmounts its own mask. The placeholders are read-only
+ * because every masked path shares them.
+ *
+ * A missing path is left to the guest, since bwrap would create it on the
+ * host's disk.
+ */
+async function maskBinds(
+	paths: FencePaths,
+	masked: readonly string[],
+): Promise<string[]> {
+	await writeFile(paths.placeholderFile, "");
+	await mkdir(paths.placeholderDirectory, { recursive: true });
+	const binds = await Promise.all(
+		outermostMasks(masked).map((path) => maskBind(paths, path)),
+	);
+	return binds.flat();
+}
+
+async function maskBind(paths: FencePaths, path: string): Promise<string[]> {
+	const info = await lstat(path).catch(() => undefined);
+	if (info === undefined) {
+		say(
+			`masked: ${path} is not on the host; the guest creates it there as an empty directory`,
+		);
+		return [];
+	}
+	if ((await realpath(path).catch(() => undefined)) !== path) {
+		throw new Error(
+			`masked: ${path} is reached through a symlink on the host; mask the path it leads to instead`,
+		);
+	}
+	if (info.isFile()) return ["--ro-bind", paths.placeholderFile, path];
+	if (info.isDirectory())
+		return ["--ro-bind", paths.placeholderDirectory, path];
+	say(
+		`masked: ${path} is neither a file nor a directory, so the host's copy is not kept out of the guest`,
+	);
+	return [];
+}
+
 /** Appends are serialized so the log keeps the order the verdicts happened in. */
 function jsonLineAppender(path: string): (entry: LogEntry) => void {
 	let tail: Promise<void> = Promise.resolve();
@@ -153,6 +198,7 @@ function socatListen(path: string, target: string): ChildProcess {
 export async function runHelper(
 	sandbox: string,
 	instance: string,
+	masked: readonly string[],
 ): Promise<number> {
 	const paths = fencePaths(sandbox);
 	// Stamp first: a policy.json rewritten between the two reads then differs
@@ -179,6 +225,8 @@ export async function runHelper(
 	// the fix is `playpen stop` followed by `playpen start`.
 	const reattach = state !== "stopped";
 	if (reattach) say(`${instance} is already fenced; reattaching`);
+	// Before anything starts, so a refused entry leaves nothing running.
+	const binds = reattach ? [] : await maskBinds(paths, masked);
 
 	const logFrom = await sizeOrZero(paths.gatekeeperLog);
 	const gatekeeper = await startGatekeeper({
@@ -200,6 +248,7 @@ export async function runHelper(
 				"--dev-bind",
 				"/",
 				"/",
+				...binds,
 				...(await hiddenResolverDirs()),
 				"--die-with-parent",
 				"--",

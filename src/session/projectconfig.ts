@@ -73,15 +73,8 @@ export interface NetworkConfig {
 export interface PlaypenConfig {
 	/**
 	 * Project-relative paths, directories or files, given guest-local storage
-	 * instead of the 9p share.
-	 *
-	 * Two reasons, neither of them privacy: the 9p share is slow, and host and
-	 * guest frequently need different contents at the same path — native modules
-	 * and toolchain builds are per-platform, so one copy cannot serve both.
-	 *
-	 * Masked, not hidden: the host's copy stays mounted underneath, and the
-	 * guest has passwordless root and can unmount the mask. Keep secrets outside
-	 * the project directory.
+	 * instead of the 9p share. README.md's Config section says how far the
+	 * host's contents are kept out of the guest.
 	 *
 	 * A path missing on the host is created by the guest as an empty directory:
 	 * create a masked file on the host first.
@@ -360,6 +353,17 @@ const configSchema = z
 export function validateMasks(entries: readonly unknown[]) {
 	const { masked, rejected } = configSchema.parse({ masked: entries });
 	return { masked, rejected };
+}
+
+/**
+ * The entries not inside another entry, in their order. One inside another is
+ * already covered by it, and masking it too would mean making its mount point
+ * inside the outer one's read-only placeholder.
+ */
+export function outermostMasks(masked: readonly string[]): string[] {
+	return masked.filter(
+		(entry) => !masked.some((other) => entry.startsWith(`${other}/`)),
+	);
 }
 
 export function validateMounts(entries: readonly unknown[]) {

@@ -142,6 +142,29 @@ helper.log and in its record, and `playpen start` warns that the host port is
 not at that guest port -- without failing the start. A stdio MCP server is a
 process the guest runs, not a port, so nothing here applies to it.
 
+**Masked paths.** qemu is the 9p server for the project share, so what qemu sees
+at a path is what the guest gets there. The helper's `bwrap` already gives qemu
+its own mount namespace, so for each `masked` entry that is a file or a
+directory on the host when the VM starts, it adds a `--ro-bind` of an empty
+placeholder (`placeholder-file` or `placeholder-directory` in the fence's
+directory) over that path. The host's own mount table is untouched, and guest
+root, which can unmount the guest's own mask, finds only the placeholder under
+it. They are read-only because every entry shares them.
+
+A missing path is not bound, since bwrap would create it on the host's disk; the
+guest creates it as a directory, as it always has. Nor is a path inside another
+masked entry, which that bind already covers, or anything that is neither a file
+nor a directory, which gets a line in helper.log. A path whose `realpath` is not
+itself, a symlink or under one, fails the start: a bind there would land
+wherever the link leads. The binds are made by the bwrap that starts qemu, so
+they are fixed for the VM's life: a reattaching helper starts no bwrap, and an
+entry added later is bound on the next start of the VM. A path deleted between
+the helper's check and bwrap's start is created by bwrap on the host, empty.
+
+A bind is made over the inode at the path. A host-side replace unlinks that
+inode, the kernel drops a mount whose mount point is unlinked, in every
+namespace, and qemu then serves the new contents. Nothing notices that yet.
+
 ## Lifecycle
 
 `playpen start` writes the merged policy (the built-in list plus the project's

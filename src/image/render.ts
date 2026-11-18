@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { outermostMasks } from "../session/projectconfig.ts";
 import type { ImageDef } from "./types.ts";
 
 export interface ImageOptions {
@@ -85,7 +86,9 @@ function guard(hash: string, name: string, body: string): string {
  * kind.
  */
 export function maskScript(mount: string, masks: readonly string[]): string {
-	const quoted = masks.map((m) => `'${m.replace(/'/g, `'\\''`)}'`).join(" ");
+	const quoted = outermostMasks(masks)
+		.map((m) => `'${m.replace(/'/g, `'\\''`)}'`)
+		.join(" ");
 	return [
 		"#!/bin/bash",
 		"set -euo pipefail",

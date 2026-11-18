@@ -51,6 +51,8 @@ export interface FencePaths {
 	control: string;
 	helper: string;
 	policy: string;
+	placeholderFile: string;
+	placeholderDirectory: string;
 	gatekeeperLog: string;
 	helperLog: string;
 	/** Written by the inside half once the VM is up; holds its ssh port. */
@@ -66,6 +68,8 @@ export function fencePaths(sandbox: string): FencePaths {
 		control: join(dir, "control.sock"),
 		helper: join(dir, "helper.json"),
 		policy: join(dir, "policy.json"),
+		placeholderFile: join(dir, "placeholder-file"),
+		placeholderDirectory: join(dir, "placeholder-directory"),
 		gatekeeperLog: join(dir, "gatekeeper.log"),
 		helperLog: join(dir, "helper.log"),
 		ready: join(dir, "ready"),
@@ -318,6 +322,7 @@ export function cliPath(): string {
 async function spawnHelper(
 	sandbox: string,
 	instance: string,
+	masked: readonly string[],
 ): Promise<ChildProcess> {
 	const paths = fencePaths(sandbox);
 	await ensureFenceDir(sandbox);
@@ -325,7 +330,7 @@ async function spawnHelper(
 	try {
 		const child = spawn(
 			process.execPath,
-			[cliPath(), "__net-helper", sandbox, instance],
+			[cliPath(), "__net-helper", sandbox, instance, ...masked],
 			{ detached: true, stdio: ["ignore", log.fd, log.fd] },
 		);
 		child.unref();
@@ -349,6 +354,8 @@ export interface BringUpOptions {
 	sandbox: string;
 	instance: string;
 	policy: Policy;
+	/** The project's `masked` entries, as absolute paths on the host. */
+	masked: readonly string[];
 	/** Where helper.log goes while the caller waits; usually stderr. */
 	log: (text: string) => void;
 	timeoutMs?: number;
@@ -391,7 +398,7 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 
 	const paths = fencePaths(sandbox);
 	let offset = await sizeOrZero(paths.helperLog);
-	const child = await spawnHelper(sandbox, instance);
+	const child = await spawnHelper(sandbox, instance, opts.masked);
 
 	let exit: number | null = null;
 	child.on("exit", (code) => {

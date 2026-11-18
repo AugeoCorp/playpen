@@ -34,6 +34,8 @@ let exists = false;
 let status: "Running" | "Stopped" = "Running";
 /** The policy the sandbox was brought up behind, as the fence was handed it. */
 let fencedWith: Policy | null = null;
+/** The masked paths the fence was handed. */
+let fencedMasked: readonly string[] | undefined;
 /** What the fake fence reports for a running VM; a test overrides it. */
 let fenceState:
 	| "sealed"
@@ -79,8 +81,9 @@ mock.module("../network/fence.ts", {
 		// Like the real one: the policy is written whatever state the fence is
 		// in, and a sandbox that is already up behind a gatekeeper is left where
 		// it is rather than started a second time.
-		async bringUp(opts: { policy: Policy }) {
+		async bringUp(opts: { policy: Policy; masked: readonly string[] }) {
 			fencedWith = opts.policy;
+			fencedMasked = opts.masked;
 			const up = fenceState === "sealed" || fenceState === "sealed-no-egress";
 			if (fenced && up) {
 				calls.push("leave the fence alone");
@@ -160,6 +163,7 @@ async function sandboxFor(
 	calls.length = 0;
 	exists = false;
 	fencedWith = null;
+	fencedMasked = undefined;
 	fenceState = "sealed";
 	helperEgress = true;
 	helperUnbound = [];
@@ -400,6 +404,18 @@ test("a sandbox already running is handed the project's policy again, so a tight
 		ports: [],
 		secrets: [],
 	});
+});
+
+test("the fence is handed each masked entry as a path under the project", async (t) => {
+	const { sb, run } = await sandboxFor(
+		t,
+		'export default { masked: ["node_modules", ".env"] };',
+	);
+	await run();
+	assert.deepEqual(fencedMasked, [
+		join(sb.cwd, "node_modules"),
+		join(sb.cwd, ".env"),
+	]);
 });
 
 test("removing a stopped sandbox deletes it without starting it", async (t) => {
