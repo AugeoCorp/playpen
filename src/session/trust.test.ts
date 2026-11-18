@@ -6,10 +6,12 @@ import { type TestContext, test } from "node:test";
 import { trustDir } from "../config.ts";
 import { readConfigGraph } from "./configgraph.ts";
 import {
+	approveMounts,
 	decideTrust,
 	escapeControls,
 	loadTrustedConfig,
 	pinConfig,
+	pinMounts,
 	previewApproval,
 } from "./trust.ts";
 
@@ -723,5 +725,55 @@ test("a new file is shown as all added, so a line of it that starts with - canno
 			"  │ +-1;",
 			"  │ ++1;",
 		].join("\n"),
+	);
+});
+
+test("a mount nobody approved is left out when there is no terminal to ask", async (t) => {
+	const { sandbox } = await scenario(t, { "playpen.config.js": CONFIG });
+	t.mock.method(console, "error", () => {});
+	assert.deepEqual(await approveMounts(sandbox, ["/src/shared-lib"]), []);
+});
+
+test("a mount approved before is kept without asking", async (t) => {
+	const { sandbox } = await scenario(t, { "playpen.config.js": CONFIG });
+	await pinMounts(sandbox, ["/src/shared-lib"]);
+	t.mock.method(console, "error", () => {});
+	assert.deepEqual(
+		await approveMounts(sandbox, ["/src/shared-lib", "/src/other"]),
+		["/src/shared-lib"],
+	);
+});
+
+test("a mount path is shown with its control characters escaped, as a symlink target the guest wrote could hold them", async (t) => {
+	const { sandbox } = await scenario(t, { "playpen.config.js": CONFIG });
+	const said = t.mock.method(console, "error", () => {});
+	await approveMounts(sandbox, [`/src/${ESC}[2Kshared\u202e`]);
+	const lines = said.mock.calls.map((c) => String(c.arguments[0])).join("\n");
+	assert.ok(!lines.includes(ESC), `a raw ESC reached the terminal: ${lines}`);
+	assert.ok(
+		!lines.includes("\u202e"),
+		`a raw U+202E reached the terminal: ${lines}`,
+	);
+	assert.match(lines, /not mounting \/src\/\\x1b\[2Kshared\\u\{202e\}:/);
+});
+
+test("a mount approval is scoped to its sandbox", async (t) => {
+	const { sandbox } = await scenario(t, { "playpen.config.js": CONFIG });
+	await pinMounts(sandbox, ["/src/shared-lib"]);
+	t.mock.method(console, "error", () => {});
+	assert.deepEqual(
+		await approveMounts(`${sandbox}-other`, ["/src/shared-lib"]),
+		[],
+	);
+});
+
+test("a mount dropped from the config is forgotten, so naming it again asks again", async (t) => {
+	const { sandbox } = await scenario(t, { "playpen.config.js": CONFIG });
+	await pinMounts(sandbox, ["/src/shared-lib", "/src/other"]);
+	t.mock.method(console, "error", () => {});
+	await approveMounts(sandbox, ["/src/other"]);
+	assert.deepEqual(
+		await approveMounts(sandbox, ["/src/shared-lib", "/src/other"]),
+		["/src/other"],
 	);
 });
