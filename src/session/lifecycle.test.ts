@@ -49,7 +49,7 @@ let helperUnbound: PortForward[] = [];
 let fenced = false;
 /** The secrets `bringUp` was last handed, values included. */
 let fencedHeld: readonly HeldSecret[] = [];
-/** The first `PLAYPEN_TEST_TOKEN` a `limactl` call could have inherited. */
+/** The first `TEST_TOKEN` a `limactl` call could have inherited. */
 let limactlSaw: string | undefined;
 /** Whether a helper is running: false until `bringUp` spawns one, and again when a test kills it. */
 let helperLive = false;
@@ -121,7 +121,7 @@ mock.module("../lima/client.ts", {
 			},
 		],
 		async get(name: string) {
-			limactlSaw ??= process.env.PLAYPEN_TEST_TOKEN;
+			limactlSaw ??= process.env.TEST_TOKEN;
 			return exists ? { name, status } : null;
 		},
 		stop: async () => {
@@ -655,17 +655,17 @@ test("a secret's hosts are allowed without being listed, and the secret reaches 
 });
 
 test("each secret is reported by name and hosts, and its value stays out of the output, so a later injector cannot print it", async (t) => {
-	setEnv(t, { PLAYPEN_TEST_TOKEN: "ghp_not-to-be-printed" });
+	setEnv(t, { TEST_TOKEN: "ghp_not-to-be-printed" });
 	const { run } = await sandboxFor(
 		t,
-		'export default { network: { secrets: [{ env: "PLAYPEN_TEST_TOKEN", hosts: ["api.github.com", "github.com"] }] } };',
+		'export default { network: { secrets: [{ env: "TEST_TOKEN", hosts: ["api.github.com", "github.com"] }] } };',
 	);
 	const said = t.mock.method(console, "error", () => {});
 	await run();
 	const lines = said.mock.calls.map((c) => String(c.arguments[0]));
 	assert.ok(
 		lines.includes(
-			"naming PLAYPEN_TEST_TOKEN for api.github.com, github.com (not injected yet)",
+			"naming TEST_TOKEN for api.github.com, github.com (not injected yet)",
 		),
 		`expected a naming line, got:\n${lines.join("\n")}`,
 	);
@@ -742,83 +742,82 @@ test("a session that asked to keep the sandbox does not stop it", async (t) => {
 
 const TOKEN = "ghp_correct-horse-battery-staple";
 const ONE_SECRET =
-	'export default { network: { secrets: [{ env: "PLAYPEN_TEST_TOKEN", hosts: ["api.github.com"] }] } };';
+	'export default { network: { secrets: [{ env: "TEST_TOKEN", hosts: ["api.github.com"] }] } };';
 
 test("the helper is handed each secret's name and value", async (t) => {
-	setEnv(t, { PLAYPEN_TEST_TOKEN: TOKEN });
+	setEnv(t, { TEST_TOKEN: TOKEN });
 	const { run } = await sandboxFor(t, ONE_SECRET);
 	await run();
-	assert.deepEqual(fencedHeld, [{ env: "PLAYPEN_TEST_TOKEN", value: TOKEN }]);
+	assert.deepEqual(fencedHeld, [{ env: "TEST_TOKEN", value: TOKEN }]);
 });
 
 test("limactl never sees a secret's value", async (t) => {
-	setEnv(t, { PLAYPEN_TEST_TOKEN: TOKEN });
+	setEnv(t, { TEST_TOKEN: TOKEN });
 	const { run } = await sandboxFor(t, ONE_SECRET);
 	await run();
 	assert.equal(limactlSaw, undefined);
 });
 
 test("a start with secrets whose variables are unset is refused, naming every one, and nothing is booted", async (t) => {
-	delete process.env.PLAYPEN_TEST_A;
-	setEnv(t, { PLAYPEN_TEST_B: "", PLAYPEN_TEST_C: TOKEN });
+	delete process.env.TEST_A;
+	setEnv(t, { TEST_B: "", TEST_C: TOKEN });
 	const { run } = await sandboxFor(
 		t,
-		'export default { network: { secrets: [{ env: "PLAYPEN_TEST_A", hosts: ["a.example.com"] }, { env: "PLAYPEN_TEST_B", hosts: ["b.example.com"] }, { env: "PLAYPEN_TEST_C", hosts: ["c.example.com"] }] } };',
+		'export default { network: { secrets: [{ env: "TEST_A", hosts: ["a.example.com"] }, { env: "TEST_B", hosts: ["b.example.com"] }, { env: "TEST_C", hosts: ["c.example.com"] }] } };',
 	);
 	await assert.rejects(run(), {
-		message:
-			"network.secrets needs PLAYPEN_TEST_A, PLAYPEN_TEST_B set in your environment",
+		message: "network.secrets needs TEST_A, TEST_B set in your environment",
 	});
 	assert.deepEqual(calls, []);
 	assert.equal(fencedWith, null);
 });
 
 test("a running sandbox with a live helper does not need the variable again", async (t) => {
-	setEnv(t, { PLAYPEN_TEST_TOKEN: TOKEN });
+	setEnv(t, { TEST_TOKEN: TOKEN });
 	const { run } = await sandboxFor(t, ONE_SECRET);
 	await run();
 	calls.length = 0;
-	delete process.env.PLAYPEN_TEST_TOKEN;
+	delete process.env.TEST_TOKEN;
 	await run();
 	assert.deepEqual(calls, ["leave the fence alone", "ready ~/.claude"]);
 });
 
 test("a running sandbox whose helper is gone needs the variable again, and is left as it was without it", async (t) => {
-	setEnv(t, { PLAYPEN_TEST_TOKEN: TOKEN });
+	setEnv(t, { TEST_TOKEN: TOKEN });
 	const { run } = await sandboxFor(t, ONE_SECRET);
 	await run();
 	calls.length = 0;
-	delete process.env.PLAYPEN_TEST_TOKEN;
+	delete process.env.TEST_TOKEN;
 	fenceState = "sealed-no-gatekeeper";
 	helperLive = false;
-	await assert.rejects(run(), /network\.secrets needs PLAYPEN_TEST_TOKEN/);
+	await assert.rejects(run(), /network\.secrets needs TEST_TOKEN/);
 	assert.deepEqual(calls, []);
 });
 
 test("a rebuild the user confirmed is refused when a variable is unset, and the old sandbox is kept", async (t) => {
-	setEnv(t, { PLAYPEN_TEST_TOKEN: TOKEN });
+	setEnv(t, { TEST_TOKEN: TOKEN });
 	const { sb, run } = await sandboxFor(t, ONE_SECRET);
 	await run();
 	calls.length = 0;
-	delete process.env.PLAYPEN_TEST_TOKEN;
+	delete process.env.TEST_TOKEN;
 	const { templatesDir } = await import("../config.ts");
 	await writeFile(join(templatesDir(), `${sb.sandbox}.yaml`), "older\n");
 	answer = true;
-	await assert.rejects(run(), /network\.secrets needs PLAYPEN_TEST_TOKEN/);
+	await assert.rejects(run(), /network\.secrets needs TEST_TOKEN/);
 	assert.deepEqual(calls, []);
 });
 
-const PROFILE = "export PLAYPEN_TEST_TOKEN=playpen-secret-playpen-test-token\n";
+const PROFILE = "export TEST_TOKEN=playpen-secret-test-token\n";
 
 test("the guest gets each secret's placeholder in its login profile, and never the value", async (t) => {
-	setEnv(t, { PLAYPEN_TEST_TOKEN: TOKEN });
+	setEnv(t, { TEST_TOKEN: TOKEN });
 	const { run } = await sandboxFor(t, ONE_SECRET);
 	await run();
 	assert.deepEqual(profileWrites, [PROFILE]);
 });
 
 test("a sandbox that is already up has its placeholders written again", async (t) => {
-	setEnv(t, { PLAYPEN_TEST_TOKEN: TOKEN });
+	setEnv(t, { TEST_TOKEN: TOKEN });
 	const { run } = await sandboxFor(t, ONE_SECRET);
 	await run();
 	await run();
@@ -826,10 +825,10 @@ test("a sandbox that is already up has its placeholders written again", async (t
 });
 
 test("setup runs with the placeholders already in the guest's login profile, since its login shell reads them", async (t) => {
-	setEnv(t, { PLAYPEN_TEST_TOKEN: TOKEN });
+	setEnv(t, { TEST_TOKEN: TOKEN });
 	const { run } = await sandboxFor(
 		t,
-		'export default { setup: ["npm ci"], network: { secrets: [{ env: "PLAYPEN_TEST_TOKEN", hosts: ["api.github.com"] }] } };',
+		'export default { setup: ["npm ci"], network: { secrets: [{ env: "TEST_TOKEN", hosts: ["api.github.com"] }] } };',
 	);
 	await run();
 	assert.equal(profileAtSetup, PROFILE);
@@ -842,7 +841,7 @@ test("a project with no secrets empties the guest's profile, so a dropped secret
 });
 
 test("placeholders that cannot be written are a warning, and the sandbox still starts", async (t) => {
-	setEnv(t, { PLAYPEN_TEST_TOKEN: TOKEN });
+	setEnv(t, { TEST_TOKEN: TOKEN });
 	const { run } = await sandboxFor(t, ONE_SECRET);
 	profileExit = 1;
 	const said = t.mock.method(console, "error", () => {});
