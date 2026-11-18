@@ -138,9 +138,10 @@ function tunnelServer(
 		}
 		// Behind a shared front end the request line can decide which site gets
 		// the request: an absolute-form target overrides `Host` (RFC 9112,
-		// 3.2.2), and a URL parser reads a path starting `//` as naming a host.
+		// 3.2.2), and a URL parser reads a path starting `//` or `/\` as naming
+		// a host.
 		const target = request.url ?? "";
-		if (!target.startsWith("/") || target.startsWith("//")) {
+		if (!target.startsWith("/") || /^\/[/\\]/.test(target)) {
 			refuse(
 				421,
 				`request target ${target} is not a path on ${host}, the host this tunnel was allowed for`,

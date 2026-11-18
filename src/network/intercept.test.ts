@@ -761,6 +761,22 @@ test("a request target starting with // is refused with a 421, since a URL parse
 	assert.deepEqual(upstream.received, []);
 });
 
+test("a request target starting with /\\ is refused with a 421, since a URL parser reads it as // too", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+
+	const answer = await send(clientThrough(t, port, "api.example:443"), {
+		path: "/\\other.example/user",
+		headers: WITH_PLACEHOLDER,
+	});
+
+	assert.equal(answer.status, 421);
+	assert.deepEqual(upstream.received, []);
+});
+
 test("the host sees one Host header, the approved host, whatever the guest sent", async (t) => {
 	const upstream = await upstreamHost(t);
 	const { port } = await gatekeeperWith(t, {
