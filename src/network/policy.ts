@@ -194,6 +194,8 @@ export function isEnvName(name: string): boolean {
  * it is not a secret, and a fixed one keeps working when it outlives the helper
  * that was started with it, in a running process or a saved `.npmrc`.
  */
+export const PLACEHOLDER = /playpen-secret-[a-z0-9-]+/g;
+
 export function placeholderFor(env: string): string {
 	return `playpen-secret-${env.toLowerCase().replaceAll("_", "-")}`;
 }
