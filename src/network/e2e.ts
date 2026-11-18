@@ -151,7 +151,7 @@ async function up(
 			ports,
 			secrets: [],
 		},
-		secrets: [],
+		held: [],
 		log: (text) => process.stderr.write(text),
 	});
 }

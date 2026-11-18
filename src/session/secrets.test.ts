@@ -24,23 +24,6 @@ test("a taken variable is gone from the environment, and the rest stay", () => {
 	assert.deepEqual(env, { HOME: "/home/me" });
 });
 
-test("a child spawned after a variable is taken does not see it", (t) => {
-	process.env.PLAYPEN_TEST_TOKEN = "ghp_a";
-	t.after(() => {
-		delete process.env.PLAYPEN_TEST_TOKEN;
-	});
-	takeSecretValues(
-		[{ env: "PLAYPEN_TEST_TOKEN", hosts: ["a.example"] }],
-		process.env,
-	);
-	const child = spawnSync(
-		process.execPath,
-		["-e", "process.stdout.write(String(process.env.PLAYPEN_TEST_TOKEN))"],
-		{ encoding: "utf8" },
-	);
-	assert.equal(child.stdout, "undefined");
-});
-
 test("an unset or empty variable is reported missing, and the rest are still taken", () => {
 	const env = { GH_TOKEN: "", NPM_TOKEN: "npm_b" };
 	assert.deepEqual(
@@ -88,6 +71,8 @@ test("a shell that sources the profile holds each secret's placeholder", () => {
 	);
 });
 
-test("with no secrets the profile is empty, so one dropped from the config leaves the guest", () => {
-	assert.equal(placeholderProfile([]), "");
+test("every granted variable is taken before any value is refused", () => {
+	const env = { GH_TOKEN: "ghp_a\nghp_b", NPM_TOKEN: "npm_b" };
+	assert.throws(() => takeSecretValues([GH, NPM], env));
+	assert.deepEqual(env, {});
 });

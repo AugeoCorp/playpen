@@ -57,16 +57,16 @@ function createCa(): Ca {
 }
 
 /**
- * Both files, or null when the directory is not there yet. A key another user
+ * Both files, or undefined when the directory is not there yet. A key another user
  * could read is refused rather than used.
  */
-async function readCa(): Promise<Ca | null> {
+async function readCa(): Promise<Ca | undefined> {
 	const keyPath = join(caDir(), KEY_FILE);
 	let keyPem: string;
 	try {
 		keyPem = await readFile(keyPath, "utf8");
 	} catch (err) {
-		if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
 		throw err;
 	}
 	const { mode } = await stat(keyPath);
@@ -89,7 +89,7 @@ async function readCa(): Promise<Ca | null> {
  */
 export async function ensureCa(): Promise<Ca> {
 	const existing = await readCa();
-	if (existing !== null) return existing;
+	if (existing !== undefined) return existing;
 
 	await mkdir(dataDir(), { recursive: true });
 	const staging = await mkdtemp(join(dataDir(), "ca-"));
@@ -107,7 +107,7 @@ export async function ensureCa(): Promise<Ca> {
 		const code = (err as NodeJS.ErrnoException).code;
 		if (code !== "ENOTEMPTY" && code !== "EEXIST") throw err;
 		const winner = await readCa();
-		if (winner === null) throw err;
+		if (winner === undefined) throw err;
 		return winner;
 	}
 }
