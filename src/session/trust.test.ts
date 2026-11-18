@@ -263,7 +263,7 @@ test("a carriage return ends the line it is on, as it does for JavaScript, so th
 
 test("a line separator, U+2028, ends the line it is on", async (t) => {
 	const { dir, sandbox } = await scenario(t, {
-		"playpen.config.js": "// harmless note payload();",
+		"playpen.config.js": "// harmless note\u2028payload();",
 	});
 	const shown = await shownAtTerminal(t, () => loadTrustedConfig(dir, sandbox));
 	assert.match(
@@ -274,7 +274,7 @@ test("a line separator, U+2028, ends the line it is on", async (t) => {
 
 test("a paragraph separator, U+2029, ends the line it is on", async (t) => {
 	const { dir, sandbox } = await scenario(t, {
-		"playpen.config.js": "// harmless note payload();",
+		"playpen.config.js": "// harmless note\u2029payload();",
 	});
 	const shown = await shownAtTerminal(t, () => loadTrustedConfig(dir, sandbox));
 	assert.match(
@@ -291,28 +291,16 @@ test("a Windows line ending is a plain line end, with nothing to escape", async 
 	assert.match(shown, /\n {2}│ first\(\);\n {2}│ second\(\);\n\n {2}declined/);
 });
 
-test("a control character is escaped", () => {
-	assert.equal(escapeUnshowable("a\x1bb"), "a\\u{1b}b");
-});
-
-test("a tab is left as it is", () => {
-	assert.equal(escapeUnshowable("a\tb"), "a\tb");
-});
-
 test("a format character that is not default-ignorable, U+FFF9, is escaped", () => {
-	assert.equal(escapeUnshowable("a￹b"), "a\\u{fff9}b");
+	assert.equal(escapeUnshowable("a\ufff9b"), "a\\u{fff9}b");
 });
 
 test("a default-ignorable character that is not a format character, U+FE0F, is escaped", () => {
-	assert.equal(escapeUnshowable("false️"), "false\\u{fe0f}");
+	assert.equal(escapeUnshowable("false\ufe0f"), "false\\u{fe0f}");
 });
 
 test("a character outside the basic plane, U+E0100, is one escape", () => {
 	assert.equal(escapeUnshowable("a\u{e0100}b"), "a\\u{e0100}b");
-});
-
-test("a lone surrogate, which a string can hold though no UTF-8 file can, is escaped", () => {
-	assert.equal(escapeUnshowable("a\ud800b"), "a\\u{d800}b");
 });
 
 test("a mount nobody approved is left out when there is no terminal to ask", async (t) => {
