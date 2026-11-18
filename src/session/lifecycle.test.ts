@@ -283,7 +283,9 @@ test("a newline in a refused mount is shown as an escape", async (t) => {
 	);
 	const said = t.mock.method(console, "error", () => {});
 	await run();
-	const lines = said.mock.calls.map((call) => String(call.arguments[0])).join("\n");
+	const lines = said.mock.calls
+		.map((call) => String(call.arguments[0]))
+		.join("\n");
 	assert.match(
 		lines,
 		/^warning: not mounting \.\.\/gone\\u\{a\} {2}approved: /m,
@@ -300,7 +302,9 @@ test("a newline in an approved mount is shown as an escape when it is mounted", 
 	await approveMount(sb, shared);
 	const said = t.mock.method(console, "error", () => {});
 	await run();
-	const lines = said.mock.calls.map((call) => String(call.arguments[0])).join("\n");
+	const lines = said.mock.calls
+		.map((call) => String(call.arguments[0]))
+		.join("\n");
 	assert.match(lines, /^mounting read-only: .*shared\\u\{a\} {2}approved$/m);
 });
 
@@ -683,7 +687,9 @@ test("a config that cannot be loaded is reported with the invisible characters i
 	);
 	const said = t.mock.method(console, "error", () => {});
 	await run();
-	const lines = said.mock.calls.map((call) => String(call.arguments[0])).join("\n");
+	const lines = said.mock.calls
+		.map((call) => String(call.arguments[0]))
+		.join("\n");
 	assert.match(
 		lines,
 		/not loaded \(.*"\.\.\/\\u\{202e\}evil\.js", which is outside/,
