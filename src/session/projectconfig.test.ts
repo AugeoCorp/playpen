@@ -614,6 +614,20 @@ test("an env that is not an upper-case variable name fails the load", () => {
 	assert.match(secretsError([{ env: 7, hosts: ["github.com"] }]), bad);
 });
 
+test("an env that playpen itself uses fails the load, naming it", () => {
+	assert.equal(
+		secretsError([{ env: "PATH", hosts: ["github.com"] }]),
+		"`network.secrets[0].env` is PATH, which playpen itself uses, so it cannot be a secret",
+	);
+});
+
+test("an env starting PLAYPEN_ fails the load, since playpen reads those itself", () => {
+	assert.equal(
+		secretsError([{ env: "PLAYPEN_TOKEN", hosts: ["github.com"] }]),
+		"`network.secrets[0].env` is PLAYPEN_TOKEN, which playpen itself uses, so it cannot be a secret",
+	);
+});
+
 test("an entry with no hosts fails the load", () => {
 	assert.match(
 		secretsError([{ env: "GH_TOKEN", hosts: [] }]),
