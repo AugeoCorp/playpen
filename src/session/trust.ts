@@ -103,25 +103,63 @@ async function snapshot(sandbox: string, graph: ConfigGraph): Promise<string> {
 	return join(dir, graph.entry);
 }
 
+/**
+ * What a terminal acts on or draws as nothing: controls other than tab, format
+ * characters such as bidi overrides, the line separators and default-ignorable
+ * code points. Several are legal in a JavaScript name, so `false` followed by
+ * one is a name and not the keyword.
+ */
+const UNSHOWABLE =
+	/(?!\t)[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
+
+export function escapeUnshowable(text: string): string {
+	return text.replace(
+		UNSHOWABLE,
+		(character) => `\\u{${character.codePointAt(0)?.toString(16)}}`,
+	);
+}
+
+const ESCAPES_WARNING =
+	"  warning: invisible or control characters are shown above as escapes like \\u{1b}";
+
+/** Names and contents come from a directory the guest can write. */
 function preview(
 	graph: ConfigGraph,
 	approved: Record<string, string> | undefined,
 ): string {
-	const out: string[] = [];
-	for (const f of graph.files) {
-		const before = approved?.[f.rel];
+	const lines = graph.files.flatMap((file) => {
+		const before = approved?.[file.rel];
 		const status =
 			before === undefined
 				? "new"
-				: before === f.hash
+				: before === file.hash
 					? "unchanged"
 					: "changed";
-		out.push(`  ── ${f.rel} (${status})`);
-		if (status === "unchanged") continue;
-		for (const line of f.contents.replace(/\n$/, "").split("\n"))
-			out.push(`  │ ${line}`);
-	}
-	return out.join("\n");
+		return [
+			`  ── ${file.rel} (${status})`,
+			...(status === "unchanged" ? [] : linesOf(file.contents)).map(
+				(line) => `  │ ${line}`,
+			),
+		];
+	});
+	const shown = lines.map(escapeUnshowable);
+	return (
+		shown.some((line, index) => line !== lines[index])
+			? [...shown, "", ESCAPES_WARNING]
+			: shown
+	).join("\n");
+}
+
+/**
+ * Escaping a line terminator does not stop it ending a line for the parser, so
+ * a line also ends on screen wherever JavaScript ends one (ECMA-262,
+ * LineTerminator). A lone `\r`, U+2028 or U+2029 stays on the line it ends, to
+ * be escaped there.
+ */
+function linesOf(contents: string): string[] {
+	return contents
+		.split(/(?<=\n|\r(?!\n)|\u2028|\u2029)/)
+		.map((line) => line.replace(/\r?\n$/, ""));
 }
 
 export interface TrustedConfig extends ConfigResult {
@@ -272,19 +310,21 @@ export async function approveMounts(
 
 	const approved: string[] = [];
 	for (const dir of paths) {
+		// A resolved path can carry a symlink target the guest wrote.
+		const shown = escapeUnshowable(dir);
 		if (before.includes(dir)) {
 			approved.push(dir);
 			continue;
 		}
 		if (!process.stdin.isTTY) {
 			console.error(
-				`warning: not mounting ${dir}: it is not yet approved, and there is no terminal to ask.`,
+				`warning: not mounting ${shown}: it is not yet approved, and there is no terminal to ask.`,
 			);
 			console.error(`  approve it with an interactive: playpen start`);
 			continue;
 		}
 		console.error("");
-		console.error(`this project asks to mount ${dir} read-only.`);
+		console.error(`this project asks to mount ${shown} read-only.`);
 		console.error(`  everything in it becomes readable by the sandbox.`);
 		if (await confirm(`  allow it? [y/N] `)) approved.push(dir);
 		else console.error(`  declined; not mounting it.`);
