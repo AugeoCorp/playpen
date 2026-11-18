@@ -45,6 +45,7 @@ after(async () => {
 });
 
 const GH_TOKEN: HeldSecret = { env: "GH_TOKEN", value: "ghp_real_value" };
+const WITH_PLACEHOLDER = { authorization: "token playpen-secret-gh-token" };
 
 /** `api.example` is allowed, and GH_TOKEN may be sent to it. */
 function secretPolicy(extraAllow: readonly string[] = []): Policy {
@@ -58,6 +59,8 @@ function secretPolicy(extraAllow: readonly string[] = []): Policy {
 
 interface Received {
 	headers: http.IncomingHttpHeaders;
+	/** Every `Host` header, where `headers` keeps only the first. */
+	hosts: string[];
 	servername: string;
 	body: Buffer;
 }
@@ -84,6 +87,7 @@ async function upstreamHost(
 			request.on("end", () => {
 				received.push({
 					headers: request.headers,
+					hosts: request.headersDistinct.host ?? [],
 					servername: (request.socket as tls.TLSSocket).servername || "",
 					body: Buffer.concat(chunks),
 				});
@@ -218,6 +222,7 @@ function send(
 	request: {
 		headers?: Record<string, string>;
 		method?: string;
+		path?: string;
 		body?: Buffer;
 	} = {},
 ): Promise<Answer> {
@@ -226,7 +231,7 @@ function send(
 			{
 				agent,
 				host: "api.example",
-				path: "/user",
+				path: request.path ?? "/user",
 				method: request.method ?? "GET",
 				headers: request.headers ?? {},
 			},
@@ -360,12 +365,19 @@ test("the host is dialed only at an address the gatekeeper's own rules allow", a
 		policy: () => secretPolicy(),
 	});
 
-	const answer = await send(clientThrough(t, port, "api.example:443"));
+	const answer = await send(clientThrough(t, port, "api.example:443"), {
+		headers: WITH_PLACEHOLDER,
+	});
 
 	assert.equal(answer.status, 502);
 	assert.match(
 		log.find((line) => line.verdict === "deny")?.reason ?? "",
 		/127\.0\.0\.1, which is an address of this machine/,
+	);
+	assert.equal(
+		log.some((line) => line.verdict === "inject"),
+		false,
+		"an injection was logged for a value that never left",
 	);
 });
 
@@ -378,7 +390,9 @@ test("a host whose certificate fails verification gets nothing, and the guest a 
 		upstreamCa: playpenCa,
 	});
 
-	const answer = await send(clientThrough(t, port, "api.example:443"));
+	const answer = await send(clientThrough(t, port, "api.example:443"), {
+		headers: WITH_PLACEHOLDER,
+	});
 
 	assert.equal(answer.status, 502);
 	assert.deepEqual(upstream.received, []);
@@ -559,4 +573,164 @@ test("a plain HTTP request to port 443 of a secret's host is dialed through the 
 		log.find((line) => line.verdict === "deny")?.reason ?? "",
 		/127\.0\.0\.1, which is an address of this machine/,
 	);
+});
+
+test("a request to a secret's host reaches it with the real value where the guest put the placeholder", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+
+	await send(clientThrough(t, port, "api.example:443"), {
+		headers: WITH_PLACEHOLDER,
+	});
+
+	assert.equal(
+		upstream.received[0]?.headers.authorization,
+		"token ghp_real_value",
+	);
+});
+
+test("a held secret the policy does not grant this host stays a placeholder", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		held: [GH_TOKEN, { env: "NPM_TOKEN", value: "npm_real_value" }],
+		upstreamPort: upstream.port,
+	});
+
+	await send(clientThrough(t, port, "api.example:443"), {
+		headers: { authorization: "Bearer playpen-secret-npm-token" },
+	});
+
+	assert.equal(
+		upstream.received[0]?.headers.authorization,
+		"Bearer playpen-secret-npm-token",
+	);
+});
+
+test("each request on a kept-alive tunnel gets the value, and logs the variable and never the value", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port, log } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+	const agent = clientThrough(t, port, "api.example:443");
+
+	await send(agent, { headers: WITH_PLACEHOLDER });
+	await send(agent, { headers: WITH_PLACEHOLDER });
+
+	assert.deepEqual(
+		upstream.received.map((request) => request.headers.authorization),
+		["token ghp_real_value", "token ghp_real_value"],
+	);
+	assert.deepEqual(
+		log.map(({ time: _, ...line }) => line),
+		[
+			{
+				host: "api.example",
+				port: 443,
+				verdict: "allow",
+				reason: 'matches allow entry "api.example"',
+			},
+			...[1, 2].map(() => ({
+				host: "api.example",
+				port: 443,
+				verdict: "inject",
+				reason: "GH_TOKEN in Authorization",
+			})),
+		],
+	);
+});
+
+test("a TRACE request is refused with a 405 and sent nowhere, since the host would echo the value back", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port, log } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+
+	const answer = await send(clientThrough(t, port, "api.example:443"), {
+		method: "TRACE",
+		headers: WITH_PLACEHOLDER,
+	});
+
+	assert.equal(answer.status, 405);
+	assert.deepEqual(upstream.received, []);
+	assert.equal(
+		log.at(-1)?.reason,
+		"method TRACE echoes the request back, and the value with it",
+	);
+});
+
+test("a request line naming another site in full is refused with a 421, and nothing is sent on", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port, log } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+
+	const answer = await send(clientThrough(t, port, "api.example:443"), {
+		path: "https://other.example/user",
+		headers: WITH_PLACEHOLDER,
+	});
+
+	assert.equal(answer.status, 421);
+	assert.deepEqual(upstream.received, []);
+	assert.equal(log.at(-1)?.verdict, "deny");
+});
+
+test("a request target starting with // is refused with a 421, since a URL parser reads it as naming another host", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+
+	const answer = await send(clientThrough(t, port, "api.example:443"), {
+		path: "//other.example/user",
+		headers: WITH_PLACEHOLDER,
+	});
+
+	assert.equal(answer.status, 421);
+	assert.deepEqual(upstream.received, []);
+});
+
+test("the host sees one Host header, the approved host, whatever the guest sent", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+
+	await send(clientThrough(t, port, "api.example:443"), {
+		headers: { host: "other.example", ...WITH_PLACEHOLDER },
+	});
+
+	assert.deepEqual(upstream.received[0]?.hosts, ["api.example"]);
+});
+
+test("headers a front end could route by instead of Host never reach the host", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+
+	await send(clientThrough(t, port, "api.example:443"), {
+		headers: {
+			"x-forwarded-host": "other.example",
+			forwarded: "host=other.example",
+			"x-original-url": "/admin",
+			"x-rewrite-url": "/admin",
+			"x-host": "other.example",
+			"x-http-host-override": "other.example",
+			"x-forwarded-server": "other.example",
+			accept: "application/json",
+		},
+	});
+
+	const { connection: _, ...sent } = upstream.received[0]?.headers ?? {};
+	assert.deepEqual(sent, { host: "api.example", accept: "application/json" });
 });
