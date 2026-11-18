@@ -5,7 +5,13 @@ import { join } from "node:path";
 import { type TestContext, test } from "node:test";
 import { trustDir } from "../config.ts";
 import { readConfigGraph } from "./configgraph.ts";
-import { decideTrust, loadTrustedConfig, pinConfig } from "./trust.ts";
+import {
+	approveMounts,
+	decideTrust,
+	loadTrustedConfig,
+	pinConfig,
+	pinMounts,
+} from "./trust.ts";
 
 test("no file on disk is 'absent', whatever is pinned", () => {
 	assert.equal(decideTrust(null, null), "absent");
@@ -193,5 +199,42 @@ test("rejects a sandbox name that would escape the trust directory", async (t) =
 	await assert.rejects(
 		() => pinConfig("../../etc/passwd", graph),
 		/invalid sandbox name/,
+	);
+});
+
+test("a mount nobody approved is left out when there is no terminal to ask", async (t) => {
+	const { sandbox } = await scenario(t, { "playpen.config.js": CONFIG });
+	t.mock.method(console, "error", () => {});
+	assert.deepEqual(await approveMounts(sandbox, ["/src/shared-lib"]), []);
+});
+
+test("a mount approved before is kept without asking", async (t) => {
+	const { sandbox } = await scenario(t, { "playpen.config.js": CONFIG });
+	await pinMounts(sandbox, ["/src/shared-lib"]);
+	t.mock.method(console, "error", () => {});
+	assert.deepEqual(
+		await approveMounts(sandbox, ["/src/shared-lib", "/src/other"]),
+		["/src/shared-lib"],
+	);
+});
+
+test("a mount approval is scoped to its sandbox", async (t) => {
+	const { sandbox } = await scenario(t, { "playpen.config.js": CONFIG });
+	await pinMounts(sandbox, ["/src/shared-lib"]);
+	t.mock.method(console, "error", () => {});
+	assert.deepEqual(
+		await approveMounts(`${sandbox}-other`, ["/src/shared-lib"]),
+		[],
+	);
+});
+
+test("a mount dropped from the config is forgotten, so naming it again asks again", async (t) => {
+	const { sandbox } = await scenario(t, { "playpen.config.js": CONFIG });
+	await pinMounts(sandbox, ["/src/shared-lib", "/src/other"]);
+	t.mock.method(console, "error", () => {});
+	await approveMounts(sandbox, ["/src/other"]);
+	assert.deepEqual(
+		await approveMounts(sandbox, ["/src/shared-lib", "/src/other"]),
+		["/src/other"],
 	);
 });
