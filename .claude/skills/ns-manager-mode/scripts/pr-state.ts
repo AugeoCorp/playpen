@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// pr-state.mjs: Set or show a PR's state label, keeping its draft flag in
+// pr-state.ts: Set or show a PR's state label, keeping its draft flag in
 // step.
 //
 // A PR carries one state label at a time. Setting a state swaps out whichever
@@ -19,6 +19,7 @@
 // variables. It touches state labels, the stacked and feature labels, and
 // draft status, nothing else.
 
+import type { MutationVariables, PullRequestState } from "./gh-lib.ts";
 import {
 	execGitHub,
 	fail,
@@ -29,13 +30,15 @@ import {
 	resolveRepo,
 	runAllowedMutation,
 	splitRepo,
-} from "./gh-lib.mjs";
-import { LABELS } from "./labels.mjs";
+} from "./gh-lib.ts";
+import { LABELS } from "./labels.ts";
 
-// Each settable state by the plain words the command line takes, with its
-// label and whether the PR should be a draft while in it. An undefined draft
-// leaves the PR's draft status as it is.
-const STATES = new Map([
+// A settable state: its label, and whether the PR should be a draft while in
+// it. An undefined draft leaves the PR's draft status as it is.
+type State = { label: string; draft: boolean | undefined };
+
+// Each settable state by the plain words the command line takes.
+const STATES = new Map<string, State>([
 	["working", { label: LABELS.working.name, draft: true }],
 	["self review", { label: LABELS.selfReview.name, draft: true }],
 	["needs decision", { label: LABELS.needsDecision.name, draft: true }],
@@ -70,6 +73,26 @@ Usage: pr-state <pr> [state] [--repo owner/name]
 
 States: ${[...STATES.keys()].join(", ")}`;
 
+type Label = { id: string; name: string };
+
+// The PR as readPullRequest's query returns it.
+type PullRequestNode = {
+	id: string;
+	number: number;
+	url: string;
+	state: PullRequestState;
+	isDraft: boolean;
+	baseRefName: string;
+	headRefName: string;
+	labels: { nodes: Label[] };
+};
+
+type PullRequest = Omit<PullRequestNode, "labels"> & {
+	labels: Label[];
+	defaultBranch: string;
+	repositoryLabels: Label[];
+};
+
 const { values, positionals } = parseCommandLine(USAGE, { repo: repoOption });
 const { pr, state } = readPositionals(
 	positionals,
@@ -77,11 +100,11 @@ const { pr, state } = readPositionals(
 	USAGE,
 );
 const prNumber = parsePositiveInteger(pr, "pr");
-const stateName = state === undefined ? undefined : parseState(state);
+const nextState = state === undefined ? undefined : parseState(state);
 const repo = resolveRepo(values.repo);
 const pullRequest = readPullRequest(repo, prNumber);
-if (stateName) {
-	setState(pullRequest, stateName);
+if (nextState) {
+	setState(pullRequest, nextState);
 }
 syncLabel(pullRequest, LABELS.stacked.name, isStacked(pullRequest));
 syncLabel(pullRequest, LABELS.feature.name, isFeature(pullRequest));
@@ -89,11 +112,11 @@ report(readPullRequest(repo, prNumber));
 
 // Checks and the draft change come first: draft is the call GitHub is likeliest
 // to refuse, and doing it before the labels means a refusal leaves them as-is.
-function setState(pullRequest, state) {
+function setState(pullRequest: PullRequest, state: State) {
 	if (pullRequest.state !== "OPEN") {
 		fail(`#${pullRequest.number} is ${pullRequest.state.toLowerCase()}`);
 	}
-	const { label: labelName, draft } = STATES.get(state);
+	const { label: labelName, draft } = state;
 	const label = findRepositoryLabel(pullRequest, labelName);
 
 	if (draft === true && !pullRequest.isDraft) {
@@ -118,7 +141,11 @@ function setState(pullRequest, state) {
 }
 
 // Keeps a label that is not a state on the PR exactly when it applies.
-function syncLabel(pullRequest, labelName, applies) {
+function syncLabel(
+	pullRequest: PullRequest,
+	labelName: string,
+	applies: boolean,
+) {
 	if (pullRequest.state !== "OPEN") {
 		return;
 	}
@@ -131,15 +158,15 @@ function syncLabel(pullRequest, labelName, applies) {
 	}
 }
 
-function isStacked(pullRequest) {
+function isStacked(pullRequest: PullRequest) {
 	return pullRequest.baseRefName !== pullRequest.defaultBranch;
 }
 
-function isFeature(pullRequest) {
+function isFeature(pullRequest: PullRequest) {
 	return pullRequest.headRefName.startsWith(FEATURE_BRANCH_PREFIX);
 }
 
-function findRepositoryLabel(pullRequest, labelName) {
+function findRepositoryLabel(pullRequest: PullRequest, labelName: string) {
 	const label = pullRequest.repositoryLabels.find(
 		(candidate) => candidate.name === labelName,
 	);
@@ -149,7 +176,7 @@ function findRepositoryLabel(pullRequest, labelName) {
 	return label;
 }
 
-function report(pullRequest) {
+function report(pullRequest: PullRequest) {
 	const states = pullRequest.labels
 		.map((label) => label.name)
 		.filter((name) => STATE_LABELS.has(name));
@@ -167,19 +194,20 @@ function report(pullRequest) {
 	);
 }
 
-function parseState(raw) {
+function parseState(raw: string) {
 	const name = raw.trim().toLowerCase().replaceAll("-", " ");
-	if (!STATES.has(name)) {
+	const state = STATES.get(name);
+	if (!state) {
 		fail(`state: must be one of: ${[...STATES.keys()].join(", ")}`);
 	}
-	return name;
+	return state;
 }
 
 // ── GitHub calls ─────────────────────────────────────────────────────────────
 
 // A read, so it goes straight to the shared runner (not the mutation
 // allowlist).
-function readPullRequest(repo, pr) {
+function readPullRequest(repo: string, pr: number): PullRequest {
 	const [owner, name] = splitRepo(repo);
 	const query = `
 		query ($owner: String!, $name: String!, $number: Int!) {
@@ -198,7 +226,7 @@ function readPullRequest(repo, pr) {
 				labels(first: 100) { nodes { id name } }
 			}
 		}`;
-	const { repository } = execGitHub(
+	const response = execGitHub(
 		[
 			"api",
 			"graphql",
@@ -212,7 +240,16 @@ function readPullRequest(repo, pr) {
 			`number=${pr}`,
 		],
 		{ json: true },
-	).data;
+	) as {
+		data: {
+			repository: {
+				pullRequest: PullRequestNode | null;
+				defaultBranchRef: { name: string };
+				labels: { nodes: Label[] };
+			};
+		};
+	};
+	const { repository } = response.data;
 	if (!repository.pullRequest) {
 		fail(`no pull request #${pr} in ${repo}`);
 	}
@@ -224,7 +261,7 @@ function readPullRequest(repo, pr) {
 	};
 }
 
-function addLabels(labelableId, labelIds) {
+function addLabels(labelableId: string, labelIds: string[]) {
 	runMutation(
 		`
 		mutation ($labelableId: ID!, $labelIds: [ID!]!) {
@@ -238,7 +275,7 @@ function addLabels(labelableId, labelIds) {
 	);
 }
 
-function removeLabels(labelableId, labelIds) {
+function removeLabels(labelableId: string, labelIds: string[]) {
 	runMutation(
 		`
 		mutation ($labelableId: ID!, $labelIds: [ID!]!) {
@@ -252,7 +289,7 @@ function removeLabels(labelableId, labelIds) {
 	);
 }
 
-function convertToDraft(pullRequestId) {
+function convertToDraft(pullRequestId: string) {
 	runMutation(
 		`
 		mutation ($pullRequestId: ID!) {
@@ -264,7 +301,7 @@ function convertToDraft(pullRequestId) {
 	);
 }
 
-function markReady(pullRequestId) {
+function markReady(pullRequestId: string) {
 	runMutation(
 		`
 		mutation ($pullRequestId: ID!) {
@@ -276,6 +313,6 @@ function markReady(pullRequestId) {
 	);
 }
 
-function runMutation(query, variables) {
+function runMutation(query: string, variables: MutationVariables) {
 	return runAllowedMutation(query, variables, ALLOWED_MUTATIONS);
 }

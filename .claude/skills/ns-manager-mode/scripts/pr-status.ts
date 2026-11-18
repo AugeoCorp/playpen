@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// pr-status.mjs: Read-only Pull Request status reporter.
+// pr-status.ts: Read-only Pull Request status reporter.
 //
 // Safe by construction: every report is built from a CLOSED set of named
 // SECTIONS and commands, and every GitHub read they make is hardcoded here.
@@ -7,6 +7,7 @@
 // routed through a local read-only allowlist (assertReadOnly), so nothing here
 // can mutate a PR, a repo, or anything on GitHub. It is safe to blanket-allow.
 
+import type { Mergeable, PullRequestState } from "./gh-lib.ts";
 import {
 	execGitHub,
 	fail,
@@ -18,7 +19,92 @@ import {
 	repoOption,
 	resolveRepo,
 	splitRepo,
-} from "./gh-lib.mjs";
+} from "./gh-lib.ts";
+
+// The `gh pr view` JSON for the fields the sections ask for.
+type PullRequest = {
+	number: number;
+	title: string;
+	state: PullRequestState;
+	isDraft: boolean;
+	author: { login: string } | null;
+	baseRefName: string;
+	headRefName: string;
+	url: string;
+	mergeable: Mergeable;
+	reviewDecision: string | null;
+	statusCheckRollup: Check[] | null;
+	changedFiles: number;
+	additions: number;
+	deletions: number;
+	files: ChangedFile[] | null;
+	reviewRequests: ReviewRequest[] | null;
+	body: string | null;
+};
+
+// A status check: a check run, with a name, or a commit status, without.
+type Check = { name?: string; conclusion?: string; status?: string };
+
+type ChangedFile = {
+	path: string;
+	additions: number;
+	deletions: number;
+	changeType: string;
+};
+
+// A requested reviewer: a user (login), a team (name, slug) or a bot.
+type ReviewRequest = { login?: string; name?: string; slug?: string };
+
+// A review thread, distilled from the GraphQL read.
+type ReviewThread = {
+	id: string;
+	resolved: boolean;
+	author: string;
+	path: string;
+	line: number | undefined;
+	diffHunk: string;
+	body: string;
+	comments: ThreadComment[];
+};
+
+type ThreadComment = { author: string; body: string };
+
+// A review thread as the GraphQL read returns it.
+type ReviewThreadNode = {
+	id: string;
+	isResolved: boolean;
+	path: string | null;
+	line: number | null;
+	originalLine: number | null;
+	comments: {
+		nodes: {
+			author: { login: string } | null;
+			body: string | null;
+			diffHunk: string | null;
+		}[];
+	};
+};
+
+// What a section reads from. Each section only reads what its prFields and
+// needsThreads asked for, so the parts it didn't ask for are never touched.
+type SectionContext = { pullRequest: PullRequest; threads: ReviewThread[] };
+
+// What every report returns: the distilled object for --json, and the text.
+type Report = { data: unknown; lines: string[] };
+
+type Section = {
+	prFields?: (keyof PullRequest)[];
+	needsThreads?: boolean;
+	distill(context: SectionContext): Report;
+};
+
+type CommandLineValues = { repo?: string; include?: string };
+
+type Command = {
+	usage: string;
+	description: string;
+	run(positionals: string[], values: CommandLineValues): Report;
+};
 
 // Allowed `gh` command prefixes. Every report's gh call must match one.
 const READ_ONLY_COMMANDS = [
@@ -37,7 +123,7 @@ const READ_ONLY_COMMANDS = [
 // only when some requested section needs it. distill({ pullRequest, threads })
 // returns { data, lines }.
 
-const SECTIONS = {
+const SECTIONS: Record<string, Section> = {
 	meta: {
 		prFields: [
 			"number",
@@ -95,7 +181,7 @@ const SECTIONS = {
 			).length;
 			const failing = checks.filter((check) =>
 				["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT"].includes(
-					check.conclusion,
+					check.conclusion ?? "",
 				),
 			).length;
 			const unresolved = threads.filter((thread) => !thread.resolved).length;
@@ -277,8 +363,12 @@ const PRESETS = {
 // Fetch the union of fields the requested sections need (one `pr view` call),
 // fetch review threads only if some section needs them, then distill each.
 
-function composeSections(repo, prNumber, includeNames) {
-	const sections = includeNames.map((name) => [name, SECTIONS[name]]);
+function composeSections(
+	repo: string,
+	prNumber: number,
+	includeNames: string[],
+): Report {
+	const sections = includeNames.map((name) => [name, SECTIONS[name]] as const);
 
 	const prFields = new Set(
 		sections.flatMap(([, section]) => section.prFields ?? []),
@@ -290,11 +380,10 @@ function composeSections(repo, prNumber, includeNames) {
 		: undefined;
 	const threads = needsThreads ? fetchReviewThreads(repo, prNumber) : undefined;
 
-	const context = { pullRequest, threads };
-	const results = sections.map(([name, section]) => [
-		name,
-		section.distill(context),
-	]);
+	const context = { pullRequest, threads } as SectionContext;
+	const results = sections.map(
+		([name, section]) => [name, section.distill(context)] as const,
+	);
 	return {
 		data: Object.fromEntries(
 			results.map(([name, result]) => [name, result.data]),
@@ -305,7 +394,7 @@ function composeSections(repo, prNumber, includeNames) {
 
 // One file's patch out of a PR diff. Scoped to a single file so the output
 // stays small, and follows the same { data, lines } shape as every section.
-function fileDiff(repo, prNumber, file) {
+function fileDiff(repo: string, prNumber: number, file: string): Report {
 	const blocks = splitDiff(fetchDiff(repo, prNumber));
 	const match =
 		blocks.find((block) => block.path === file) ??
@@ -340,7 +429,7 @@ function fileDiff(repo, prNumber, file) {
 	};
 }
 
-function parseInclude(raw) {
+function parseInclude(raw: string | undefined) {
 	const names = (raw ?? "")
 		.split(",")
 		.map((name) => name.trim())
@@ -360,7 +449,7 @@ function parseInclude(raw) {
 
 // ── CLI ──────────────────────────────────────────────────────────────────────
 
-const COMMANDS = {
+const COMMANDS: Record<string, Command> = {
 	...Object.fromEntries(
 		Object.entries(PRESETS).map(([name, preset]) => [
 			name,
@@ -424,7 +513,7 @@ const COMMANDS = {
 				"open",
 				"--json",
 				"number,title,headRefName,isDraft",
-			]);
+			]) as Pick<PullRequest, "number" | "title" | "headRefName" | "isDraft">[];
 			return {
 				data: pullRequests,
 				lines: pullRequests.length
@@ -472,7 +561,7 @@ if (!Object.hasOwn(COMMANDS, commandName)) {
 }
 emit(COMMANDS[commandName].run(commandPositionals, values), values.json);
 
-function emit(result, json) {
+function emit(result: Report, json: boolean | undefined) {
 	process.stdout.write(
 		json
 			? `${JSON.stringify(result.data, undefined, 2)}\n`
@@ -482,7 +571,11 @@ function emit(result, json) {
 
 // ── GitHub reads ──────────────────────────────────────────────────────────────
 
-function fetchPullRequest(repo, prNumber, fields) {
+function fetchPullRequest(
+	repo: string,
+	prNumber: number,
+	fields: (keyof PullRequest)[],
+) {
 	return runGitHub([
 		"pr",
 		"view",
@@ -491,16 +584,16 @@ function fetchPullRequest(repo, prNumber, fields) {
 		repo,
 		"--json",
 		fields.join(","),
-	]);
+	]) as PullRequest;
 }
 
-function fetchDiff(repo, prNumber) {
+function fetchDiff(repo: string, prNumber: number) {
 	return runGitHubText(["pr", "diff", String(prNumber), "--repo", repo]);
 }
 
 // Split a unified PR diff into one block per file, keyed by the post-image path
 // (the `b/…` side, which is right for additions and renames alike).
-function splitDiff(raw) {
+function splitDiff(raw: string) {
 	if (!raw.trim()) {
 		return [];
 	}
@@ -514,7 +607,7 @@ function splitDiff(raw) {
 		.filter((block) => block.path);
 }
 
-function fetchReviewThreads(repo, prNumber) {
+function fetchReviewThreads(repo: string, prNumber: number): ReviewThread[] {
 	const [owner, name] = splitRepo(repo);
 	const query = `
 		query ($owner: String!, $name: String!, $number: Int!) {
@@ -547,7 +640,13 @@ function fetchReviewThreads(repo, prNumber) {
 		`name=${name}`,
 		"-F",
 		`number=${prNumber}`,
-	]);
+	]) as {
+		data: {
+			repository: {
+				pullRequest: { reviewThreads: { nodes: ReviewThreadNode[] } };
+			};
+		};
+	};
 
 	return response.data.repository.pullRequest.reviewThreads.nodes.map(
 		(thread) => {
@@ -575,19 +674,19 @@ function fetchReviewThreads(repo, prNumber) {
 // Every report's gh call goes through here: assert it is on the read-only
 // allowlist, then run it via the shared (policy-free) gh runner. Keeping the
 // allowlist local is what makes this script read-only by construction.
-function runGitHub(args) {
+function runGitHub(args: string[]) {
 	assertReadOnly(args);
 	return execGitHub(args, { json: true });
 }
 
 // Text variant for reads that are not JSON (e.g. `pr diff`), gated by the same
 // read-only allowlist.
-function runGitHubText(args) {
+function runGitHubText(args: string[]) {
 	assertReadOnly(args);
 	return execGitHub(args, { json: false });
 }
 
-function assertReadOnly(args) {
+function assertReadOnly(args: string[]) {
 	const allowed = READ_ONLY_COMMANDS.some((prefix) =>
 		prefix.every((part, index) => args[index] === part),
 	);
@@ -606,7 +705,7 @@ function assertReadOnly(args) {
 
 // ── Small helpers ────────────────────────────────────────────────────────────
 
-function icon(result) {
+function icon(result: string) {
 	if (result === "SUCCESS") return "✓";
 	if (["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT"].includes(result))
 		return "✗";
@@ -614,17 +713,17 @@ function icon(result) {
 }
 
 // Single-letter glyph for a file's change type (ADDED → A, MODIFIED → M, …).
-function changeIcon(changeType) {
+function changeIcon(changeType: string) {
 	return changeType ? changeType.charAt(0).toUpperCase() : "?";
 }
 
-function oneLine(text) {
+function oneLine(text: string) {
 	return text.replace(/\s+/g, " ").trim();
 }
 
 // PR descriptions carry the repo's HTML-comment template and ragged blank
 // lines; strip both so the distilled body stays compact.
-function cleanBody(raw) {
+function cleanBody(raw: string | null) {
 	return (raw ?? "")
 		.replace(/<!--[\s\S]*?-->/g, "")
 		.replace(/\r\n/g, "\n")
@@ -634,7 +733,7 @@ function cleanBody(raw) {
 
 // GitHub anchors a comment at the last line of its diff hunk, so the tail is the
 // relevant context. Keep the final few lines and mark earlier ones as elided.
-function diffContext(diffHunk, tail = 5) {
+function diffContext(diffHunk: string, tail = 5) {
 	if (!diffHunk) {
 		return [];
 	}

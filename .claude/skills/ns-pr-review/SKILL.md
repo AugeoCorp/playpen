@@ -1,5 +1,5 @@
 ---
-name: pr-review
+name: ns-pr-review
 description: Write a pull request description, or review a branch before its pull request goes up, against nam-shub and the comment and test rubrics. Use when starting a change, before a pull request leaves draft, or when The Operator asks for a self review.
 ---
 
@@ -41,7 +41,7 @@ Explain a specific line with a comment on that line of the pull request.
 5. **Comments.** Run `comment-rubric.md` over every comment the diff adds or
    touches. Cite the category; for a rename, give the exact new name.
 6. **Tests.** Changed behaviour has tests in this pull request. Run
-   the `testing` skill's `test-rubric.md` over them and cite the numbers.
+   the `ns-testing` skill's `test-rubric.md` over them and cite the numbers.
 7. **Description.** It still matches the change and the shape above.
 
 ## What to Report

@@ -1,10 +1,10 @@
-<!-- BEGIN:nam-shub@8e44b92 -->
+<!-- BEGIN:nam-shub@8c22d0a -->
 <!-- prettier-ignore-start -->
 
 # nam-shub
 
 The rules for every repo. This block is generated from `core.md` in
-`seanhealy/nam-shub` by the `sync-nam-shub` skill and replaced whole on each
+`seanhealy/nam-shub` by the `ns-sync` skill and replaced whole on each
 update: change it there, never here. The rest of this file is specific to this
 repo.
 
@@ -64,7 +64,7 @@ rest of this file: there's no room in one for gold plating.
 - Tiny cleanups in code you're touching can ride along. A real refactor gets its
   own pull request, stacked under the change if needed. Anything else goes
   under "Not in this PR".
-- Load the `pr-review` skill before writing a change: the description comes
+- Load the `ns-pr-review` skill before writing a change: the description comes
   first, and it's the plan. Load it again before the pull request leaves draft.
 - A pull request stays a draft while it has an open question for The Operator.
 
@@ -97,7 +97,7 @@ Optimize only after it works and a measurement says it matters.
   properties by importance, identifying fields first.
 - A directory module's `index.ts` only re-exports; the code lives in a named
   file.
-- Comments carry only what the code can't. The `pr-review` skill holds the
+- Comments carry only what the code can't. The `ns-pr-review` skill holds the
   rubric.
 
 ## Working With The Operator
