@@ -75,7 +75,13 @@ async function readCa(): Promise<Ca | null> {
 			`${keyPath} is readable by other users (mode ${(mode & 0o777).toString(8)}); run chmod 600 on it, or delete the ca directory to start over`,
 		);
 	}
-	return { keyPem, certPem: await readFile(join(caDir(), CERT_FILE), "utf8") };
+	const certPath = join(caDir(), CERT_FILE);
+	const certPem = await readFile(certPath, "utf8").catch(() => {
+		throw new Error(
+			`${certPath} cannot be read, though its key is there; delete the ca directory to start over`,
+		);
+	});
+	return { keyPem, certPem };
 }
 
 /**
