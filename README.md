@@ -84,16 +84,19 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
 
 | Key       | Type                                                                                                                                                   | Effect                                                                                                                              |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `masked`  | `string[]`                                                                                                                                             | Project-relative dirs given guest-local storage, not 9p                                                                             |
+| `masked`  | `string[]`                                                                                                                                             | Project-relative dirs or files given guest-local storage, not 9p                                                                    |
 | `mounts`  | `string[]`                                                                                                                                             | Host dirs mounted read-only at the same path in the guest, each approved separately                                                 |
 | `setup`   | `string[]`                                                                                                                                             | Shell commands run in the guest, after masks, in order                                                                              |
 | `network` | `{ allow?: string[]; mode?: "enforce" \| "log"; ports?: (number \| { host: number; guest: number })[]; secrets?: { env: string; hosts: string[] }[] }` | Hosts this project may reach, on top of the ones playpen ships, host ports it sees at its own `localhost`, and credentials it names |
 
-- `masked` gives host and guest their own copy of a path: the 9p share is slow,
-  and the two often need different contents there — native modules and toolchain
-  builds are per-platform, and the environments drift.
+- `masked` gives host and guest their own copy of a path, a directory or a file:
+  the 9p share is slow, and the two often need different contents there: native
+  modules and toolchain builds are per-platform, and the environments drift. The
+  guest's copy starts empty, is writable, and survives stop and start.
 - Masked is not hidden. The host copy stays mounted underneath and the guest has
   root. Keep secrets outside the project.
+- A masked path that is missing on the host is created by the guest, as an empty
+  directory on the host. Create a masked file on the host first.
 - `mounts` entries are absolute, `~/`-relative, or relative to the project, so a
   sibling checkout is `../shared-lib`. The guest can write the config, so an
   entry is only a request: `start` asks before mounting each new path, and
