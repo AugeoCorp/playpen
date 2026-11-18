@@ -1,6 +1,6 @@
 // Writes playpen's base template with one extra first step that makes the
-// guest trust the container's interception CAs, and prints the base's name
-// and the template's path. Run as runner with the same XDG_DATA_HOME as `pp`.
+// guest trust the container's interception certificates, and prints the base's
+// name and the template's path. Run it with `as_runner`.
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { rootCertificates } from "node:tls";
@@ -10,17 +10,20 @@ import { baseImage } from "../../../src/image/base.ts";
 import { renderBase, serialize } from "../../../src/image/render.ts";
 import { baseInstanceName } from "../../../src/session/identity.ts";
 
-const publicRoots = new Set(rootCertificates.map(spaceless));
-// Only the certificates that are not public roots: the guest already has
-// those, and Lima cannot read a template line over 64 KiB, which the whole
+const bundle = "/opt/ca-bundle.crt";
+const nodeRoots = new Set(rootCertificates.map(spaceless));
+// Only the certificates that Node does not ship as roots: the guest already
+// has those, and Lima cannot read a template line over 64 KiB, which the whole
 // bundle in one script would be.
 const interceptionCertificates = [
 	...new Set(
-		(await readFile("/opt/ca-bundle.crt", "utf8")).match(
+		(await readFile(bundle, "utf8")).match(
 			/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g,
 		),
 	),
-].filter((pem) => !publicRoots.has(spaceless(pem)));
+].filter((pem) => !nodeRoots.has(spaceless(pem)));
+if (interceptionCertificates.length === 0)
+	throw new Error(`no interception certificates in ${bundle}`);
 
 const rendered = renderBase(baseImage, defaults);
 const template = rendered.template as {
@@ -28,7 +31,8 @@ const template = rendered.template as {
 	env?: Record<string, string>;
 };
 // npm keeps its own CA list, so the system store alone does not cover the
-// Claude Code install. Lima exports `env` to provisioning.
+// Claude Code install. Lima exports `env` to provisioning and to
+// /etc/environment.
 template.env = {
 	...template.env,
 	NODE_EXTRA_CA_CERTS: "/etc/ssl/certs/ca-certificates.crt",

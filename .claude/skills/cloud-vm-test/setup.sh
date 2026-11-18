@@ -37,7 +37,7 @@ fi
 id runner >/dev/null 2>&1 || useradd -m runner
 
 # The host-side network helper reaches real hosts through the container's
-# egress proxy, so the test user needs its CA.
+# agent proxy, so the test user needs its CA bundle.
 install -m 644 /root/.ccr/ca-bundle.crt /opt/ca-bundle.crt
 
 # The test user runs the repo's CLI in place.
@@ -48,21 +48,25 @@ while [ "$dir" != / ]; do
 done
 chmod -R o+rX "$REPO"
 
-# `pp <args>` is `playpen <args>` as runner, in $PP_CWD. env -i keeps the
-# container's own tokens out of the test user's environment.
+# `as_runner <command>` runs it as runner from env -i, which keeps the
+# container's own tokens out. `pp <args>` is `playpen <args>` through it, in
+# $PP_CWD.
+cat >/usr/local/bin/as_runner <<'EOF'
+#!/bin/sh
+exec setpriv --reuid runner --regid runner --init-groups \
+	env -i HOME=/home/runner USER=runner TERM="${TERM:-xterm}" \
+	PATH=/opt/node/bin:/usr/local/bin:/usr/bin:/bin \
+	XDG_DATA_HOME=/home/runner/pp-data NODE_EXTRA_CA_CERTS=/opt/ca-bundle.crt \
+	HTTPS_PROXY="$HTTPS_PROXY" HTTP_PROXY="$HTTP_PROXY" NO_PROXY="$NO_PROXY" \
+	https_proxy="$HTTPS_PROXY" http_proxy="$HTTP_PROXY" no_proxy="$NO_PROXY" \
+	"$@"
+EOF
 cat >/usr/local/bin/pp <<EOF
 #!/bin/sh
 cd "\${PP_CWD:-/home/runner/scratch}" || exit 1
-exec setpriv --reuid runner --regid runner --init-groups \\
-	env -i HOME=/home/runner USER=runner TERM="\${TERM:-xterm}" \\
-	PATH=/opt/node/bin:/usr/local/bin:/usr/bin:/bin \\
-	XDG_DATA_HOME=/home/runner/pp-data NODE_EXTRA_CA_CERTS=/opt/ca-bundle.crt \\
-	HTTPS_PROXY="\$HTTPS_PROXY" HTTP_PROXY="\$HTTP_PROXY" NO_PROXY="\$NO_PROXY" \\
-	https_proxy="\$HTTPS_PROXY" http_proxy="\$HTTP_PROXY" no_proxy="\$NO_PROXY" \\
-	node $REPO/src/cli.ts "\$@"
+exec as_runner node $REPO/src/cli.ts "\$@"
 EOF
-chmod 755 /usr/local/bin/pp
+chmod 755 /usr/local/bin/as_runner /usr/local/bin/pp
 
-setpriv --reuid runner --regid runner --init-groups \
-	sh -c 'mkdir -p /home/runner/scratch'
+as_runner mkdir -p /home/runner/scratch
 pp doctor
