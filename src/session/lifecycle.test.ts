@@ -682,7 +682,7 @@ test("a config that cannot be loaded is reported with the invisible characters i
 	const { sb, run } = await sandboxFor(t, BOTH);
 	await writeFile(
 		join(sb.cwd, "playpen.config.js"),
-		'import "../‮evil.js"; export default {};',
+		'import "../\u202eevil.js"; export default {};',
 		"utf8",
 	);
 	const said = t.mock.method(console, "error", () => {});

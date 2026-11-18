@@ -153,9 +153,11 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
   approval, or is too long to compare. A change to only line endings is named.
 - The prompt shows control characters, format characters such as bidi overrides,
   and characters that draw as nothing as escapes like `\u{1b}`, and says when it
-  has. It starts a new line wherever JavaScript ends one. So an emoji written
-  with U+FE0F is escaped too. Look-alike letters from other scripts, such as a
-  Cyrillic `а`, are not caught.
+  has. It starts a new line wherever JavaScript ends one. An emoji written with
+  U+FE0F is escaped too, since U+FE0F draws as nothing. Look-alike letters from
+  other scripts, such as a Cyrillic `а`, are not caught. Nor are right-to-left
+  letters such as Hebrew or Arabic: a bidi-aware terminal can reorder text
+  around them.
 - No terminal, no approval: the file is not executed, and you get neither masks
   nor setup.
 

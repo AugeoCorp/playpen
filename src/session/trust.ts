@@ -111,12 +111,12 @@ async function snapshot(sandbox: string, graph: ConfigGraph): Promise<string> {
 
 /**
  * What a terminal acts on or draws as nothing: controls other than tab, format
- * characters such as bidi overrides, the line separators, lone surrogates and
- * default-ignorable code points. Several are legal in a JavaScript name, so
- * `false` followed by one is a name and not the keyword.
+ * characters such as bidi overrides, the line separators and default-ignorable
+ * code points. Several are legal in a JavaScript name, so `false` followed by
+ * one is a name and not the keyword.
  */
 const UNSHOWABLE =
-	/(?!\t)[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Cs}\p{Default_Ignorable_Code_Point}]/gu;
+	/(?!\t)[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
 
 export function escapeUnshowable(text: string): string {
 	return text.replace(
