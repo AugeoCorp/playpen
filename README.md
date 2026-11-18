@@ -146,6 +146,11 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
 - playpen prints the file and asks before executing it, again whenever it or
   anything it imports changes. Approvals live outside the project, so a sandbox
   cannot approve its own edits.
+- The prompt shows control characters, format characters such as bidi overrides,
+  and characters that draw as nothing as escapes like `\u{1b}`, and says when it
+  has. It starts a new line wherever JavaScript ends one. So an emoji written
+  with U+FE0F is escaped too. Look-alike letters from other scripts, such as a
+  Cyrillic `а`, are not caught.
 - No terminal, no approval: the file is not executed, and you get neither masks
   nor setup.
 

@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Readable } from "node:stream";
 import { type TestContext, test } from "node:test";
 import { trustDir } from "../config.ts";
 import { readConfigGraph } from "./configgraph.ts";
 import {
 	approveMounts,
 	decideTrust,
+	escapeUnshowable,
 	loadTrustedConfig,
 	pinConfig,
 	pinMounts,
@@ -202,6 +204,117 @@ test("rejects a sandbox name that would escape the trust directory", async (t) =
 	);
 });
 
+/** Everything printed while `ask` waits at a terminal, where the answer is no. */
+async function shownAtTerminal(
+	t: TestContext,
+	ask: () => Promise<unknown>,
+): Promise<string> {
+	const terminal = Object.assign(Readable.from(["n\n"]), { isTTY: true });
+	t.mock.getter(process, "stdin", () => terminal);
+	const said = t.mock.method(console, "error", () => {});
+	await ask();
+	return said.mock.calls.map((call) => String(call.arguments[0])).join("\n");
+}
+
+test("the prompt shows ordinary code exactly as written, tabs and non-ASCII letters included", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": 'export default {\n\tmasked: ["café", "漢字"],\n};\n',
+	});
+	const shown = await shownAtTerminal(t, () => loadTrustedConfig(dir, sandbox));
+	assert.match(
+		shown,
+		/\n\n {2}── playpen\.config\.js \(new\)\n {2}│ export default \{\n {2}│ \tmasked: \["café", "漢字"\],\n {2}│ \};\n\n {2}declined/,
+	);
+});
+
+test("the prompt shows an escape sequence in a config as text, and warns that it did", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": "run();\x1b[2Kshown();",
+	});
+	const shown = await shownAtTerminal(t, () => loadTrustedConfig(dir, sandbox));
+	assert.match(
+		shown,
+		/\n {2}│ run\(\);\\u\{1b\}\[2Kshown\(\);\n\n {2}warning: invisible or control characters are shown above as escapes/,
+	);
+});
+
+test("a newline in a file name is shown as an escape, so the name cannot pass for lines of the prompt", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": '/* import "./notes.js (new)\n  │ harmless();" */',
+		"notes.js (new)\n  │ harmless();": "payload();",
+	});
+	const shown = await shownAtTerminal(t, () => loadTrustedConfig(dir, sandbox));
+	assert.match(
+		shown,
+		/\n {2}── notes\.js \(new\)\\u\{a\} {2}│ harmless\(\); \(new\)\n {2}│ payload\(\);\n/,
+	);
+});
+
+test("a carriage return ends the line it is on, as it does for JavaScript, so the code after it is not shown as part of a comment", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": "// harmless note\rpayload();",
+	});
+	const shown = await shownAtTerminal(t, () => loadTrustedConfig(dir, sandbox));
+	assert.match(
+		shown,
+		/\n {2}│ \/\/ harmless note\\u\{d\}\n {2}│ payload\(\);\n/,
+	);
+});
+
+test("a line separator, U+2028, ends the line it is on", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": "// harmless note payload();",
+	});
+	const shown = await shownAtTerminal(t, () => loadTrustedConfig(dir, sandbox));
+	assert.match(
+		shown,
+		/\n {2}│ \/\/ harmless note\\u\{2028\}\n {2}│ payload\(\);\n/,
+	);
+});
+
+test("a paragraph separator, U+2029, ends the line it is on", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": "// harmless note payload();",
+	});
+	const shown = await shownAtTerminal(t, () => loadTrustedConfig(dir, sandbox));
+	assert.match(
+		shown,
+		/\n {2}│ \/\/ harmless note\\u\{2029\}\n {2}│ payload\(\);\n/,
+	);
+});
+
+test("a Windows line ending is a plain line end, with nothing to escape", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": "first();\r\nsecond();\r\n",
+	});
+	const shown = await shownAtTerminal(t, () => loadTrustedConfig(dir, sandbox));
+	assert.match(shown, /\n {2}│ first\(\);\n {2}│ second\(\);\n\n {2}declined/);
+});
+
+test("a control character is escaped", () => {
+	assert.equal(escapeUnshowable("a\x1bb"), "a\\u{1b}b");
+});
+
+test("a tab is left as it is", () => {
+	assert.equal(escapeUnshowable("a\tb"), "a\tb");
+});
+
+test("a format character that is not default-ignorable, U+FFF9, is escaped", () => {
+	assert.equal(escapeUnshowable("a￹b"), "a\\u{fff9}b");
+});
+
+test("a default-ignorable character that is not a format character, U+FE0F, is escaped", () => {
+	assert.equal(escapeUnshowable("false️"), "false\\u{fe0f}");
+});
+
+test("a character outside the basic plane, U+E0100, is one escape", () => {
+	assert.equal(escapeUnshowable("a\u{e0100}b"), "a\\u{e0100}b");
+});
+
+test("a lone surrogate, which a string can hold though no UTF-8 file can, is escaped", () => {
+	assert.equal(escapeUnshowable("a\ud800b"), "a\\u{d800}b");
+});
+
 test("a mount nobody approved is left out when there is no terminal to ask", async (t) => {
 	const { sandbox } = await scenario(t, { "playpen.config.js": CONFIG });
 	t.mock.method(console, "error", () => {});
@@ -236,5 +349,26 @@ test("a mount dropped from the config is forgotten, so naming it again asks agai
 	assert.deepEqual(
 		await approveMounts(sandbox, ["/src/shared-lib", "/src/other"]),
 		["/src/other"],
+	);
+});
+
+test("a newline in a mount path is shown as an escape where there is no terminal to ask", async (t) => {
+	const { sandbox } = await scenario(t, { "playpen.config.js": CONFIG });
+	const said = t.mock.method(console, "error", () => {});
+	await approveMounts(sandbox, ["/src/shared\n  approved"]);
+	assert.match(
+		String(said.mock.calls[0]?.arguments[0]),
+		/^warning: not mounting \/src\/shared\\u\{a\} {2}approved: /,
+	);
+});
+
+test("a newline in a mount path is shown as an escape in the question asked at a terminal", async (t) => {
+	const { sandbox } = await scenario(t, { "playpen.config.js": CONFIG });
+	const shown = await shownAtTerminal(t, () =>
+		approveMounts(sandbox, ["/src/shared\n  approved"]),
+	);
+	assert.match(
+		shown,
+		/^this project asks to mount \/src\/shared\\u\{a\} {2}approved read-only\.$/m,
 	);
 });
