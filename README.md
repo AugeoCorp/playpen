@@ -90,7 +90,7 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
 | `network` | `{ allow?: string[]; mode?: "enforce" \| "log"; ports?: (number \| { host: number; guest: number })[]; secrets?: { env: string; hosts: string[] }[] }` | Hosts this project may reach, on top of the ones playpen ships, host ports it sees at its own `localhost`, and credentials it names |
 
 - `masked` gives host and guest their own copy of a path, a directory or a file:
-  the 9p share is slow, and the two often need different contents there — native
+  the 9p share is slow, and the two often need different contents there: native
   modules and toolchain builds are per-platform, and the environments drift. The
   guest's copy starts empty, is writable, and survives stop and start.
 - The host's contents at a masked path stay out of the guest, guest root
