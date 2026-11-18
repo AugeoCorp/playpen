@@ -3,6 +3,7 @@ import { lstat, mkdir, realpath, unlink, writeFile } from "node:fs/promises";
 import { exists, readAppended, sizeOrZero, writeAtomic } from "../fs.ts";
 import * as lima from "../lima/client.ts";
 import { self } from "../session/proc.ts";
+import { outermostMasks } from "../session/projectconfig.ts";
 import { attach, capture } from "../sh.ts";
 import { sleep } from "../time.ts";
 import {
@@ -144,8 +145,7 @@ async function hiddenResolverDirs(): Promise<string[]> {
  * because every masked path shares them.
  *
  * A missing path is left to the guest, since bwrap would create it on the
- * host's disk. A path under another masked one is left to that one's
- * placeholder, inside which bwrap could not make a mount point.
+ * host's disk.
  */
 async function maskBinds(
 	paths: FencePaths,
@@ -154,9 +154,7 @@ async function maskBinds(
 	await writeFile(paths.placeholderFile, "");
 	await mkdir(paths.placeholderDirectory, { recursive: true });
 	const binds = await Promise.all(
-		masked
-			.filter((path) => !masked.some((other) => path.startsWith(`${other}/`)))
-			.map((path) => maskBind(paths, path)),
+		outermostMasks(masked).map((path) => maskBind(paths, path)),
 	);
 	return binds.flat();
 }

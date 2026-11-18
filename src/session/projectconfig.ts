@@ -355,6 +355,17 @@ export function validateMasks(entries: readonly unknown[]) {
 	return { masked, rejected };
 }
 
+/**
+ * The entries not inside another entry, in their order. One inside another is
+ * already covered by it, and masking it too would mean making its mount point
+ * inside the outer one's read-only placeholder.
+ */
+export function outermostMasks(masked: readonly string[]): string[] {
+	return masked.filter(
+		(entry) => !masked.some((other) => entry.startsWith(`${other}/`)),
+	);
+}
+
 export function validateMounts(entries: readonly unknown[]) {
 	const { mounts, rejectedMounts } = configSchema.parse({ mounts: entries });
 	return { mounts, rejected: rejectedMounts };
