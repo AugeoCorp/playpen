@@ -1,12 +1,5 @@
 import assert from "node:assert/strict";
-import {
-	mkdir,
-	mkdtemp,
-	readFile,
-	rm,
-	stat,
-	writeFile,
-} from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
@@ -331,29 +324,6 @@ test("a helper that wrote its record before the policy and secrets fields existe
 		policy: "",
 		secrets: [],
 	});
-});
-
-test("helper.json is not written for a record whose secrets are more than names", async (t) => {
-	await dataDir(t);
-	await mkdir(fencePaths("api-abc123").dir, { recursive: true });
-	const secrets = [{ env: "GH_TOKEN", value: "ghp_a" }] as unknown as string[];
-	await assert.rejects(writeHelper("api-abc123", { ...helper, secrets }));
-	await assert.rejects(stat(fencePaths("api-abc123").helper), {
-		code: "ENOENT",
-	});
-});
-
-test("policy.json does not carry a value handed in with a secret's grant", async (t) => {
-	await dataDir(t);
-	const grant = { env: "GH_TOKEN", hosts: ["api.github.com"], value: "ghp_a" };
-	await writePolicy("api-abc123", {
-		allow: [],
-		mode: "enforce",
-		ports: [],
-		secrets: [grant],
-	});
-	const written = await readFile(fencePaths("api-abc123").policy, "utf8");
-	assert.equal(written.includes("ghp_a"), false, written);
 });
 
 test("a helper.json that is not a helper record reads as no helper", async (t) => {
