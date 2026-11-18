@@ -18,7 +18,7 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
 | `completion bash\|zsh`, generated from the citty command tree      | done; zsh unverified   |
 | network fence (mechanism in `docs/NETWORK.md`)                     | done, see below        |
 | per-install CA in `<dataDir>/ca/`, trusted by the base image       | unit-tested; no VM yet |
-| `network.secrets` values held by the helper, placeholders in guest | unit-tested; no VM yet |
+| `network.secrets` values swapped in by the gatekeeper              | unit-tested; no VM yet |
 
 ## Known problems
 
@@ -31,6 +31,9 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
   base is rebaked. Deleting `<dataDir>/ca/` does the same again. Whether a
   booted guest trusts the CA (curl, Node, Python requests) is unverified; it
   needs `playpen start` on a host with `limactl`.
+- A secret's host gets no protocol upgrades: the interceptor relays HTTP/1.1
+  requests only, so a WebSocket that carries the placeholder does not open
+  (`docs/NETWORK.md`, "Secrets").
 - `start` leaves 8GiB running until `stop`. Idle auto-stop deferred to v1; a
   forgotten VM happened twice in the first half hour, so revisit.
 - Nothing collects old sandboxes or old bases, or the Claude history directories

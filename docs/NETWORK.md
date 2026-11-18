@@ -314,22 +314,22 @@ common package managers need, not a measurement. It stays a guess until a
 
 ## Secrets
 
-`network.secrets` will let a later interceptor terminate TLS for the hosts it
-names, so the guest can hold a placeholder while the real value is swapped in on
-the host side. For the guest to accept the interceptor's certificates, each
-install has one certificate authority (`src/network/ca.ts`) in the `ca/`
-directory under the data directory: its key is mode 0600, is refused if it is
-readable by group or others, and never leaves the host. Its certificate is
-public and is installed into the guest's trust store when the base image is
-baked (the `caTrust()` layer). curl, git and Go programs such as gh read that
-store. Node reads no system store, Python's requests carries its own bundle, and
-uv and other tools with their own TLS stack read `SSL_CERT_FILE`, so
-`NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE` and `SSL_CERT_FILE` are set through
-the image's `env`, which Lima writes to `/etc/environment` for every session,
-sudo included. The certificate is part of the image hash, so a new CA rebakes
-the base. The CA is created in a staging directory and published with one
-rename, so two first runs at once share one CA. It has no name constraints: the
-hosts differ per project and change over time, while the CA is one per install.
+`network.secrets` has the gatekeeper terminate TLS for the hosts it names, so
+the guest can hold a placeholder while the real value is swapped in on the host
+side. For the guest to accept the interceptor's certificates, each install has
+one certificate authority (`src/network/ca.ts`) in the `ca/` directory under the
+data directory: its key is mode 0600, is refused if it is readable by group or
+others, and never leaves the host. Its certificate is public and is installed
+into the guest's trust store when the base image is baked (the `caTrust()`
+layer). curl, git and Go programs such as gh read that store. Node reads no
+system store, Python's requests carries its own bundle, and uv and other tools
+with their own TLS stack read `SSL_CERT_FILE`, so `NODE_EXTRA_CA_CERTS`,
+`REQUESTS_CA_BUNDLE` and `SSL_CERT_FILE` are set through the image's `env`,
+which Lima writes to `/etc/environment` for every session, sudo included. The
+certificate is part of the image hash, so a new CA rebakes the base. The CA is
+created in a staging directory and published with one rename, so two first runs
+at once share one CA. It has no name constraints: the hosts differ per project
+and change over time, while the CA is one per install.
 
 The values travel one way. `playpen start` takes each named variable out of its
 own environment as it reads it (`takeSecretValues`), so nothing it spawns
@@ -348,8 +348,38 @@ outlives the helper. Every `start` writes them to
 `/etc/profile.d/playpen-secrets.sh` as root, with the content on stdin, so a
 name dropped from the config leaves the guest; only login shells read it. When
 `start` finds a helper running, it names each configured secret that helper was
-not spawned with, since those wait for the next `stop` and `start`. Nothing
-intercepts yet.
+not spawned with, since those wait for the next `stop` and `start`.
+
+The swap happens in the helper (`src/network/intercept.ts`). An allowed
+`CONNECT` to port 443 of a host that a held secret's grant names exactly is not
+piped: a server made for that one tunnel terminates TLS with a certificate for
+the host, minted from the CA (`src/network/leaf.ts`), and sends each request on
+to the same host over a fresh TLS connection, dialed through the lookup a piped
+tunnel would have used and verified against Node's CA list. Which tunnels are
+taken follows `policy.json` on every `CONNECT`. Everything else is piped as
+before: another port, a subdomain, plain HTTP, a host no held secret names.
+
+Inside a tunnel:
+
+- The placeholder becomes the value in `Authorization` only, verbatim or inside
+  `Basic` credentials (`rewriteHeaders`), and only for the secrets granted to
+  this host. No other header, the body or the URL is touched.
+- The value can go nowhere else. A TLS server name other than the host is
+  refused. A request target that is not a path, or starts with `//`, gets a 421,
+  since an absolute target overrides `Host`. The host is sent one `Host`, its
+  own, and none of the headers a front end might route by instead (`ROUTING`).
+- `TRACE` gets a 405, since its answer would echo the value back to the guest.
+- HTTP/1.1 only, and no protocol upgrades: an upgrade request reaches the host
+  as a plain request, so a WebSocket to a secret's host does not open.
+- A host that cannot be dialed or verified gets nothing, and the guest a 502;
+  one that fails mid-answer resets the guest's connection.
+
+`gatekeeper.log` gains three kinds of line from inside a tunnel: `inject`,
+naming the variable once the connection that carries the value is up; `deny` for
+a refusal above; and `error` for an upstream failure or a failed handshake from
+the guest. `ERR_SSL_TLSV1_ALERT_UNKNOWN_CA` there means a tool in the guest has
+a CA bundle of its own that lacks the install's CA. No line holds a value, a
+header or any part of a body.
 
 ## What it does not contain
 
@@ -387,18 +417,21 @@ intercepts yet.
   the host's nameservers, and inside the fence there is no route to them. Every
   verdict the gatekeeper makes, allowed or refused, is logged with the host it
   named.
-- **Nothing inspects content.** The gatekeeper decides on the `CONNECT` target
-  and then pipes the connection through untouched; it never terminates TLS, so
-  it cannot see or alter what travels inside an allowed connection.
+- **Nothing inspects content, except on a secret's host.** The gatekeeper
+  decides on the `CONNECT` target and pipes the connection through untouched. It
+  terminates TLS only for port 443 of a host that a held secret names ("Secrets"
+  above), and there it reads request headers only to swap the placeholder and
+  apply the one-host rules.
 - **An allowed name can front for a different one.** Many names sit behind the
   same shared CDN, so a client can open a tunnel to a name the policy allows and
   then, inside it, ask for a different site -- in the TLS handshake's SNI or the
   HTTP `Host` header -- and the gatekeeper never reads inside the tunnel to
   notice the mismatch: it already decided on the name in the `CONNECT`, before
-  any of that is visible. That follows from not terminating TLS, which is the
-  right call for a proxy that must not itself be able to read what it relays,
-  but it means "allow `github.com`" is wider than it looks: names like
-  `objects.githubusercontent.com` sit behind shared front ends too.
+  any of that is visible. That follows from not terminating TLS for those
+  tunnels, but it means "allow `github.com`" is wider than it looks: names like
+  `objects.githubusercontent.com` sit behind shared front ends too. A secret's
+  host is the exception: there a different server name is refused, and every
+  request goes to the approved host alone.
 
 ## What was measured, and where
 
@@ -473,10 +506,6 @@ machine.
 
 ## Later
 
-- **Header injection for named hosts** -- putting a short-lived credential into
-  a request without it ever reaching the guest -- sitting behind the gatekeeper,
-  likely with mockttp doing the injection once a connection is already known to
-  be allowed.
 - **Publishing chosen guest ports to the host.** Lima still forwards every guest
   loopback port, but inside the fence, where nothing on the host can reach them;
   a dev server in the guest no longer shows up on the host's `localhost`.

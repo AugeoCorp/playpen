@@ -6,6 +6,7 @@ import * as lima from "../lima/client.ts";
 import { self } from "../session/proc.ts";
 import { attach, capture } from "../sh.ts";
 import { sleep } from "../time.ts";
+import { ensureCa } from "./ca.ts";
 import {
 	cliPath,
 	type FencePaths,
@@ -26,6 +27,8 @@ import {
 	type LogEntry,
 	startGatekeeper,
 } from "./gatekeeper.ts";
+import { interceptor } from "./intercept.ts";
+import { leafMinter } from "./leaf.ts";
 import {
 	DENY_HOST,
 	HOST_ALIAS,
@@ -193,9 +196,17 @@ export async function runHelper(
 	if (reattach) say(`${instance} is already fenced; reattaching`);
 
 	const logFrom = await sizeOrZero(paths.gatekeeperLog);
+	const log = jsonLineAppender(paths.gatekeeperLog);
 	const gatekeeper = await startGatekeeper({
 		policy: () => policy,
-		log: jsonLineAppender(paths.gatekeeperLog),
+		log,
+		// The CA `playpen start` baked into the guest's image; the key is read
+		// here and goes no further.
+		intercept: interceptor({
+			held,
+			contextFor: leafMinter(await ensureCa()),
+			log,
+		}),
 	});
 	say(`gatekeeper listening on 127.0.0.1:${gatekeeper.port}`);
 
