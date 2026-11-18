@@ -6,6 +6,7 @@ import { type TestContext, test } from "node:test";
 import {
 	LEGACY_IGNORE_FILE,
 	loadProjectConfig,
+	outermostMasks,
 	validateMasks,
 	validateMounts,
 	validateNetwork,
@@ -721,4 +722,24 @@ test("a bad secret in the file fails the whole load with the file's name", async
 		"playpen.config.js: `network.secrets[0].hosts` must name at least one host",
 	);
 	assert.deepEqual(r.network.secrets, []);
+});
+
+test("an entry inside another entry is dropped, whichever is listed first", () => {
+	assert.deepEqual(outermostMasks(["config/secret", "config"]), ["config"]);
+	assert.deepEqual(outermostMasks(["config", "config/secret"]), ["config"]);
+});
+
+test("an entry whose name only starts with another entry's name is kept", () => {
+	assert.deepEqual(outermostMasks(["config", "config2/x"]), [
+		"config",
+		"config2/x",
+	]);
+});
+
+test("the outermost entries keep the order they were listed in", () => {
+	assert.deepEqual(outermostMasks([".env", "node_modules", "build"]), [
+		".env",
+		"node_modules",
+		"build",
+	]);
 });

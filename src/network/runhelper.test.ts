@@ -5,6 +5,7 @@ import {
 	mkdtemp,
 	readdir,
 	readFile,
+	realpath,
 	rm,
 	symlink,
 	writeFile,
@@ -44,7 +45,7 @@ const { runHelper } = await import("./helper.ts");
 
 /** A stopped sandbox with a policy written, and a project directory to mask in. */
 async function stoppedSandbox(t: TestContext): Promise<string> {
-	const root = await mkdtemp(join(tmpdir(), "playpen-helper-"));
+	const root = await realpath(await mkdtemp(join(tmpdir(), "playpen-helper-")));
 	const before = {
 		XDG_DATA_HOME: process.env.XDG_DATA_HOME,
 		LIMA_HOME: process.env.LIMA_HOME,
