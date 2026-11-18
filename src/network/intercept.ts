@@ -165,6 +165,7 @@ function tunnelServer(
 			host,
 			port: TLS_PORT,
 			servername: host,
+			rejectUnauthorized: true,
 			lookup,
 			agent,
 			method: request.method,
@@ -181,7 +182,6 @@ function tunnelServer(
 		upstream.on("response", (answer) => {
 			response.writeHead(
 				answer.statusCode ?? 502,
-				answer.statusMessage,
 				endToEnd(answer.rawHeaders).flat(),
 			);
 			pipeline(answer, response, (error) => {
@@ -207,9 +207,6 @@ function tunnelServer(
 				done(new Error(reason));
 			},
 			ALPNProtocols: ["http/1.1"],
-			// Node's default, 300 s for the whole request, would cut off a large
-			// upload over a slow link.
-			requestTimeout: 0,
 		},
 		relay,
 	);
@@ -224,15 +221,11 @@ function tunnelServer(
 	return server;
 }
 
-function endToEnd(rawHeaders: readonly string[]): Header[] {
-	return headerPairs(rawHeaders).filter(
-		([name]) => !HOP_BY_HOP.has(name.toLowerCase()),
-	);
-}
-
 /** Node reads headers into a flat `[name, value, name, value, …]` list. */
-function headerPairs(rawHeaders: readonly string[]): Header[] {
+function endToEnd(rawHeaders: readonly string[]): Header[] {
 	return rawHeaders.flatMap((name, index) =>
-		index % 2 === 0 ? [[name, rawHeaders[index + 1] ?? ""] as Header] : [],
+		index % 2 === 0 && !HOP_BY_HOP.has(name.toLowerCase())
+			? [[name, rawHeaders[index + 1] ?? ""] as Header]
+			: [],
 	);
 }

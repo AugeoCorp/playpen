@@ -75,6 +75,14 @@ export interface SecretGrant {
 	hosts: readonly string[];
 }
 
+export function secretNames(grants: readonly SecretGrant[]): string[] {
+	return [...new Set(grants.map((grant) => grant.env))];
+}
+
+export function missingMessage(missing: readonly string[]): string {
+	return `network.secrets needs ${missing.join(", ")} set in your environment`;
+}
+
 export interface Policy {
 	/**
 	 * Built-in entries plus the project's `network.allow`, already merged, a
@@ -194,11 +202,11 @@ export function isEnvName(name: string): boolean {
  * it is not a secret, and a fixed one keeps working when it outlives the helper
  * that was started with it, in a running process or a saved `.npmrc`.
  */
-export const PLACEHOLDER = /playpen-secret-[a-z0-9-]+/g;
-
 export function placeholderFor(env: string): string {
 	return `playpen-secret-${env.toLowerCase().replaceAll("_", "-")}`;
 }
+
+export const PLACEHOLDER = /playpen-secret-[a-z0-9-]+/g;
 
 function matchesHost(entry: Extract<Entry, { kind: "host" }>, host: string) {
 	return host === entry.host || host.endsWith(`.${entry.host}`);

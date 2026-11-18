@@ -263,6 +263,16 @@ const portForwards = z
 const SECRET_ENV = "must be an environment variable name like GH_TOKEN";
 
 /**
+ * Read by playpen itself, which deletes each secret's variable from its own
+ * environment at `start`.
+ */
+const OWN_VARIABLES = ["PATH", "HOME", "XDG_DATA_HOME", "LIMA_HOME"];
+
+function isOwnVariable(name: string): boolean {
+	return OWN_VARIABLES.includes(name) || name.startsWith("PLAYPEN_");
+}
+
+/**
  * A secret is injected into an HTTP header for a named host, so an address or a
  * port has nothing to match. `parseSecretHost` in network/policy.ts decides,
  * because policy.json is read back through it.
@@ -282,7 +292,11 @@ const secretEntry = z.strictObject(
 	{
 		env: z
 			.string({ error: SECRET_ENV })
-			.refine(isEnvName, { error: SECRET_ENV }),
+			.refine(isEnvName, { error: SECRET_ENV })
+			.refine((name) => !isOwnVariable(name), {
+				error: (issue) =>
+					`is ${String(issue.input)}, which playpen itself uses, so it cannot be a secret`,
+			}),
 		hosts: z
 			.array(secretHost, { error: "must be an array of hostnames" })
 			.min(1, { error: "must name at least one host" }),
