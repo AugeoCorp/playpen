@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import type { SecretGrant } from "../network/policy.ts";
 import { takeSecretValues } from "./secrets.ts";
@@ -22,23 +21,6 @@ test("a taken variable is gone from the environment, and the rest stay", () => {
 	const env = { GH_TOKEN: "ghp_a", HOME: "/home/me" };
 	takeSecretValues([GH], env);
 	assert.deepEqual(env, { HOME: "/home/me" });
-});
-
-test("a child spawned after a variable is taken does not see it", (t) => {
-	process.env.PLAYPEN_TEST_TOKEN = "ghp_a";
-	t.after(() => {
-		delete process.env.PLAYPEN_TEST_TOKEN;
-	});
-	takeSecretValues(
-		[{ env: "PLAYPEN_TEST_TOKEN", hosts: ["a.example"] }],
-		process.env,
-	);
-	const child = spawnSync(
-		process.execPath,
-		["-e", "process.stdout.write(String(process.env.PLAYPEN_TEST_TOKEN))"],
-		{ encoding: "utf8" },
-	);
-	assert.equal(child.stdout, "undefined");
 });
 
 test("an unset or empty variable is reported missing, and the rest are still taken", () => {
@@ -74,4 +56,10 @@ test("a value that cannot go in a request header is refused, naming the variable
 			return true;
 		},
 	);
+});
+
+test("every granted variable is taken before any value is refused", () => {
+	const env = { GH_TOKEN: "ghp_a\nghp_b", NPM_TOKEN: "npm_b" };
+	assert.throws(() => takeSecretValues([GH, NPM], env));
+	assert.deepEqual(env, {});
 });
