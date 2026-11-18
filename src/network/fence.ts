@@ -20,7 +20,13 @@ import { networkMode } from "../session/projectconfig.ts";
 import { capture } from "../sh.ts";
 import { sleep } from "../time.ts";
 import { isPort } from "./names.ts";
-import { isEnvName, type Policy, parseSecretHost } from "./policy.ts";
+import {
+	isEnvName,
+	missingMessage,
+	type Policy,
+	parseSecretHost,
+	secretNames,
+} from "./policy.ts";
 
 /**
  * The fence: a network namespace with no route out, holding one sandbox VM.
@@ -129,10 +135,7 @@ export async function writeHelper(
 	sandbox: string,
 	record: HelperRecord,
 ): Promise<void> {
-	await writeAtomic(
-		fencePaths(sandbox).helper,
-		`${JSON.stringify(helperRecord.parse(record))}\n`,
-	);
+	await writeAtomic(fencePaths(sandbox).helper, `${JSON.stringify(record)}\n`);
 }
 
 async function readHelper(sandbox: string): Promise<HelperRecord | null> {
@@ -161,7 +164,7 @@ export async function writePolicy(
 ): Promise<boolean> {
 	const paths = fencePaths(sandbox);
 	await ensureFenceDir(sandbox);
-	const next = `${JSON.stringify(policyFile.parse(policy))}\n`;
+	const next = `${JSON.stringify(policy)}\n`;
 	const previous = await readFile(paths.policy, "utf8").catch(() => "");
 	await writeAtomic(paths.policy, next);
 	return next !== previous;
@@ -336,7 +339,7 @@ export function cliPath(): string {
 async function spawnHelper(
 	sandbox: string,
 	instance: string,
-	secrets: readonly HeldSecret[],
+	held: readonly HeldSecret[],
 ): Promise<ChildProcess> {
 	const paths = fencePaths(sandbox);
 	await ensureFenceDir(sandbox);
@@ -350,7 +353,7 @@ async function spawnHelper(
 		// A helper that dies before reading closes the pipe under this write; its
 		// exit is what `bringUp` reports.
 		child.stdin?.on("error", () => {});
-		child.stdin?.end(JSON.stringify(secrets));
+		child.stdin?.end(JSON.stringify(held));
 		child.unref();
 		return child;
 	} finally {
@@ -373,7 +376,7 @@ export interface BringUpOptions {
 	instance: string;
 	policy: Policy;
 	/** Handed to a helper this call spawns; one already running keeps its own. */
-	secrets: readonly HeldSecret[];
+	held: readonly HeldSecret[];
 	/** Where helper.log goes while the caller waits; usually stderr. */
 	log: (text: string) => void;
 	timeoutMs?: number;
@@ -424,8 +427,14 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 	}
 
 	const paths = fencePaths(sandbox);
+	const held = new Set(opts.held.map((secret) => secret.env));
+	const unheld = secretNames(opts.policy.secrets).filter(
+		(name) => !held.has(name),
+	);
+	if (unheld.length > 0) throw new Error(missingMessage(unheld));
+
 	let offset = await sizeOrZero(paths.helperLog);
-	const child = await spawnHelper(sandbox, instance, opts.secrets);
+	const child = await spawnHelper(sandbox, instance, opts.held);
 
 	let exit: number | null = null;
 	child.on("exit", (code) => {
