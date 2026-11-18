@@ -138,9 +138,10 @@ function tunnelServer(
 		}
 		// Behind a shared front end the request line can decide which site gets
 		// the request: an absolute-form target overrides `Host` (RFC 9112,
-		// 3.2.2), and a URL parser reads a path starting `//` as naming a host.
+		// 3.2.2), and a URL parser reads a path starting `//` or `/\` as naming
+		// a host.
 		const target = request.url ?? "";
-		if (!target.startsWith("/") || target.startsWith("//")) {
+		if (!target.startsWith("/") || /^\/[/\\]/.test(target)) {
 			refuse(
 				421,
 				`request target ${target} is not a path on ${host}, the host this tunnel was allowed for`,
@@ -165,6 +166,7 @@ function tunnelServer(
 			host,
 			port: TLS_PORT,
 			servername: host,
+			rejectUnauthorized: true,
 			lookup,
 			agent,
 			method: request.method,
@@ -181,7 +183,6 @@ function tunnelServer(
 		upstream.on("response", (answer) => {
 			response.writeHead(
 				answer.statusCode ?? 502,
-				answer.statusMessage,
 				endToEnd(answer.rawHeaders).flat(),
 			);
 			pipeline(answer, response, (error) => {
@@ -207,9 +208,6 @@ function tunnelServer(
 				done(new Error(reason));
 			},
 			ALPNProtocols: ["http/1.1"],
-			// Node's default, 300 s for the whole request, would cut off a large
-			// upload over a slow link.
-			requestTimeout: 0,
 		},
 		relay,
 	);
@@ -224,15 +222,11 @@ function tunnelServer(
 	return server;
 }
 
-function endToEnd(rawHeaders: readonly string[]): Header[] {
-	return headerPairs(rawHeaders).filter(
-		([name]) => !HOP_BY_HOP.has(name.toLowerCase()),
-	);
-}
-
 /** Node reads headers into a flat `[name, value, name, value, …]` list. */
-function headerPairs(rawHeaders: readonly string[]): Header[] {
+function endToEnd(rawHeaders: readonly string[]): Header[] {
 	return rawHeaders.flatMap((name, index) =>
-		index % 2 === 0 ? [[name, rawHeaders[index + 1] ?? ""] as Header] : [],
+		index % 2 === 0 && !HOP_BY_HOP.has(name.toLowerCase())
+			? [[name, rawHeaders[index + 1] ?? ""] as Header]
+			: [],
 	);
 }

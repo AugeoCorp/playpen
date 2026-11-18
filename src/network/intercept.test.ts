@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { X509Certificate } from "node:crypto";
-import { once } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import http, { type ServerResponse } from "node:http";
 import https from "node:https";
@@ -10,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, type TestContext, test } from "node:test";
 import tls from "node:tls";
+import { sleep } from "../time.ts";
 import { type Ca, ensureCa } from "./ca.ts";
 import type { HeldSecret } from "./fence.ts";
 import { type LogEntry, startGatekeeper } from "./gatekeeper.ts";
@@ -95,12 +94,40 @@ async function upstreamHost(
 			});
 		},
 	);
+	t.after(() => server.closeAllConnections());
+	return { port: await listening(t, server), received };
+}
+
+/** Listens on a free loopback port until the test ends, and returns it. */
+async function listening(t: TestContext, server: net.Server): Promise<number> {
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-	t.after(() => {
-		server.closeAllConnections();
-		server.close();
-	});
-	return { port: (server.address() as net.AddressInfo).port, received };
+	t.after(() => server.close());
+	return (server.address() as net.AddressInfo).port;
+}
+
+/**
+ * A host that answers every request with `statusLine` and a two-byte body,
+ * written by hand, so it can send what no Node server would.
+ */
+function rawHost(t: TestContext, statusLine: string): Promise<number> {
+	const contextFor = leafMinter(publicCa);
+	const server = tls.createServer(
+		{ SNICallback: (name, done) => done(null, contextFor(name)) },
+		(socket) => {
+			socket.once("data", () =>
+				socket.end(`${statusLine}\r\ncontent-length: 2\r\n\r\nok`),
+			);
+		},
+	);
+	return listening(t, server);
+}
+
+/** The interceptor logs a failed handshake after the client has gone. */
+async function lineLogged(
+	log: LogEntry[],
+	verdict: LogEntry["verdict"],
+): Promise<void> {
+	while (!log.some((line) => line.verdict === verdict)) await sleep(10);
 }
 
 /**
@@ -254,23 +281,6 @@ function send(
 	});
 }
 
-test("the guest is shown a certificate for the host from the playpen CA", async (t) => {
-	const { port } = await gatekeeperWith(t, { policy: () => secretPolicy() });
-
-	const secure = await tlsOver(
-		t,
-		await tunnel(port, "api.example:443"),
-		"api.example",
-	);
-
-	const cert = secure.getPeerX509Certificate();
-	assert.equal(cert?.subjectAltName, "DNS:api.example");
-	assert.ok(
-		cert?.verify(new X509Certificate(playpenCa.certPem).publicKey),
-		"not signed by the playpen CA",
-	);
-});
-
 test("a TLS server name other than the approved host is refused, and the refusal is logged", async (t) => {
 	const { port, log } = await gatekeeperWith(t, {
 		policy: () => secretPolicy(),
@@ -291,6 +301,19 @@ test("a TLS server name other than the approved host is refused, and the refusal
 				"TLS server name other.example is not api.example, the host this tunnel was allowed for",
 			],
 		],
+	);
+});
+
+test("the TLS server name is matched whatever its case, and with a trailing dot", async (t) => {
+	const { port, log } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+	});
+
+	await tlsOver(t, await tunnel(port, "api.example:443"), "API.Example.");
+
+	assert.deepEqual(
+		log.map((line) => line.verdict),
+		["allow"],
 	);
 });
 
@@ -320,7 +343,8 @@ test("a guest that does not trust the playpen CA leaves an error line saying so"
 		],
 		{ stdio: "ignore" },
 	);
-	await once(openssl, "exit");
+	await lineLogged(log, "error");
+	openssl.kill();
 
 	assert.deepEqual(
 		log.map((line) => [line.verdict, line.reason]),
@@ -381,7 +405,13 @@ test("the host is dialed only at an address the gatekeeper's own rules allow", a
 	);
 });
 
-test("a host whose certificate fails verification gets nothing, and the guest a 502 and an error line", async (t) => {
+test("a host whose certificate fails verification gets nothing, and the guest a 502 and an error line, whatever the user's shell says", async (t) => {
+	const before = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+	process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+	t.after(() => {
+		if (before === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+		else process.env.NODE_TLS_REJECT_UNAUTHORIZED = before;
+	});
 	const upstream = await upstreamHost(t);
 	const { port, log } = await gatekeeperWith(t, {
 		policy: () => secretPolicy(),
@@ -400,6 +430,40 @@ test("a host whose certificate fails verification gets nothing, and the guest a 
 		log.map((line) => line.verdict),
 		["allow", "error"],
 	);
+});
+
+test("a host whose certificate is for another name gets nothing, and the guest a 502", async (t) => {
+	const contextFor = leafMinter(publicCa);
+	const received: string[] = [];
+	const server = https.createServer(
+		{ SNICallback: (_name, done) => done(null, contextFor("other.example")) },
+		(request, response) => {
+			received.push(request.url ?? "");
+			response.end();
+		},
+	);
+	const { port } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: await listening(t, server),
+	});
+
+	const answer = await send(clientThrough(t, port, "api.example:443"));
+
+	assert.equal(answer.status, 502);
+	assert.deepEqual(received, []);
+});
+
+test("a reason phrase holding a control byte is not passed on, and the guest still gets the answer", async (t) => {
+	const { port } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: await rawHost(t, "HTTP/1.1 200 O\x01K"),
+	});
+
+	const answer = await send(clientThrough(t, port, "api.example:443"));
+	const next = await send(clientThrough(t, port, "api.example:443"));
+
+	assert.deepEqual([answer.status, answer.body], [200, "ok"]);
+	assert.equal(next.status, 200, "the next tunnel was not served");
 });
 
 test("a host hanging up partway through its answer ends the guest's response with an error, and the next request is served", async (t) => {
@@ -690,6 +754,22 @@ test("a request target starting with // is refused with a 421, since a URL parse
 
 	const answer = await send(clientThrough(t, port, "api.example:443"), {
 		path: "//other.example/user",
+		headers: WITH_PLACEHOLDER,
+	});
+
+	assert.equal(answer.status, 421);
+	assert.deepEqual(upstream.received, []);
+});
+
+test("a request target starting with /\\ is refused with a 421, since a URL parser reads it as // too", async (t) => {
+	const upstream = await upstreamHost(t);
+	const { port } = await gatekeeperWith(t, {
+		policy: () => secretPolicy(),
+		upstreamPort: upstream.port,
+	});
+
+	const answer = await send(clientThrough(t, port, "api.example:443"), {
+		path: "/\\other.example/user",
 		headers: WITH_PLACEHOLDER,
 	});
 

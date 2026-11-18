@@ -133,23 +133,24 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
 - `network.secrets` names credentials from your environment that the sandbox may
   use on given hosts: `{ env: "GH_TOKEN", hosts: ["github.com"] }`. Names only,
   never a value — the file sits in the project directory, which the sandbox
-  mounts. `env` is an upper-case variable name; each host is a plain hostname,
-  with no port and not an address. Injection matches the host exactly; the allow
-  entry it implies covers subdomains, like any entry in `allow`. A mistake here
-  stops the config loading rather than being skipped. `playpen start` needs each
-  variable set, and says which are not; a sandbox that is already running keeps
-  the values it started with, so a later command does not need them. Inside the
-  sandbox each variable holds a placeholder, `playpen-secret-gh-token` for
-  `GH_TOKEN`, never the value. On the way out, the placeholder is swapped for
-  the value in the `Authorization` header of HTTPS requests to exactly those
-  hosts on port 443, which is where `gh`, `git`, `curl -u` and npm put a token;
-  no other header, body or URL gets it. A host that echoes `Authorization` back
-  hands the value to the sandbox, so grant a secret only to hosts you would send
-  it to anyway. A secret added or changed while the sandbox runs takes effect
-  after `playpen stop && playpen start`. Every sandbox trusts a certificate
-  authority made for this install, whose key stays on the host
-  (`docs/NETWORK.md`, "Secrets"); the first `start` after upgrading rebakes the
-  base and offers each sandbox a rebuild.
+  mounts. `env` is an upper-case variable name, but not one playpen itself reads
+  (`PATH`, `HOME`, `XDG_DATA_HOME`, `LIMA_HOME` or any `PLAYPEN_` name); each
+  host is a plain hostname, with no port and not an address. Injection matches
+  the host exactly; the allow entry it implies covers subdomains, like any entry
+  in `allow`. A mistake here stops the config loading rather than being skipped.
+  `playpen start` needs each variable set, and says which are not; a sandbox
+  that is already running keeps the values it started with, so a later command
+  does not need them. Inside the sandbox each variable holds a placeholder,
+  `playpen-secret-gh-token` for `GH_TOKEN`, never the value. On the way out, the
+  placeholder is swapped for the value in the `Authorization` header of HTTPS
+  requests to exactly those hosts on port 443, which is where `gh`, `git`,
+  `curl -u` and npm put a token; no other header, body or URL gets it. A host
+  that echoes `Authorization` back hands the value to the sandbox, so grant a
+  secret only to hosts you would send it to anyway. A secret added or changed
+  while the sandbox runs takes effect after `playpen stop && playpen start`.
+  Every sandbox trusts a certificate authority made for this install, whose key
+  stays on the host (`docs/NETWORK.md`, "Secrets"); the first `start` after
+  upgrading rebakes the base and offers each sandbox a rebuild.
 - `mode: "log"` records what the sandbox reaches and blocks nothing on the
   internet side; your own machine's localhost stays closed in every mode. Use it
   to find the hosts a project needs, then list them; the default is `enforce`.

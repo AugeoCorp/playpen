@@ -34,14 +34,19 @@ test("Basic credentials are decoded, get the real value, and are encoded again",
 });
 
 test("the Basic scheme is matched whatever its case", () => {
-	const encoded = basic("user:playpen-secret-gh-token").slice("Basic ".length);
 	const { headers } = rewriteHeaders(
-		[["authorization", `BASIC ${encoded}`]],
+		[["authorization", "BASIC dXNlcjpwbGF5cGVuLXNlY3JldC1naC10b2tlbg=="]],
 		[GH_TOKEN],
 	);
-	assert.deepEqual(headers, [
-		["authorization", `BASIC ${basic("user:ghp_real").slice("Basic ".length)}`],
-	]);
+	assert.deepEqual(headers, [["authorization", "BASIC dXNlcjpnaHBfcmVhbA=="]]);
+});
+
+test("Basic credentials without a placeholder go out as sent, not encoded again", () => {
+	const sent: [string, string][] = [["Authorization", "Basic dXNlcjpwYXNzMQ"]];
+	assert.deepEqual(rewriteHeaders(sent, [GH_TOKEN]), {
+		headers: sent,
+		injected: [],
+	});
 });
 
 test("a byte in Basic credentials that is not UTF-8 comes back unchanged around the real value", () => {

@@ -14,6 +14,7 @@ import {
 } from "../network/fence.ts";
 import {
 	BUILTIN_ALLOW,
+	missingMessage,
 	NO_EGRESS_ADVICE,
 	type SecretGrant,
 } from "../network/policy.ts";
@@ -29,7 +30,6 @@ import {
 	type LoadedNetwork,
 } from "./projectconfig.ts";
 import {
-	missingMessage,
 	PROFILE_SCRIPT,
 	placeholderProfile,
 	takeSecretValues,
@@ -193,7 +193,7 @@ interface Template {
 	mounts: string[];
 	setup: string[];
 	network: LoadedNetwork;
-	secrets: HeldSecret[];
+	held: HeldSecret[];
 	/** The variables `network.secrets` names that are unset or empty. */
 	missing: string[];
 }
@@ -202,8 +202,9 @@ interface Template {
 async function renderTemplate(sb: Sandbox): Promise<Template> {
 	const { masked, mounts, setup, network } = await loadConfig(sb);
 	const { held, missing } = takeSecretValues(network.secrets, process.env);
-	// A live helper has its values already; only a start that spawns one needs
-	// them, and is refused here, before anything is built or booted.
+	// Refused here, before anything is built or booted, when no helper is
+	// running to keep its values; `bringUp` refuses again if it is about to
+	// spawn one.
 	if (missing.length > 0 && (await liveHelper(sb.sandbox)) === null) {
 		throw new Error(missingMessage(missing));
 	}
@@ -215,7 +216,7 @@ async function renderTemplate(sb: Sandbox): Promise<Template> {
 		mounts,
 		setup,
 		network,
-		secrets: held,
+		held,
 		missing,
 	};
 }
@@ -446,7 +447,7 @@ async function startFenced(sb: Sandbox, template: Template): Promise<void> {
 			ports,
 			secrets,
 		},
-		secrets: template.secrets,
+		held: template.held,
 		log: (text) => process.stderr.write(text),
 	});
 	await warnWithoutEgress(sb);
@@ -485,12 +486,16 @@ async function warnUnboundPorts(sb: Sandbox): Promise<void> {
 }
 
 export async function ensureRunning(sb: Sandbox): Promise<Running> {
+	// Before the config load, so a project that must never be mounted is
+	// refused before its config is offered for approval.
+	const guard = await checkMount(sb.cwd);
+	if (!guard.ok) throw new Error(guard.reason ?? `refusing to mount ${sb.cwd}`);
+	// Before the first limactl, which would otherwise inherit the values.
+	const template = await renderTemplate(sb);
 	const existing = await lima.get(sb.instance);
 
 	let rebuilding = false;
-	let template: Template | null = null;
 	if (existing) {
-		template = await renderTemplate(sb);
 		const reason =
 			(await changedTemplate(sb, template)) ??
 			(await changedMounts(sb, template)) ??
@@ -527,17 +532,9 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 		}
 	}
 
-	// Only checked when a sandbox is about to be built, and before the old one is
-	// torn down: destroying a sandbox and then refusing to replace it is worse
-	// than either outcome alone.
-	const guard = await checkMount(sb.cwd);
-	if (!guard.ok) throw new Error(guard.reason ?? `refusing to mount ${sb.cwd}`);
 	if (guard.warning) console.error(`warning: ${guard.warning}`);
-
 	if (rebuilding) await destroy(sb);
-
-	const current = template ?? (await renderTemplate(sb));
-	await writeTemplate(sb, current);
+	await writeTemplate(sb, template);
 
 	const base = await ensureBase();
 	if (base.built) console.error(`baked base image ${base.instance}`);
@@ -547,8 +544,8 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 	await lima.clone(base.instance, sb.instance);
 	try {
 		await history.makeHostDir(sb.sandbox);
-		await giveCloneItsMounts(sb, current.mounts);
-		await startFenced(sb, current);
+		await giveCloneItsMounts(sb, template.mounts);
+		await startFenced(sb, template);
 	} catch (err) {
 		await lima
 			.remove(sb.instance)
@@ -559,8 +556,8 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 			);
 		throw err;
 	}
-	const masked = await applyMasks(sb, current.masks);
-	await applySecrets(sb, current.network.secrets);
+	const masked = await applyMasks(sb, template.masks);
+	await applySecrets(sb, template.network.secrets);
 	await history.prepareGuest(sb.instance);
 
 	// Recorded before setup, not after: setup can run for minutes, and an
@@ -572,17 +569,17 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 		cwd: sb.cwd,
 		created: now,
 		lastUsed: now,
-		imageHash: current.hash,
+		imageHash: template.hash,
 		baseInstance: base.instance,
-		mounts: current.mounts,
+		mounts: template.mounts,
 	});
 
 	// Not on every start, so `run` and `shell` stay fast. A rebuild reaches here
 	// too, which is the case that needs it most: the guest disk went with it.
 	const setupOk = masked
-		? await runSetup(sb, current.setup)
-		: skipSetup(current.setup);
-	return { created: true, setupOk, setup: current.setup };
+		? await runSetup(sb, template.setup)
+		: skipSetup(template.setup);
+	return { created: true, setupOk, setup: template.setup };
 }
 
 /**
