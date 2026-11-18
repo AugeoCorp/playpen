@@ -1,4 +1,4 @@
-import { generateKeyPairSync, randomBytes } from "node:crypto";
+import { generateKeyPairSync, type KeyObject, randomBytes } from "node:crypto";
 import {
 	mkdir,
 	mkdtemp,
@@ -32,18 +32,9 @@ function createCa(): Ca {
 		modulusLength: 2048,
 	});
 	const keyPem = privateKey.export({ type: "pkcs1", format: "pem" }).toString();
-	const cert = forge.pki.createCertificate();
-	cert.publicKey = forge.pki.publicKeyFromPem(
-		publicKey.export({ type: "spki", format: "pem" }).toString(),
-	);
-	// A leading 01 keeps the serial positive; RFC 5280 allows 20 octets.
-	cert.serialNumber = `01${randomBytes(15).toString("hex")}`;
-	// Backdated a minute so a guest with a slightly slow clock accepts it.
-	const now = Date.now();
-	cert.validity.notBefore = new Date(now - 60_000);
-	const notAfter = new Date(now);
+	const notAfter = new Date();
 	notAfter.setFullYear(notAfter.getFullYear() + VALID_YEARS);
-	cert.validity.notAfter = notAfter;
+	const cert = newCertificate(publicKey, notAfter);
 	// A fixed name: forge stores a common name as a PrintableString, and a host
 	// name with `_` in it would give Go's parser (gh) a certificate it refuses.
 	const name = [{ name: "commonName", value: "playpen sandbox CA" }];
@@ -119,4 +110,24 @@ export async function ensureCa(): Promise<Ca> {
 		if (winner === undefined) throw err;
 		return winner;
 	}
+}
+
+/**
+ * An unsigned certificate for `publicKey`, valid from now: the CA and each
+ * leaf add their own names and extensions.
+ */
+export function newCertificate(
+	publicKey: KeyObject,
+	notAfter: Date,
+): forge.pki.Certificate {
+	const cert = forge.pki.createCertificate();
+	cert.publicKey = forge.pki.publicKeyFromPem(
+		publicKey.export({ type: "spki", format: "pem" }).toString(),
+	);
+	// A leading 01 keeps the serial positive; RFC 5280 allows 20 octets.
+	cert.serialNumber = `01${randomBytes(15).toString("hex")}`;
+	// Backdated a minute so a guest with a slightly slow clock accepts it.
+	cert.validity.notBefore = new Date(Date.now() - 60_000);
+	cert.validity.notAfter = notAfter;
+	return cert;
 }
