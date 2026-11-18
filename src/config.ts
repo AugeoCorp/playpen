@@ -56,8 +56,9 @@ export function trustDir(): string {
 /**
  * The certificate authority the guest is baked to trust. Under the data
  * directory, never the project: the key must not be reachable from a guest,
- * and a guest is given the project, its own `history/<sandbox>` and approved
- * `mounts`, which `checkMount` keeps out of the data directory.
+ * and the only part of the data directory a guest is given is its own
+ * `history/<sandbox>`. `checkMount` and `checkReadOnlyMount` keep the project
+ * and approved `mounts` out of it.
  */
 export function caDir(): string {
 	return join(dataDir(), "ca");
