@@ -116,6 +116,11 @@ const helperRecord = ownerSchema.extend({
 	 * `ports`, and until the guest has first been asked.
 	 */
 	unboundPorts: z.array(portForward).optional(),
+	/**
+	 * The names of the secrets this helper was handed when it was spawned, never
+	 * a value. Absent from a helper older than `secrets`.
+	 */
+	secrets: z.array(z.string()).default([]),
 });
 
 export type HelperRecord = z.infer<typeof helperRecord>;
@@ -124,7 +129,10 @@ export async function writeHelper(
 	sandbox: string,
 	record: HelperRecord,
 ): Promise<void> {
-	await writeAtomic(fencePaths(sandbox).helper, `${JSON.stringify(record)}\n`);
+	await writeAtomic(
+		fencePaths(sandbox).helper,
+		`${JSON.stringify(helperRecord.parse(record))}\n`,
+	);
 }
 
 async function readHelper(sandbox: string): Promise<HelperRecord | null> {
@@ -153,7 +161,7 @@ export async function writePolicy(
 ): Promise<boolean> {
 	const paths = fencePaths(sandbox);
 	await ensureFenceDir(sandbox);
-	const next = `${JSON.stringify(policy)}\n`;
+	const next = `${JSON.stringify(policyFile.parse(policy))}\n`;
 	const previous = await readFile(paths.policy, "utf8").catch(() => "");
 	await writeAtomic(paths.policy, next);
 	return next !== previous;
@@ -192,6 +200,16 @@ const secretGrant = z.object(
 	},
 	{ error: "must be { env, hosts }" },
 );
+
+const heldSecrets = z.array(z.object({ env: z.string(), value: z.string() }));
+
+/** A secret as the helper holds it: the only type here that carries a value. */
+export type HeldSecret = z.infer<typeof heldSecrets>[number];
+
+/** Reads what `spawnHelper` wrote to the helper's stdin. */
+export function parseHeldSecrets(text: string): HeldSecret[] {
+	return heldSecrets.parse(JSON.parse(text));
+}
 
 const policyFile = z.object(
 	{
@@ -318,6 +336,7 @@ export function cliPath(): string {
 async function spawnHelper(
 	sandbox: string,
 	instance: string,
+	secrets: readonly HeldSecret[],
 ): Promise<ChildProcess> {
 	const paths = fencePaths(sandbox);
 	await ensureFenceDir(sandbox);
@@ -326,8 +345,12 @@ async function spawnHelper(
 		const child = spawn(
 			process.execPath,
 			[cliPath(), "__net-helper", sandbox, instance],
-			{ detached: true, stdio: ["ignore", log.fd, log.fd] },
+			{ detached: true, stdio: ["pipe", log.fd, log.fd] },
 		);
+		// A helper that dies before reading closes the pipe under this write; its
+		// exit is what `bringUp` reports.
+		child.stdin?.on("error", () => {});
+		child.stdin?.end(JSON.stringify(secrets));
 		child.unref();
 		return child;
 	} finally {
@@ -349,6 +372,8 @@ export interface BringUpOptions {
 	sandbox: string;
 	instance: string;
 	policy: Policy;
+	/** Handed to a helper this call spawns; one already running keeps its own. */
+	secrets: readonly HeldSecret[];
 	/** Where helper.log goes while the caller waits; usually stderr. */
 	log: (text: string) => void;
 	timeoutMs?: number;
@@ -391,7 +416,7 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 
 	const paths = fencePaths(sandbox);
 	let offset = await sizeOrZero(paths.helperLog);
-	const child = await spawnHelper(sandbox, instance);
+	const child = await spawnHelper(sandbox, instance, opts.secrets);
 
 	let exit: number | null = null;
 	child.on("exit", (code) => {

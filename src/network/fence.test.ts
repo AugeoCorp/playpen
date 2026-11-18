@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import {
+	mkdir,
+	mkdtemp,
+	readFile,
+	rm,
+	stat,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
@@ -26,6 +33,7 @@ const helper = {
 	ready: true,
 	egress: true,
 	policy: "1:2",
+	secrets: ["GH_TOKEN"],
 };
 
 test("a sandbox's sockets and logs live together under the data directory", () => {
@@ -313,12 +321,39 @@ test("a running helper is found by the record it wrote", async (t) => {
 	assert.deepEqual(await liveHelper("api-abc123"), record);
 });
 
-test("a helper that wrote its record before the policy field existed is still found, with no policy applied yet", async (t) => {
+test("a helper that wrote its record before the policy and secrets fields existed is still found, with no policy applied and no secrets held", async (t) => {
 	await dataDir(t);
 	await mkdir(fencePaths("api-abc123").dir, { recursive: true });
-	const { policy: _, ...older } = { ...helper, ...(await self()) };
+	const { policy: _, secrets: __, ...older } = { ...helper, ...(await self()) };
 	await writeFile(fencePaths("api-abc123").helper, JSON.stringify(older));
-	assert.deepEqual(await liveHelper("api-abc123"), { ...older, policy: "" });
+	assert.deepEqual(await liveHelper("api-abc123"), {
+		...older,
+		policy: "",
+		secrets: [],
+	});
+});
+
+test("helper.json is not written for a record whose secrets are more than names", async (t) => {
+	await dataDir(t);
+	await mkdir(fencePaths("api-abc123").dir, { recursive: true });
+	const secrets = [{ env: "GH_TOKEN", value: "ghp_a" }] as unknown as string[];
+	await assert.rejects(writeHelper("api-abc123", { ...helper, secrets }));
+	await assert.rejects(stat(fencePaths("api-abc123").helper), {
+		code: "ENOENT",
+	});
+});
+
+test("policy.json does not carry a value handed in with a secret's grant", async (t) => {
+	await dataDir(t);
+	const grant = { env: "GH_TOKEN", hosts: ["api.github.com"], value: "ghp_a" };
+	await writePolicy("api-abc123", {
+		allow: [],
+		mode: "enforce",
+		ports: [],
+		secrets: [grant],
+	});
+	const written = await readFile(fencePaths("api-abc123").policy, "utf8");
+	assert.equal(written.includes("ghp_a"), false, written);
 });
 
 test("a helper.json that is not a helper record reads as no helper", async (t) => {

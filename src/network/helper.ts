@@ -1,5 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { unlink } from "node:fs/promises";
+import { text } from "node:stream/consumers";
 import { exists, readAppended, sizeOrZero, writeAtomic } from "../fs.ts";
 import * as lima from "../lima/client.ts";
 import { self } from "../session/proc.ts";
@@ -10,9 +11,11 @@ import {
 	type FencePaths,
 	fencePaths,
 	fenceStatus,
+	type HeldSecret,
 	type HelperRecord,
 	killFenceLeftovers,
 	liveHelper,
+	parseHeldSecrets,
 	policyStamp,
 	readPolicy,
 	removeSocket,
@@ -155,6 +158,15 @@ export async function runHelper(
 	instance: string,
 ): Promise<number> {
 	const paths = fencePaths(sandbox);
+	let held: HeldSecret[];
+	try {
+		held = parseHeldSecrets(await text(process.stdin));
+	} catch {
+		// The error is left out: Node's own quotes the text it could not parse.
+		say("cannot read the secrets from stdin");
+		return 1;
+	}
+
 	// Stamp first: a policy.json rewritten between the two reads then differs
 	// from the stamp and is reloaded, rather than read once and taken as old.
 	const stamp = await policyStamp(sandbox);
@@ -219,6 +231,7 @@ export async function runHelper(
 		ready: false,
 		egress: false,
 		policy: stamp,
+		secrets: held.map((secret) => secret.env),
 	};
 	const report = async (patch: Partial<HelperRecord>): Promise<void> => {
 		record = { ...record, ...patch };

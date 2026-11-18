@@ -39,6 +39,7 @@ function startHelper(): EventEmitter {
 			ready: true,
 			egress: true,
 			policy: "",
+			secrets: [],
 		});
 	})();
 	return child;
@@ -104,6 +105,7 @@ async function earlierHelper(fields: {
 		gatekeeperPort: 1,
 		egress: true,
 		policy: "",
+		secrets: [],
 		...fields,
 	});
 }
@@ -137,6 +139,7 @@ function start(timeoutMs: number): Promise<void> {
 		sandbox: SANDBOX,
 		instance: INSTANCE,
 		policy: NOTHING_ALLOWED,
+		secrets: [],
 		log: () => {},
 		timeoutMs,
 	});

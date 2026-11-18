@@ -15,6 +15,7 @@ import { dirname, join } from "node:path";
 import { mock, type TestContext, test } from "node:test";
 import { loadBaseImage } from "../image/base.ts";
 import { imageHash } from "../image/render.ts";
+import type { HeldSecret } from "../network/fence.ts";
 import type { Policy, PortForward } from "../network/policy.ts";
 import { baseInstanceName } from "./identity.ts";
 import type { Sandbox } from "./lifecycle.ts";
@@ -46,6 +47,10 @@ let helperEgress = true;
 let helperUnbound: PortForward[] = [];
 /** Whether the fake fence has been brought up already in this test. */
 let fenced = false;
+/** The secrets `bringUp` was last handed, values included. */
+let fencedSecrets: readonly HeldSecret[] = [];
+/** Whether a helper is running: false until `bringUp` spawns one, and again when a test kills it. */
+let helperLive = false;
 /** Every yes-or-no question put to the user, and the answer each one gets. */
 const asked: string[] = [];
 let answer = false;
@@ -66,27 +71,33 @@ mock.module("../network/fence.ts", {
 	// runtime has deprecated. Delete this line once the types catch up.
 	exports: {
 		fenceStatus: async () => (exists ? fenceState : "stopped"),
-		liveHelper: async () => ({
-			pid: 1,
-			start: "1",
-			boot: "b",
-			gatekeeperPort: 1080,
-			ready: true,
-			egress: helperEgress,
-			unboundPorts: helperUnbound,
-			policy: "1:2",
-		}),
+		liveHelper: async () =>
+			helperLive
+				? {
+						pid: 1,
+						start: "1",
+						boot: "b",
+						gatekeeperPort: 1080,
+						ready: true,
+						egress: helperEgress,
+						unboundPorts: helperUnbound,
+						policy: "1:2",
+						secrets: [],
+					}
+				: null,
 		// Like the real one: the policy is written whatever state the fence is
 		// in, and a sandbox that is already up behind a gatekeeper is left where
 		// it is rather than started a second time.
-		async bringUp(opts: { policy: Policy }) {
+		async bringUp(opts: { policy: Policy; secrets: readonly HeldSecret[] }) {
 			fencedWith = opts.policy;
+			fencedSecrets = opts.secrets;
 			const up = fenceState === "sealed" || fenceState === "sealed-no-egress";
 			if (fenced && up) {
 				calls.push("leave the fence alone");
 				return;
 			}
 			fenced = true;
+			helperLive = true;
 			calls.push("start behind the gatekeeper");
 		},
 	},
@@ -166,6 +177,8 @@ async function sandboxFor(
 	helperEgress = true;
 	helperUnbound = [];
 	fenced = false;
+	fencedSecrets = [];
+	helperLive = false;
 	status = "Running";
 	asked.length = 0;
 	answer = false;
@@ -584,6 +597,8 @@ test("a port entry brings its own localhost entry into the policy, and reaches t
 });
 
 test("a secret's hosts are allowed without being listed, and the secret reaches the helper's policy", async (t) => {
+	process.env.GH_TOKEN = "ghp_a";
+	process.env.NPM_TOKEN = "npm_a";
 	const { run } = await sandboxFor(
 		t,
 		'export default { network: { allow: ["example.com"], secrets: [{ env: "GH_TOKEN", hosts: ["api.github.com", "github.com"] }, { env: "NPM_TOKEN", hosts: ["registry.example.com"] }] } };',
@@ -694,4 +709,65 @@ test("a session that asked to keep the sandbox does not stop it", async (t) => {
 		calls.filter((c) => c === "stop"),
 		[],
 	);
+});
+
+const TOKEN = "ghp_correct-horse-battery-staple";
+const ONE_SECRET =
+	'export default { network: { secrets: [{ env: "PLAYPEN_TEST_TOKEN", hosts: ["api.github.com"] }] } };';
+
+test("the helper is handed each secret's name and value", async (t) => {
+	process.env.PLAYPEN_TEST_TOKEN = TOKEN;
+	const { run } = await sandboxFor(t, ONE_SECRET);
+	await run();
+	assert.deepEqual(fencedSecrets, [
+		{ env: "PLAYPEN_TEST_TOKEN", value: TOKEN },
+	]);
+});
+
+test("a start with secrets whose variables are unset is refused, naming every one, and nothing is booted", async (t) => {
+	delete process.env.PLAYPEN_TEST_A;
+	process.env.PLAYPEN_TEST_B = "";
+	process.env.PLAYPEN_TEST_C = TOKEN;
+	const { run } = await sandboxFor(
+		t,
+		'export default { network: { secrets: [{ env: "PLAYPEN_TEST_A", hosts: ["a.example.com"] }, { env: "PLAYPEN_TEST_B", hosts: ["b.example.com"] }, { env: "PLAYPEN_TEST_C", hosts: ["c.example.com"] }] } };',
+	);
+	await assert.rejects(run(), {
+		message:
+			"network.secrets needs PLAYPEN_TEST_A, PLAYPEN_TEST_B set in your environment",
+	});
+	assert.deepEqual(calls, []);
+	assert.equal(fencedWith, null);
+});
+
+test("a running sandbox with a live helper does not need the variable again", async (t) => {
+	process.env.PLAYPEN_TEST_TOKEN = TOKEN;
+	const { run } = await sandboxFor(t, ONE_SECRET);
+	await run();
+	calls.length = 0;
+	await run();
+	assert.deepEqual(calls, ["leave the fence alone", "ready ~/.claude"]);
+});
+
+test("a running sandbox whose helper is gone needs the variable again, and is left as it was without it", async (t) => {
+	process.env.PLAYPEN_TEST_TOKEN = TOKEN;
+	const { run } = await sandboxFor(t, ONE_SECRET);
+	await run();
+	calls.length = 0;
+	fenceState = "sealed-no-gatekeeper";
+	helperLive = false;
+	await assert.rejects(run(), /network\.secrets needs PLAYPEN_TEST_TOKEN/);
+	assert.deepEqual(calls, []);
+});
+
+test("a rebuild the user confirmed is refused when a variable is unset, and the old sandbox is kept", async (t) => {
+	process.env.PLAYPEN_TEST_TOKEN = TOKEN;
+	const { sb, run } = await sandboxFor(t, ONE_SECRET);
+	await run();
+	calls.length = 0;
+	const { templatesDir } = await import("../config.ts");
+	await writeFile(join(templatesDir(), `${sb.sandbox}.yaml`), "older\n");
+	answer = true;
+	await assert.rejects(run(), /network\.secrets needs PLAYPEN_TEST_TOKEN/);
+	assert.deepEqual(calls, []);
 });

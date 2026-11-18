@@ -6,12 +6,13 @@ import { ensureBase, findBase } from "../image/bake.ts";
 import { loadBaseImage } from "../image/base.ts";
 import { maskScript, render, serialize } from "../image/render.ts";
 import * as lima from "../lima/client.ts";
-import { bringUp, fenceStatus, liveHelper } from "../network/fence.ts";
 import {
-	BUILTIN_ALLOW,
-	NO_EGRESS_ADVICE,
-	type Policy,
-} from "../network/policy.ts";
+	bringUp,
+	fenceStatus,
+	type HeldSecret,
+	liveHelper,
+} from "../network/fence.ts";
+import { BUILTIN_ALLOW, NO_EGRESS_ADVICE } from "../network/policy.ts";
 import { confirm } from "../prompt.ts";
 import * as history from "./history.ts";
 import { instanceName, sandboxName } from "./identity.ts";
@@ -23,6 +24,7 @@ import {
 	LEGACY_IGNORE_FILE,
 	type LoadedNetwork,
 } from "./projectconfig.ts";
+import { missingMessage, takeSecretValues } from "./secrets.ts";
 import * as store from "./store.ts";
 import { approveMounts, loadTrustedConfig } from "./trust.ts";
 
@@ -180,11 +182,20 @@ interface Template {
 	mounts: string[];
 	setup: string[];
 	network: LoadedNetwork;
+	secrets: HeldSecret[];
+	/** The variables `network.secrets` names that are unset or empty. */
+	missing: string[];
 }
 
 /** Loads the project config, so it is read once per command and reused. */
 async function renderTemplate(sb: Sandbox): Promise<Template> {
 	const { masked, mounts, setup, network } = await loadConfig(sb);
+	const { held, missing } = takeSecretValues(network.secrets, process.env);
+	// A live helper has its values already; only a start that spawns one needs
+	// them, and is refused here, before anything is built or booted.
+	if (missing.length > 0 && (await liveHelper(sb.sandbox)) === null) {
+		throw new Error(missingMessage(missing));
+	}
 	const rendered = await renderFor(sb);
 	return {
 		yaml: `${serialize(rendered)}\n`,
@@ -193,6 +204,8 @@ async function renderTemplate(sb: Sandbox): Promise<Template> {
 		mounts,
 		setup,
 		network,
+		secrets: held,
+		missing,
 	};
 }
 
@@ -392,29 +405,26 @@ export interface Running {
  */
 async function startFenced(sb: Sandbox, template: Template): Promise<void> {
 	const { allow, mode, ports, secrets } = template.network;
-	await fenced(sb, {
-		// A port or a secret's host is a grant, so writing it once is enough.
-		allow: [
-			...BUILTIN_ALLOW,
-			...allow,
-			...ports.map(({ host }) => `localhost:${host}`),
-			...secrets.flatMap(({ hosts }) => hosts),
-		],
-		mode,
-		ports,
-		secrets,
+	await bringUp({
+		sandbox: sb.sandbox,
+		instance: sb.instance,
+		policy: {
+			// A port or a secret's host is a grant, so writing it once is enough.
+			allow: [
+				...BUILTIN_ALLOW,
+				...allow,
+				...ports.map(({ host }) => `localhost:${host}`),
+				...secrets.flatMap(({ hosts }) => hosts),
+			],
+			mode,
+			ports,
+			secrets,
+		},
+		secrets: template.secrets,
+		log: (text) => process.stderr.write(text),
 	});
 	await warnWithoutEgress(sb);
 	await warnUnboundPorts(sb);
-}
-
-function fenced(sb: Sandbox, policy: Policy): Promise<void> {
-	return bringUp({
-		sandbox: sb.sandbox,
-		instance: sb.instance,
-		policy,
-		log: (text) => process.stderr.write(text),
-	});
 }
 
 /**
@@ -460,6 +470,10 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 			(await changedMounts(sb, template)) ??
 			(await outdatedBase(sb));
 		rebuilding = reason !== null && (await confirmRebuild(sb, reason));
+		// A rebuild destroys the helper that had the values and spawns another.
+		if (rebuilding && template.missing.length > 0) {
+			throw new Error(missingMessage(template.missing));
+		}
 		if (!rebuilding) {
 			const fence = lima.isRunning(existing)
 				? await fenceStatus(sb.sandbox, sb.instance)

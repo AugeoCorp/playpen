@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
+import { cliPath } from "./fence.ts";
 import { portsScript, unboundIn } from "./helper.ts";
 
 /** The units a script stops, in order, glob included. */
@@ -110,4 +115,45 @@ test("an unbound line for a port not asked for is ignored", () => {
 		unboundIn([{ host: 5000, guest: 4321 }], "unbound 22\nunbound 4321x\n"),
 		[],
 	);
+});
+
+/**
+ * `playpen __net-helper` as `spawnHelper` runs it, in an empty data directory.
+ * With no policy.json to read it stops on its own once it is past its stdin.
+ */
+function runHelperProcess(stdin: string): string {
+	const root = mkdtempSync(join(tmpdir(), "playpen-helper-"));
+	try {
+		const ran = spawnSync(
+			process.execPath,
+			[cliPath(), "__net-helper", "api-abc123", "playpen-api-abc123"],
+			{
+				input: stdin,
+				encoding: "utf8",
+				timeout: 10_000,
+				env: {
+					...process.env,
+					XDG_DATA_HOME: join(root, "data"),
+					LIMA_HOME: join(root, "lima"),
+				},
+			},
+		);
+		return `${ran.stdout}${ran.stderr}`;
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+}
+
+test("a helper reads the secrets on its stdin, and logs no value", () => {
+	const log = runHelperProcess(
+		JSON.stringify([{ env: "GH_TOKEN", value: "ghp_a" }]),
+	);
+	assert.doesNotMatch(log, /cannot read the secrets/);
+	assert.equal(log.includes("ghp_a"), false, log);
+});
+
+test("a helper whose stdin is not a list of secrets stops, and logs none of it", () => {
+	const log = runHelperProcess('[{ "env": "GH_TOKEN", "value": "ghp_a" } oops');
+	assert.match(log, /cannot read the secrets from stdin/);
+	assert.equal(log.includes("ghp_a"), false, log);
 });
