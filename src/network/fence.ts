@@ -416,7 +416,7 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 		}
 		// A helper takes its values only when it is spawned.
 		const held = new Set((await liveHelper(sandbox))?.secrets);
-		[...new Set(opts.policy.secrets.map((grant) => grant.env))]
+		secretNames(opts.policy.secrets)
 			.filter((name) => !held.has(name))
 			.forEach((name) => {
 				opts.log(

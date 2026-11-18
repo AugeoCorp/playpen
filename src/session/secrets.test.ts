@@ -76,7 +76,3 @@ test("every granted variable is taken before any value is refused", () => {
 	assert.throws(() => takeSecretValues([GH, NPM], env));
 	assert.deepEqual(env, {});
 });
-
-test("with no secrets the profile is empty, so one dropped from the config leaves the guest", () => {
-	assert.equal(placeholderProfile([]), "");
-});

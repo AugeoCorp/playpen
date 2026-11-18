@@ -56,6 +56,8 @@ let helperLive = false;
 /** What each write of the guest's placeholder profile was given on stdin. */
 const profileWrites: (string | undefined)[] = [];
 let profileExit = 0;
+/** The guest's login profile as it stood when setup ran. */
+let profileAtSetup: string | undefined;
 /** Every yes-or-no question put to the user, and the answer each one gets. */
 const asked: string[] = [];
 let answer = false;
@@ -158,6 +160,7 @@ mock.module("../lima/client.ts", {
 		},
 		async shell(_i: string, _w: string, command: readonly string[]) {
 			calls.push(`run ${command[2]}`);
+			profileAtSetup = profileWrites.at(-1);
 			return 0;
 		},
 	},
@@ -198,6 +201,7 @@ async function sandboxFor(
 	helperLive = false;
 	profileWrites.length = 0;
 	profileExit = 0;
+	profileAtSetup = undefined;
 	status = "Running";
 	asked.length = 0;
 	answer = false;
@@ -807,18 +811,28 @@ test("a rebuild the user confirmed is refused when a variable is unset, and the 
 const PROFILE = "export PLAYPEN_TEST_TOKEN=playpen-secret-playpen-test-token\n";
 
 test("the guest gets each secret's placeholder in its login profile, and never the value", async (t) => {
-	process.env.PLAYPEN_TEST_TOKEN = TOKEN;
+	setEnv(t, { PLAYPEN_TEST_TOKEN: TOKEN });
 	const { run } = await sandboxFor(t, ONE_SECRET);
 	await run();
 	assert.deepEqual(profileWrites, [PROFILE]);
 });
 
 test("a sandbox that is already up has its placeholders written again", async (t) => {
-	process.env.PLAYPEN_TEST_TOKEN = TOKEN;
+	setEnv(t, { PLAYPEN_TEST_TOKEN: TOKEN });
 	const { run } = await sandboxFor(t, ONE_SECRET);
 	await run();
 	await run();
 	assert.deepEqual(profileWrites, [PROFILE, PROFILE]);
+});
+
+test("setup runs with the placeholders already in the guest's login profile, since its login shell reads them", async (t) => {
+	setEnv(t, { PLAYPEN_TEST_TOKEN: TOKEN });
+	const { run } = await sandboxFor(
+		t,
+		'export default { setup: ["npm ci"], network: { secrets: [{ env: "PLAYPEN_TEST_TOKEN", hosts: ["api.github.com"] }] } };',
+	);
+	await run();
+	assert.equal(profileAtSetup, PROFILE);
 });
 
 test("a project with no secrets empties the guest's profile, so a dropped secret does not linger", async (t) => {
@@ -828,7 +842,7 @@ test("a project with no secrets empties the guest's profile, so a dropped secret
 });
 
 test("placeholders that cannot be written are a warning, and the sandbox still starts", async (t) => {
-	process.env.PLAYPEN_TEST_TOKEN = TOKEN;
+	setEnv(t, { PLAYPEN_TEST_TOKEN: TOKEN });
 	const { run } = await sandboxFor(t, ONE_SECRET);
 	profileExit = 1;
 	const said = t.mock.method(console, "error", () => {});
