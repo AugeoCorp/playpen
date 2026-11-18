@@ -89,9 +89,7 @@ async function loadConfig(sb: Sandbox): Promise<{
 		console.error(`warning: ignoring invalid \`masked\` entry: ${bad}`);
 	}
 	for (const bad of rejectedMounts) {
-		console.error(
-			`warning: ignoring invalid \`mounts\` entry: ${escapeControls(bad)}`,
-		);
+		console.error(`warning: ignoring invalid \`mounts\` entry: ${bad}`);
 	}
 	for (const bad of rejectedSetup) {
 		console.error(`warning: ignoring invalid \`setup\` entry: ${bad}`);

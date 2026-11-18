@@ -276,7 +276,7 @@ test("a directory the project names but nobody approved is not mounted, and the 
 	assert.match(lines, /not mounting .*shared: it is not yet approved/);
 });
 
-test("a mount entry and its refusal are reported with control characters escaped", async (t) => {
+test("a refused mount is reported with control characters escaped", async (t) => {
 	const { run } = await sandboxFor(
 		t,
 		'export default { mounts: ["../\\u001b[2Kgone\\u202e"] };',
@@ -293,6 +293,31 @@ test("a mount entry and its refusal are reported with control characters escaped
 		`a raw U+202E reached the terminal: ${lines}`,
 	);
 	assert.match(lines, /not mounting \.\.\/\\x1b\[2Kgone\\u\{202e\}: /);
+});
+
+test("a directory the project asks to mount is named with control characters escaped in the question", async (t) => {
+	const { sb, run } = await sandboxFor(
+		t,
+		'export default { mounts: ["../shared\\u001b[2K"] };',
+	);
+	await mkdir(join(dirname(sb.cwd), "shared\x1b[2K"), { recursive: true });
+	const own = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+	Object.defineProperty(process.stdin, "isTTY", {
+		value: true,
+		configurable: true,
+	});
+	t.after(() => {
+		if (own) Object.defineProperty(process.stdin, "isTTY", own);
+		else Reflect.deleteProperty(process.stdin, "isTTY");
+	});
+	const said = t.mock.method(console, "error", () => {});
+	await run();
+	const lines = said.mock.calls.map((c) => String(c.arguments[0])).join("\n");
+	assert.ok(
+		!lines.includes("\x1b"),
+		`a raw ESC reached the terminal: ${lines}`,
+	);
+	assert.match(lines, /asks to mount .*shared\\x1b\[2K read-only/);
 });
 
 test("an approved directory is named with control characters escaped when it is mounted", async (t) => {
