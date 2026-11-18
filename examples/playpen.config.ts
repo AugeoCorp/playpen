@@ -4,6 +4,9 @@ export default {
 	// Create a masked file on the host first (`touch .env`); a missing entry is created as a directory.
 	masked: ["node_modules", ".env"],
 
+	// Host directories the guest may read, each at its own path. Each one is approved separately.
+	mounts: ["../shared-lib"],
+
 	// Run in the guest on create and after a rebuild. `playpen setup` re-runs them.
 	setup: ["npm ci"],
 
