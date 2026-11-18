@@ -51,6 +51,9 @@ let fenced = false;
 let fencedSecrets: readonly HeldSecret[] = [];
 /** Whether a helper is running: false until `bringUp` spawns one, and again when a test kills it. */
 let helperLive = false;
+/** What each write of the guest's placeholder profile was given on stdin. */
+const profileWrites: (string | undefined)[] = [];
+let profileExit = 0;
 /** Every yes-or-no question put to the user, and the answer each one gets. */
 const asked: string[] = [];
 let answer = false;
@@ -127,7 +130,15 @@ mock.module("../lima/client.ts", {
 			await writeFile(path, '{"mounts": []}\n', "utf8");
 			heldLimaYaml = await open(path, "r");
 		},
-		async runScript(_instance: string, script: string) {
+		async runScript(
+			_instance: string,
+			script: string,
+			opts?: { input?: string },
+		) {
+			if (script.includes("profile.d")) {
+				profileWrites.push(opts?.input);
+				return { code: profileExit, stdout: "", stderr: "read-only" };
+			}
 			const step = guestStep(script);
 			calls.push(step);
 			if (step === "ready ~/.claude")
@@ -179,6 +190,8 @@ async function sandboxFor(
 	fenced = false;
 	fencedSecrets = [];
 	helperLive = false;
+	profileWrites.length = 0;
+	profileExit = 0;
 	status = "Running";
 	asked.length = 0;
 	answer = false;
@@ -770,4 +783,42 @@ test("a rebuild the user confirmed is refused when a variable is unset, and the 
 	answer = true;
 	await assert.rejects(run(), /network\.secrets needs PLAYPEN_TEST_TOKEN/);
 	assert.deepEqual(calls, []);
+});
+
+const PROFILE = "export PLAYPEN_TEST_TOKEN=playpen-secret-playpen-test-token\n";
+
+test("the guest gets each secret's placeholder in its login profile, and never the value", async (t) => {
+	process.env.PLAYPEN_TEST_TOKEN = TOKEN;
+	const { run } = await sandboxFor(t, ONE_SECRET);
+	await run();
+	assert.deepEqual(profileWrites, [PROFILE]);
+});
+
+test("a sandbox that is already up has its placeholders written again", async (t) => {
+	process.env.PLAYPEN_TEST_TOKEN = TOKEN;
+	const { run } = await sandboxFor(t, ONE_SECRET);
+	await run();
+	await run();
+	assert.deepEqual(profileWrites, [PROFILE, PROFILE]);
+});
+
+test("a project with no secrets empties the guest's profile, so a dropped secret does not linger", async (t) => {
+	const { run } = await sandboxFor(t, BOTH);
+	await run();
+	assert.deepEqual(profileWrites, [""]);
+});
+
+test("placeholders that cannot be written are a warning, and the sandbox still starts", async (t) => {
+	process.env.PLAYPEN_TEST_TOKEN = TOKEN;
+	const { run } = await sandboxFor(t, ONE_SECRET);
+	profileExit = 1;
+	const said = t.mock.method(console, "error", () => {});
+	await run();
+	const lines = said.mock.calls.map((call) => String(call.arguments[0]));
+	assert.ok(
+		lines.includes(
+			"warning: could not set the secret placeholders in the guest (read-only)",
+		),
+		lines.join("\n"),
+	);
 });

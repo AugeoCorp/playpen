@@ -97,6 +97,7 @@ async function stoppedSandbox(t: TestContext): Promise<void> {
 async function earlierHelper(fields: {
 	ready: boolean;
 	policy?: string;
+	secrets?: string[];
 }): Promise<void> {
 	const init = await owner(1);
 	assert.ok(init, "cannot read pid 1, which stands in for the earlier helper");
@@ -115,7 +116,10 @@ async function earlierHelper(fields: {
  * fence's namespace named by Lima's qemu.pid, and the helper's record saying
  * ready with the policy `bringUp` has just written.
  */
-async function earlierHelperBringsTheVmUp(t: TestContext): Promise<void> {
+async function earlierHelperBringsTheVmUp(
+	t: TestContext,
+	secrets: string[] = [],
+): Promise<void> {
 	const qemu: ChildProcess = spawnReal(
 		process.execPath,
 		["-e", "setInterval(() => {}, 60_000)"],
@@ -131,6 +135,7 @@ async function earlierHelperBringsTheVmUp(t: TestContext): Promise<void> {
 	await earlierHelper({
 		ready: true,
 		policy: await fence.policyStamp(SANDBOX),
+		secrets,
 	});
 }
 
@@ -182,4 +187,30 @@ test("an earlier helper that neither exits nor brings the VM up fails the start,
 		start(1_000),
 		/earlier network helper for api-abc123 \(pid 1\) has neither exited nor brought its VM up.*stop it with: kill 1$/s,
 	);
+});
+
+test("a start that finds a helper running names each secret the helper was not started with", async (t) => {
+	await stoppedSandbox(t);
+	const policy: Policy = {
+		...NOTHING_ALLOWED,
+		secrets: [
+			{ env: "GH_TOKEN", hosts: ["api.github.com"] },
+			{ env: "NPM_TOKEN", hosts: ["registry.npmjs.org"] },
+		],
+	};
+	await fence.writePolicy(SANDBOX, policy);
+	await earlierHelperBringsTheVmUp(t, ["GH_TOKEN"]);
+	const logged: string[] = [];
+
+	await fence.bringUp({
+		sandbox: SANDBOX,
+		instance: INSTANCE,
+		policy,
+		secrets: [],
+		log: (text) => logged.push(text),
+	});
+
+	assert.deepEqual(logged, [
+		"secret NPM_TOKEN added to the config takes effect after: playpen stop && playpen start\n",
+	]);
 });

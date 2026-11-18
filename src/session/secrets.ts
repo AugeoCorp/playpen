@@ -1,6 +1,9 @@
 import { validateHeaderValue } from "node:http";
 import type { HeldSecret } from "../network/fence.ts";
-import type { SecretGrant } from "../network/policy.ts";
+import { placeholderFor, type SecretGrant } from "../network/policy.ts";
+
+/** Run as root in the guest with `placeholderProfile` on stdin. */
+export const PROFILE_SCRIPT = "cat > /etc/profile.d/playpen-secrets.sh";
 
 /**
  * Takes each granted variable's value out of `env`, so no child spawned
@@ -21,6 +24,16 @@ export function takeSecretValues(
 	});
 	const found = new Set(held.map((secret) => secret.env));
 	return { held, missing: names.filter((name) => !found.has(name)) };
+}
+
+/**
+ * What the guest's login shells source: each name set to its placeholder. With
+ * no names it is empty, so a secret dropped from the config leaves the guest.
+ */
+export function placeholderProfile(grants: readonly SecretGrant[]): string {
+	return [...new Set(grants.map((grant) => grant.env))]
+		.map((name) => `export ${name}=${placeholderFor(name)}\n`)
+		.join("");
 }
 
 export function missingMessage(missing: readonly string[]): string {
