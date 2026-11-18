@@ -166,8 +166,8 @@ function lookupReachable(
 }
 
 /** Starts the CONNECT-gating proxy. Every outbound guest connection arrives
- * here as an HTTP CONNECT; `policy` decides whether it is piped through,
- * refused with a 403 before any upstream socket opens, or (in `"log"` mode)
+ * here as an HTTP CONNECT; `policy` decides whether it is piped through or
+ * handed to `intercept`, refused with a 403 before any upstream socket opens, or (in `"log"` mode)
  * piped through and recorded as what would have been refused. A request for
  * `PROBE_HOST` is refused the same way, and its log line is what tells the
  * helper the guest's route reaches here at all. */
