@@ -67,7 +67,12 @@ test("a placeholder in any header but Authorization goes out as it is, and nothi
 test("two secrets' placeholders in one Authorization are both replaced, and each is listed", () => {
 	assert.deepEqual(
 		rewriteHeaders(
-			[["Authorization", basic("playpen-secret-gh-token:playpen-secret-npm-token")]],
+			[
+				[
+					"Authorization",
+					basic("playpen-secret-gh-token:playpen-secret-npm-token"),
+				],
+			],
 			[GH_TOKEN, NPM_TOKEN],
 		),
 		{
