@@ -93,8 +93,18 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
   the 9p share is slow, and the two often need different contents there — native
   modules and toolchain builds are per-platform, and the environments drift. The
   guest's copy starts empty, is writable, and survives stop and start.
-- Masked is not hidden. The host copy stays mounted underneath and the guest has
-  root. Keep secrets outside the project.
+- The host's contents at a masked path stay out of the guest, guest root
+  included, for a file or directory there when the VM starts. That lasts until
+  the host replaces the path (a rename over it, `sed -i`, `git checkout`,
+  `rm -rf` and recreate); after that the guest can read the new contents, and
+  nothing stops it yet. Keep secrets outside the project for now.
+- Which paths are kept out is fixed when the VM starts, so an entry added to a
+  running sandbox needs `playpen stop && playpen start`.
+- An entry inside a directory the guest can write, such as `config/secret.json`,
+  is only as strong as that directory: the guest can rename the directory, and
+  the next start finds the entry missing. Top-level entries such as `.env` don't
+  have this weakness.
+- A masked symlink, or a masked path under one, fails the start.
 - A masked path that is missing on the host is created by the guest, as an empty
   directory on the host. Create a masked file on the host first.
 - `mounts` entries are absolute, `~/`-relative, or relative to the project, so a

@@ -12,14 +12,15 @@ if (command === "__complete") {
 } else if (command === "__net-helper" || command === "__net-inside") {
 	// The two halves of the network fence, routed here for the same reason as
 	// `__complete`: playpen spawns them, nobody types them. See network/fence.ts.
-	const [sandbox, instance] = rest;
+	const [sandbox, instance, ...masked] = rest;
 	if (sandbox === undefined || instance === undefined) {
 		console.error(`usage: playpen ${command} <sandbox> <instance>`);
 		process.exit(2);
 	}
 	const helper = await import("./network/helper.ts");
-	const run = command === "__net-helper" ? helper.runHelper : helper.runInside;
-	process.exitCode = await run(sandbox, instance);
+	process.exitCode = await (command === "__net-helper"
+		? helper.runHelper(sandbox, instance, masked)
+		: helper.runInside(sandbox, instance));
 } else {
 	const rawArgs =
 		command === undefined ? [] : [ALIASES[command] ?? command, ...rest];

@@ -392,7 +392,7 @@ export interface Running {
  */
 async function startFenced(sb: Sandbox, template: Template): Promise<void> {
 	const { allow, mode, ports, secrets } = template.network;
-	await fenced(sb, {
+	await fenced(sb, template.masks, {
 		// A port or a secret's host is a grant, so writing it once is enough.
 		allow: [
 			...BUILTIN_ALLOW,
@@ -408,11 +408,16 @@ async function startFenced(sb: Sandbox, template: Template): Promise<void> {
 	await warnUnboundPorts(sb);
 }
 
-function fenced(sb: Sandbox, policy: Policy): Promise<void> {
+function fenced(
+	sb: Sandbox,
+	masks: readonly string[],
+	policy: Policy,
+): Promise<void> {
 	return bringUp({
 		sandbox: sb.sandbox,
 		instance: sb.instance,
 		policy,
+		masked: masks.map((entry) => join(sb.cwd, entry)),
 		log: (text) => process.stderr.write(text),
 	});
 }

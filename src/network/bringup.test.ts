@@ -20,13 +20,16 @@ const NOTHING_ALLOWED: Policy = {
 
 /** How many helpers `bringUp` has spawned in this process. */
 let helpersStarted = 0;
+/** The arguments the last helper was spawned with. */
+let helperArgs: readonly string[] = [];
 
 /**
  * Stands in for the helper process `bringUp` spawns, doing what the real one
  * does first: refuse to run beside a live helper, otherwise report the VM up.
  */
-function startHelper(): EventEmitter {
+function startHelper(_command: string, args: readonly string[]): EventEmitter {
 	helpersStarted++;
+	helperArgs = args;
 	const child = Object.assign(new EventEmitter(), { unref() {} });
 	void (async () => {
 		if ((await fence.liveHelper(SANDBOX)) !== null) {
@@ -137,6 +140,7 @@ function start(timeoutMs: number): Promise<void> {
 		sandbox: SANDBOX,
 		instance: INSTANCE,
 		policy: NOTHING_ALLOWED,
+		masked: [],
 		log: () => {},
 		timeoutMs,
 	});
@@ -179,4 +183,23 @@ test("an earlier helper that neither exits nor brings the VM up fails the start,
 		start(1_000),
 		/earlier network helper for api-abc123 \(pid 1\) has neither exited nor brought its VM up.*stop it with: kill 1$/s,
 	);
+});
+
+test("the helper is started with the masked paths after the sandbox and instance", async (t) => {
+	await stoppedSandbox(t);
+	await fence.bringUp({
+		sandbox: SANDBOX,
+		instance: INSTANCE,
+		policy: NOTHING_ALLOWED,
+		masked: ["/project/.env", "/project/node_modules"],
+		log: () => {},
+		timeoutMs: 10_000,
+	});
+	assert.deepEqual(helperArgs.slice(1), [
+		"__net-helper",
+		SANDBOX,
+		INSTANCE,
+		"/project/.env",
+		"/project/node_modules",
+	]);
 });
