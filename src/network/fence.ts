@@ -51,6 +51,8 @@ export interface FencePaths {
 	control: string;
 	helper: string;
 	policy: string;
+	/** The masked paths the VM's bwrap bound, for a reattaching helper. */
+	masks: string;
 	placeholderFile: string;
 	placeholderDirectory: string;
 	gatekeeperLog: string;
@@ -68,6 +70,7 @@ export function fencePaths(sandbox: string): FencePaths {
 		control: join(dir, "control.sock"),
 		helper: join(dir, "helper.json"),
 		policy: join(dir, "policy.json"),
+		masks: join(dir, "masks.json"),
 		placeholderFile: join(dir, "placeholder-file"),
 		placeholderDirectory: join(dir, "placeholder-directory"),
 		gatekeeperLog: join(dir, "gatekeeper.log"),
@@ -292,6 +295,34 @@ async function qemuPid(instance: string): Promise<number | null> {
 		return null;
 	}
 	return looksLikeQemu(cmdline) ? pid : null;
+}
+
+/**
+ * The paths a `/proc/<pid>/mountinfo` lists no mount point at. Its fifth field
+ * is the mount point, with the kernel's octal escapes for space, tab, newline
+ * and backslash.
+ */
+export function unmounted(
+	paths: readonly string[],
+	mountinfo: string,
+): string[] {
+	const points = new Set(
+		[...mountinfo.matchAll(/^(?:\S+ ){4}(\S+)/gm)].map(([, point = ""]) =>
+			point.replace(/\\(040|011|012|134)/g, (_, octal: string) =>
+				String.fromCharCode(Number.parseInt(octal, 8)),
+			),
+		),
+	);
+	return paths.filter((path) => !points.has(path));
+}
+
+/** qemu's mount table, or undefined when qemu or its table cannot be read. */
+export async function qemuMountinfo(
+	instance: string,
+): Promise<string | undefined> {
+	const pid = (await qemuPid(instance)) ?? undefined;
+	if (pid === undefined) return undefined;
+	return readFile(`/proc/${pid}/mountinfo`, "utf8").catch(() => undefined);
 }
 
 export async function fenceStatus(

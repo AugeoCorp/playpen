@@ -11,6 +11,7 @@ import {
 	looksLikeQemu,
 	policyStamp,
 	readPolicy,
+	unmounted,
 	writeHelper,
 	writePolicy,
 } from "./fence.ts";
@@ -378,4 +379,36 @@ test("a recycled pid now running an unrelated process is not mistaken for qemu",
 
 test("an empty cmdline, as a zombie or an unreadable process reads, is not qemu", () => {
 	assert.equal(looksLikeQemu(""), false);
+});
+
+const MOUNTINFO =
+	"25 1 0:22 / / rw,relatime - ext4 /dev/sda1 rw\n" +
+	"40 25 0:22 /placeholder-file /p/.env ro,relatime - ext4 /dev/sda1 rw\n" +
+	"41 25 0:22 /placeholder-file /p/my\\040secret.txt ro,relatime - ext4 /dev/sda1 rw\n" +
+	"42 25 0:22 /placeholder-file /p/a\\134040 ro,relatime - ext4 /dev/sda1 rw\n" +
+	"43 25 0:22 /placeholder-directory /p/c2/secret ro,relatime - ext4 /dev/sda1 rw\n";
+
+test("with no mount table, every path is unmounted", () => {
+	assert.deepEqual(unmounted(["/p/.env", "/p/secrets"], ""), [
+		"/p/.env",
+		"/p/secrets",
+	]);
+});
+
+test("a mount point with an escaped space is found", () => {
+	assert.deepEqual(unmounted(["/p/my secret.txt"], MOUNTINFO), []);
+});
+
+test("a path whose parent was renamed away is unmounted, though its mount moved with the parent", () => {
+	assert.deepEqual(unmounted(["/p/config/secret"], MOUNTINFO), [
+		"/p/config/secret",
+	]);
+});
+
+test("a mount at a longer name does not count for a path it starts with", () => {
+	assert.deepEqual(unmounted(["/p/.env.local"], MOUNTINFO), ["/p/.env.local"]);
+});
+
+test("an escaped backslash followed by 040 reads as a backslash and 040, not a space", () => {
+	assert.deepEqual(unmounted(["/p/a\\040", "/p/a "], MOUNTINFO), ["/p/a "]);
 });

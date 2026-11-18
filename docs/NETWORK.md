@@ -163,7 +163,20 @@ the helper's check and bwrap's start is created by bwrap on the host, empty.
 
 A bind is made over the inode at the path. A host-side replace unlinks that
 inode, the kernel drops a mount whose mount point is unlinked, in every
-namespace, and qemu then serves the new contents. Nothing notices that yet.
+namespace, and qemu then serves the new contents. So the helper reads
+`/proc/<qemu pid>/mountinfo` just before it reports `ready`, and again on every
+poll, and checks that a mount point is still listed at each bound path (the
+kernel writes a space, tab, newline or backslash there as `\040`, `\011`, `\012`
+or `\134`). The paths bwrap bound are written to `masks.json` in the fence's
+directory, out of the guest's reach, and a reattaching helper checks those, so a
+replace made while no helper ran stops the VM at its first check. A table that
+cannot be read while qemu runs counts as every bind lost. A rename of a bound
+path's parent moves the mount along with it, so that reads as lost too.
+
+On a loss the helper stops the VM with `limactl stop -f`, forced so the guest
+gets no clean shutdown in which to read the new contents, then tears the fence
+down and exits 1, removing `masks.json`. If the stop fails, the fence comes down
+all the same: the VM keeps running with no network, and the helper exits 1.
 
 ## Lifecycle
 

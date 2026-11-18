@@ -14,9 +14,10 @@
  *
  * The instance is created if it does not exist and left stopped at the end.
  */
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { limaHome } from "../config.ts";
 import { exists } from "../fs.ts";
@@ -43,6 +44,8 @@ const tun2proxy = process.env.PLAYPEN_E2E_TUN2PROXY ?? "";
 const allowedHost = process.env.PLAYPEN_E2E_ALLOWED ?? "nodejs.org";
 const deniedHost = process.env.PLAYPEN_E2E_DENIED ?? "example.com";
 const paths = fencePaths(sandbox);
+/** Set in `main`. With spaces, so the bind and the check meet an escaped path. */
+let maskedDirectory = "";
 
 /**
  * Argv substrings that identify a process as belonging to this sandbox's
@@ -151,7 +154,7 @@ async function up(
 			ports,
 			secrets: [],
 		},
-		masked: [],
+		masked: [maskedFile()],
 		log: (text) => process.stderr.write(text),
 	});
 }
@@ -162,6 +165,8 @@ async function main(): Promise<void> {
 		process.exit(2);
 	}
 	console.log(`sandbox ${sandbox} (${instance}), runtime dir ${paths.dir}`);
+	maskedDirectory = await mkdtemp(join(tmpdir(), "playpen e2e "));
+	await writeFile(maskedFile(), "SECRET=1\n");
 
 	try {
 		console.log("\n1. the sandbox comes up behind the gatekeeper");
@@ -199,8 +204,13 @@ async function main(): Promise<void> {
 
 		console.log("\n5. stopping the VM from outside");
 		await step("the helper tears the fence down and exits", stopped);
+
+		console.log("\n6. replacing a masked file on the host");
+		await step("the sandbox comes up again", startFenced);
+		await step("a rename over the file stops it within seconds", renamedOver);
+		await step("the helper tears the fence down and exits", stopped);
 	} finally {
-		console.log("\n6. leftover processes for this sandbox");
+		console.log("\n7. leftover processes for this sandbox");
 		try {
 			await step(
 				"no socat or __net-inside process left running",
@@ -225,6 +235,7 @@ async function cleanUp(): Promise<void> {
 	await killFenceLeftovers(sandbox);
 	await removeSocket(paths.egress);
 	await removeSocket(paths.control);
+	await rm(maskedDirectory, { recursive: true, force: true });
 }
 
 /**
@@ -486,8 +497,22 @@ async function reattach(): Promise<string | null> {
 	return wanted("fence state", "sealed", await fenceStatus(sandbox, instance));
 }
 
+function maskedFile(): string {
+	return join(maskedDirectory, "masked .env");
+}
+
+async function renamedOver(): Promise<string | null> {
+	await writeFile(`${maskedFile()}.new`, "SECRET=2\n");
+	await rename(`${maskedFile()}.new`, maskedFile());
+	return waitFor(
+		"the VM stopping",
+		10,
+		async () => !lima.isRunning(await lima.get(instance)),
+	);
+}
+
 async function stopped(): Promise<string | null> {
-	await lima.stop(instance);
+	if (lima.isRunning(await lima.get(instance))) await lima.stop(instance);
 	return waitFor(
 		"the fence teardown",
 		60,
