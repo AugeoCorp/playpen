@@ -63,8 +63,8 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
   KVM: the approval prompts, a `~/.ssh` symlink refused, the clone's `lima.yaml`
   and QEMU's `readonly=on`, the session record, and the rebuild offer when the
   list changed. In the guest, root could neither write, delete, rename, link,
-  `chmod`, `chown` nor set times or xattrs in the share, even after
-  `mount -o remount,rw`, and the host copy was unchanged.
+  `chmod`, `chown` nor set times in the share, even after `mount -o remount,rw`,
+  and the host copy was unchanged.
 - `setup` in `playpen.config.ts` runs project-declared commands in the guest on
   create and rebuild, with `playpen setup` to re-run. Config parsing and the
   guest ordering are unit-tested; the actual run needs a host with `limactl`.
