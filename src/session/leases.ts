@@ -12,9 +12,10 @@ export type { Owner };
  * that stops the VM. Without this, two `playpen claude` in a project share a
  * guest and the first to exit cuts off the second.
  *
- * Under the data directory rather than the project: a sandbox mounts only the
- * project and its own `history/<sandbox>`, so nothing inside a guest can forge
- * a lease to keep itself alive or delete one to cut off a sibling.
+ * Under the data directory rather than the project: a sandbox mounts nothing
+ * under the data directory but its own `history/<sandbox>`, so nothing inside a
+ * guest can forge a lease to keep itself alive or delete one to cut off a
+ * sibling.
  */
 function leasesDir(sandbox: string): string {
 	assertSandboxName(sandbox);
