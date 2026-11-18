@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import {
+	mkdir,
+	mkdtemp,
+	realpath,
+	rm,
+	symlink,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
-import { checkMount, type GuardEnv } from "./mountguard.ts";
+import { checkMount, checkReadOnlyMount, type GuardEnv } from "./mountguard.ts";
 
 const ENV: GuardEnv = {
 	home: "/home/e",
@@ -87,4 +94,148 @@ test("allows a git repo without warning", async (t) => {
 	const result = await checkMount(dir, ENV);
 	assert.equal(result.ok, true);
 	assert.equal(result.warning, undefined);
+});
+
+/** A home with a project and a sibling checkout in it, and playpen's data dir. */
+async function tempHome(t: TestContext) {
+	const home = await realpath(
+		await mkdtemp(join(tmpdir(), "playpen-guard-home-")),
+	);
+	t.after(() => rm(home, { recursive: true, force: true }));
+	const project = join(home, "src", "api");
+	const sibling = join(home, "src", "shared-lib");
+	const data = join(home, ".local", "share", "playpen");
+	for (const dir of [project, sibling, data])
+		await mkdir(dir, { recursive: true });
+	const env: GuardEnv = { home, protectedDirs: [data] };
+	return { home, project, sibling, data, env };
+}
+
+test("a read-only mount relative to the project resolves to the real directory", async (t) => {
+	const { project, sibling, env } = await tempHome(t);
+	assert.deepEqual(await checkReadOnlyMount("../shared-lib", project, env), {
+		ok: true,
+		path: sibling,
+	});
+});
+
+test("a read-only mount starting with ~/ is found under the home directory", async (t) => {
+	const { project, sibling, env } = await tempHome(t);
+	assert.deepEqual(await checkReadOnlyMount("~/src/shared-lib", project, env), {
+		ok: true,
+		path: sibling,
+	});
+});
+
+test("a read-only mount given as an absolute path is taken as written", async (t) => {
+	const { project, sibling, env } = await tempHome(t);
+	assert.deepEqual(await checkReadOnlyMount(sibling, project, env), {
+		ok: true,
+		path: sibling,
+	});
+});
+
+test("a read-only mount naming another user's ~ is refused rather than read as a project path", async (t) => {
+	const { project, env } = await tempHome(t);
+	const result = await checkReadOnlyMount("~root/notes", project, env);
+	assert.ok(!result.ok, "expected the mount to be refused");
+	assert.match(result.reason, /only ~\/ is expanded/);
+});
+
+test("a read-only mount that does not exist is refused", async (t) => {
+	const { project, env } = await tempHome(t);
+	const result = await checkReadOnlyMount("../gone", project, env);
+	assert.ok(!result.ok, "expected the mount to be refused");
+	assert.match(result.reason, /does not exist/);
+});
+
+test("a read-only mount of a file is refused, since only directories can be shared", async (t) => {
+	const { home, project, env } = await tempHome(t);
+	await writeFile(join(home, "src", "notes.txt"), "");
+	const result = await checkReadOnlyMount("../notes.txt", project, env);
+	assert.ok(!result.ok, "expected the mount to be refused");
+	assert.match(result.reason, /not a directory/);
+});
+
+test("a read-only mount of the home directory is refused", async (t) => {
+	const { project, env } = await tempHome(t);
+	const result = await checkReadOnlyMount("~", project, env);
+	assert.ok(!result.ok, "expected the mount to be refused");
+	assert.match(result.reason, /home directory/);
+});
+
+test("a read-only mount inside playpen's data directory is refused, because other sandboxes' history is there", async (t) => {
+	const { project, env } = await tempHome(t);
+	const result = await checkReadOnlyMount(
+		"~/.local/share/playpen",
+		project,
+		env,
+	);
+	assert.ok(!result.ok, "expected the mount to be refused");
+	assert.match(result.reason, /must not be able to read/);
+});
+
+test("a read-only mount of a hidden directory in home is refused, since that is where credentials live", async (t) => {
+	const { home, project, env } = await tempHome(t);
+	await mkdir(join(home, ".aws"));
+	const result = await checkReadOnlyMount("~/.aws", project, env);
+	assert.ok(!result.ok, "expected the mount to be refused");
+	assert.match(result.reason, /under ~\/\.\* are where credentials live/);
+});
+
+test("a read-only mount inside a hidden directory in home is refused too", async (t) => {
+	const { home, project, env } = await tempHome(t);
+	await mkdir(join(home, ".config", "gh"), { recursive: true });
+	const result = await checkReadOnlyMount("~/.config/gh", project, env);
+	assert.ok(!result.ok, "expected the mount to be refused");
+	assert.match(result.reason, /under ~\/\.\* are where credentials live/);
+});
+
+test("a symlink to a hidden directory in home is refused, wherever the link is", async (t) => {
+	const { home, project, env } = await tempHome(t);
+	await mkdir(join(home, ".ssh"));
+	await symlink(join(home, ".ssh"), join(home, "src", "keys"));
+	const result = await checkReadOnlyMount("../keys", project, env);
+	assert.ok(!result.ok, "expected the mount to be refused");
+	assert.match(result.reason, /\.ssh: directories under ~\/\.\*/);
+});
+
+test("a hidden directory below a visible one in home is allowed", async (t) => {
+	const { home, project, env } = await tempHome(t);
+	const dotted = join(home, "src", ".shared");
+	await mkdir(dotted);
+	assert.deepEqual(await checkReadOnlyMount("../.shared", project, env), {
+		ok: true,
+		path: dotted,
+	});
+});
+
+test("a read-only mount through a symlink is judged by where the link points", async (t) => {
+	const { home, project, env } = await tempHome(t);
+	await symlink(join(home, ".local"), join(home, "src", "innocent"));
+	const result = await checkReadOnlyMount("../innocent", project, env);
+	assert.ok(!result.ok, "expected the mount to be refused");
+	assert.match(result.reason, /contains .*playpen/);
+});
+
+test("a read-only mount of the project itself is refused", async (t) => {
+	const { project, env } = await tempHome(t);
+	const result = await checkReadOnlyMount(".", project, env);
+	assert.ok(!result.ok, "expected the mount to be refused");
+	assert.match(result.reason, /overlaps the project/);
+});
+
+test("a read-only mount inside the project is refused", async (t) => {
+	const { project, env } = await tempHome(t);
+	await mkdir(join(project, "vendor"));
+	const result = await checkReadOnlyMount("vendor", project, env);
+	assert.ok(!result.ok, "expected the mount to be refused");
+	assert.match(result.reason, /overlaps the project/);
+});
+
+test("a read-only mount containing the project is refused", async (t) => {
+	const { project, env } = await tempHome(t);
+	const result = await checkReadOnlyMount("..", project, env);
+	assert.ok(!result.ok, "expected the mount to be refused");
+	assert.match(result.reason, /overlaps the project/);
 });
