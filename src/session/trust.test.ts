@@ -37,7 +37,6 @@ test("a differing pin is 'changed'", () => {
 
 let counter = 0;
 
-/** A project dir plus an isolated data dir, so pins never leak between tests. */
 /** Make stderr report whether it is a terminal, for this test only. */
 function stderrIsTTY(t: TestContext, value: boolean): void {
 	const own = Object.getOwnPropertyDescriptor(process.stderr, "isTTY");
@@ -52,6 +51,7 @@ function stderrIsTTY(t: TestContext, value: boolean): void {
 	});
 }
 
+/** A project dir plus an isolated data dir, so pins never leak between tests. */
 async function scenario(
 	t: TestContext,
 	files: Record<string, string>,
