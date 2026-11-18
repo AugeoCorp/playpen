@@ -149,7 +149,10 @@ Claude Code cloud container, the `cloud-vm-test` skill
 
 ## Do Not Relitigate
 
-- A mask is not a privacy control. Never call `masked` entries hidden.
+- A mask keeps a host path's contents out of the guest, guest root included,
+  from the VM's start until the host replaces that path, which stops the sandbox
+  within one poll. It is no guarantee during boot or for nested entries. Never
+  call `masked` entries hidden.
 - Project config runs on the host only via `loadTrustedConfig` in
   `src/session/trust.ts`. It executes a snapshot of the approved import graph,
   never the project file. Approvals live outside the mount.
