@@ -5,3 +5,7 @@
 !*/
 
 node_modules
+
+# Copied from seanhealy/nam-shub by the ns-sync skill and replaced whole on
+# each sync, so they stay byte-identical to their source.
+.claude/skills/ns-*/
