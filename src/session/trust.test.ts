@@ -223,7 +223,7 @@ test("the prompt shows ordinary code exactly as written, tabs and non-ASCII lett
 	const shown = await shownAtTerminal(t, () => loadTrustedConfig(dir, sandbox));
 	assert.match(
 		shown,
-		/\n\n {2}── playpen\.config\.js \(new\)\n {2}│ export default \{\n {2}│ \tmasked: \["café", "漢字"\],\n {2}│ \};\n\n {2}declined/,
+		/\n\n {2}── playpen\.config\.js \(new\)\n {2}│ \+export default \{\n {2}│ \+\tmasked: \["café", "漢字"\],\n {2}│ \+\};\n\n {2}declined/,
 	);
 });
 
@@ -234,7 +234,7 @@ test("the prompt shows an escape sequence in a config as text, and warns that it
 	const shown = await shownAtTerminal(t, () => loadTrustedConfig(dir, sandbox));
 	assert.match(
 		shown,
-		/\n {2}│ run\(\);\\u\{1b\}\[2Kshown\(\);\n\n {2}warning: invisible or control characters are shown above as escapes/,
+		/\n {2}│ \+run\(\);\\u\{1b\}\[2Kshown\(\);\n\n {2}warning: invisible or control characters are shown above as escapes/,
 	);
 });
 
@@ -246,7 +246,7 @@ test("a newline in a file name is shown as an escape, so the name cannot pass fo
 	const shown = await shownAtTerminal(t, () => loadTrustedConfig(dir, sandbox));
 	assert.match(
 		shown,
-		/\n {2}── notes\.js \(new\)\\u\{a\} {2}│ harmless\(\); \(new\)\n {2}│ payload\(\);\n/,
+		/\n {2}── notes\.js \(new\)\\u\{a\} {2}│ harmless\(\); \(new\)\n {2}│ \+payload\(\);\n/,
 	);
 });
 
@@ -257,7 +257,7 @@ test("a carriage return ends the line it is on, as it does for JavaScript, so th
 	const shown = await shownAtTerminal(t, () => loadTrustedConfig(dir, sandbox));
 	assert.match(
 		shown,
-		/\n {2}│ \/\/ harmless note\\u\{d\}\n {2}│ payload\(\);\n/,
+		/\n {2}│ \+\/\/ harmless note\\u\{d\}\n {2}│ \+payload\(\);\n/,
 	);
 });
 
@@ -268,7 +268,7 @@ test("a line separator, U+2028, ends the line it is on", async (t) => {
 	const shown = await shownAtTerminal(t, () => loadTrustedConfig(dir, sandbox));
 	assert.match(
 		shown,
-		/\n {2}│ \/\/ harmless note\\u\{2028\}\n {2}│ payload\(\);\n/,
+		/\n {2}│ \+\/\/ harmless note\\u\{2028\}\n {2}│ \+payload\(\);\n/,
 	);
 });
 
@@ -279,7 +279,7 @@ test("a paragraph separator, U+2029, ends the line it is on", async (t) => {
 	const shown = await shownAtTerminal(t, () => loadTrustedConfig(dir, sandbox));
 	assert.match(
 		shown,
-		/\n {2}│ \/\/ harmless note\\u\{2029\}\n {2}│ payload\(\);\n/,
+		/\n {2}│ \+\/\/ harmless note\\u\{2029\}\n {2}│ \+payload\(\);\n/,
 	);
 });
 
@@ -288,7 +288,95 @@ test("a Windows line ending is a plain line end, with nothing to escape", async 
 		"playpen.config.js": "first();\r\nsecond();\r\n",
 	});
 	const shown = await shownAtTerminal(t, () => loadTrustedConfig(dir, sandbox));
-	assert.match(shown, /\n {2}│ first\(\);\n {2}│ second\(\);\n\n {2}declined/);
+	assert.match(
+		shown,
+		/\n {2}│ \+first\(\);\n {2}│ \+second\(\);\n\n {2}declined/,
+	);
+});
+
+/** Approve the project as it is, and load it once so the approved copy is kept. */
+async function approveAndLoad(dir: string, sandbox: string): Promise<void> {
+	await approve(dir, sandbox);
+	await loadTrustedConfig(dir, sandbox);
+}
+
+const ALLOWING = [
+	"export default {",
+	'\tmasked: ["node_modules"],',
+	'\tnetwork: { allow: ["registry.npmjs.org"] },',
+	"};",
+	"",
+].join("\n");
+
+test("a changed file is shown whole, with the lines that changed marked - as approved and + as they are now", async (t) => {
+	const { dir, sandbox } = await scenario(t, { "playpen.config.js": ALLOWING });
+	await approveAndLoad(dir, sandbox);
+	await writeFile(
+		join(dir, "playpen.config.js"),
+		ALLOWING.replace("registry.npmjs.org", "evil.example"),
+		"utf8",
+	);
+	const shown = await shownAtTerminal(t, () => loadTrustedConfig(dir, sandbox));
+	assert.match(
+		shown,
+		/\n {2}── playpen\.config\.js \(changed\)\n {2}│ {2}export default \{\n {2}│ {2}\tmasked: \["node_modules"\],\n {2}│ -\tnetwork: \{ allow: \["registry\.npmjs\.org"\] \},\n {2}│ \+\tnetwork: \{ allow: \["evil\.example"\] \},\n {2}│ {2}\};\n\n/,
+	);
+});
+
+test("a file that has not changed is named and not shown", async (t) => {
+	const { dir, sandbox } = await scenario(t, {
+		"playpen.config.js": 'import "./masks.js";',
+		"masks.js": "masks();",
+	});
+	await approveAndLoad(dir, sandbox);
+	await writeFile(join(dir, "masks.js"), "changed();", "utf8");
+	const shown = await shownAtTerminal(t, () => loadTrustedConfig(dir, sandbox));
+	assert.match(
+		shown,
+		/\n {2}│ \+changed\(\);\n {2}── playpen\.config\.js \(unchanged\)\n\n/,
+	);
+});
+
+test("a changed file whose approved copy no longer matches its approved hash has every line marked +", async (t) => {
+	const { dir, sandbox } = await scenario(t, { "playpen.config.js": CONFIG });
+	await approveAndLoad(dir, sandbox);
+	await writeFile(
+		join(trustDir(), sandbox, "playpen.config.js"),
+		"changed();",
+		"utf8",
+	);
+	await writeFile(
+		join(dir, "playpen.config.js"),
+		"changed();\nmore();",
+		"utf8",
+	);
+	const shown = await shownAtTerminal(t, () => loadTrustedConfig(dir, sandbox));
+	assert.match(
+		shown,
+		/\n {2}── playpen\.config\.js \(changed\)\n {2}│ \+changed\(\);\n {2}│ \+more\(\);\n\n/,
+	);
+});
+
+test("a changed file with no approved copy kept has every line marked +", async (t) => {
+	const { dir, sandbox } = await scenario(t, { "playpen.config.js": CONFIG });
+	await approve(dir, sandbox);
+	await writeFile(join(dir, "playpen.config.js"), "changed();", "utf8");
+	const shown = await shownAtTerminal(t, () => loadTrustedConfig(dir, sandbox));
+	assert.match(
+		shown,
+		/\n {2}── playpen\.config\.js \(changed\)\n {2}│ \+changed\(\);\n\n/,
+	);
+});
+
+test("a change to only the newline at the end of a file is named, since no line shows it", async (t) => {
+	const { dir, sandbox } = await scenario(t, { "playpen.config.js": CONFIG });
+	await approveAndLoad(dir, sandbox);
+	await writeFile(join(dir, "playpen.config.js"), `${CONFIG}\n`, "utf8");
+	const shown = await shownAtTerminal(t, () => loadTrustedConfig(dir, sandbox));
+	assert.match(
+		shown,
+		/\n {2}── playpen\.config\.js \(changed only in line endings\)\n {2}│ {2}export default /,
+	);
 });
 
 test("a control character is escaped", () => {

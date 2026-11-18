@@ -3,8 +3,14 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 import { trustDir } from "../config.ts";
 import { confirm } from "../prompt.ts";
-import { type ConfigGraph, readConfigGraph } from "./configgraph.ts";
+import {
+	type ConfigGraph,
+	type GraphFile,
+	readConfigGraph,
+	sha256,
+} from "./configgraph.ts";
 import { assertSandboxName } from "./identity.ts";
+import { markChanges } from "./linediff.ts";
 import {
 	type ConfigResult,
 	findConfigFile,
@@ -123,31 +129,64 @@ const ESCAPES_WARNING =
 	"  warning: invisible or control characters are shown above as escapes like \\u{1b}";
 
 /** Names and contents come from a directory the guest can write. */
-function preview(
+async function preview(
+	sandbox: string,
 	graph: ConfigGraph,
 	approved: Record<string, string> | undefined,
-): string {
-	const lines = graph.files.flatMap((file) => {
-		const before = approved?.[file.rel];
-		const status =
-			before === undefined
-				? "new"
-				: before === file.hash
-					? "unchanged"
-					: "changed";
-		return [
-			`  ── ${file.rel} (${status})`,
-			...(status === "unchanged" ? [] : linesOf(file.contents)).map(
-				(line) => `  │ ${line}`,
-			),
-		];
-	});
+): Promise<string> {
+	const sections = await Promise.all(
+		graph.files.map(async (file) => {
+			const approvedHash = approved?.[file.rel];
+			const marked =
+				approvedHash === file.hash
+					? []
+					: await markedLines(sandbox, file, approvedHash);
+			const status =
+				approvedHash === undefined
+					? "new"
+					: marked.length === 0
+						? "unchanged"
+						: marked.some((line) => !line.startsWith(" "))
+							? "changed"
+							: "changed only in line endings";
+			return [
+				`  ── ${file.rel} (${status})`,
+				...marked.map((line) => `  │ ${line}`),
+			];
+		}),
+	);
+	const lines = sections.flat();
 	const shown = lines.map(escapeUnshowable);
 	return (
 		shown.some((line, index) => line !== lines[index])
 			? [...shown, "", ESCAPES_WARNING]
 			: shown
 	).join("\n");
+}
+
+/**
+ * Every line of the file as it was hashed, never as it is on disk now, marked
+ * against the approved copy. Unchanged lines are shown too: an edit can change
+ * what a line far from it does, such as closing a template literal that held
+ * it. The approved copy is in `trust/`, which no guest mounts. Without one
+ * that matches its approved hash every line is `+`, so a line that starts with
+ * `-` cannot pass for a removed one.
+ */
+async function markedLines(
+	sandbox: string,
+	file: GraphFile,
+	approvedHash: string | undefined,
+): Promise<string[]> {
+	const approved = await readFile(
+		join(snapshotDir(sandbox), file.rel),
+		"utf8",
+	).catch(() => undefined);
+	return markChanges(
+		approved !== undefined && sha256(approved) === approvedHash
+			? linesOf(approved)
+			: [],
+		linesOf(file.contents),
+	);
 }
 
 /**
@@ -252,7 +291,13 @@ export async function loadTrustedConfig(
 			`  ${count === 1 ? "1 file" : `${count} files`} will be executed:`,
 		);
 		console.error("");
-		console.error(preview(graph, pinned === null ? undefined : record?.files));
+		console.error(
+			await preview(
+				sandbox,
+				graph,
+				pinned === null ? undefined : record?.files,
+			),
+		);
 		console.error("");
 
 		const ok = await confirm(`  execute ${name} on the host? [y/N] `);
