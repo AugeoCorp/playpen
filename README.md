@@ -3,7 +3,8 @@
 Per-project [Lima](https://lima-vm.io) VMs for running coding agents without
 handing them your host filesystem. The project directory is mounted read-write
 at the same path inside the guest, and the sandbox's own Claude history
-directory at `~/.claude/projects`; nothing else of yours is.
+directory at `~/.claude/projects`. Nothing else of yours is, unless the project
+config asks for a directory read-only and you approve it.
 
 ```
 cd ~/projects/api
@@ -84,6 +85,7 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
 | Key       | Type                                                                                                                                                   | Effect                                                                                                                              |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
 | `masked`  | `string[]`                                                                                                                                             | Project-relative dirs given guest-local storage, not 9p                                                                             |
+| `mounts`  | `string[]`                                                                                                                                             | Host dirs mounted read-only at the same path in the guest, each approved separately                                                 |
 | `setup`   | `string[]`                                                                                                                                             | Shell commands run in the guest, after masks, in order                                                                              |
 | `network` | `{ allow?: string[]; mode?: "enforce" \| "log"; ports?: (number \| { host: number; guest: number })[]; secrets?: { env: string; hosts: string[] }[] }` | Hosts this project may reach, on top of the ones playpen ships, host ports it sees at its own `localhost`, and credentials it names |
 
@@ -92,6 +94,15 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
   builds are per-platform, and the environments drift.
 - Masked is not hidden. The host copy stays mounted underneath and the guest has
   root. Keep secrets outside the project.
+- `mounts` entries are absolute, `~/`-relative, or relative to the project, so a
+  sibling checkout is `../shared-lib`. The guest can write the config, so an
+  entry is only a request: `start` asks before mounting each new path, and
+  without a terminal it is left out. Home, every `~/.*` directory (where
+  credentials live, package caches like `~/.m2` included), the system
+  directories, playpen's and Lima's own state, and anything overlapping the
+  project are refused, symlinks followed first. Changing the list takes a
+  rebuild, which `start` offers. Read-only is enforced by QEMU on the host, not
+  by the guest.
 - `setup` runs on create and after a rebuild, never on start. Nothing is
   inferred from a lockfile. `playpen setup` re-runs it.
 - `network.allow` is a list of names, not addresses: an entry is a hostname,

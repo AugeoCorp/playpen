@@ -6,7 +6,8 @@
 		"useIgnoreFile": false
 	},
 	"files": {
-		"ignoreUnknown": false
+		"ignoreUnknown": false,
+		"includes": ["**", "!.claude/skills/ns-*"]
 	},
 	"formatter": {
 		"enabled": true,
