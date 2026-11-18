@@ -59,11 +59,12 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
   write it; virtiofs has no such option, and switching `mountType` would make
   the flag the guest's to lift. Mounts are written into a clone once, so a
   changed list is compared against the session record and offered as a rebuild.
-  Verified 2026-10-21 on Lima 2.2.0, Ubuntu 24.04 guest, in a container without
-  KVM: the mount list playpen builds reached QEMU with `readonly=on`, the guest
-  read the share, and neither the guest user nor root could write it, even after
-  `mount -o remount,rw`. The approval prompt, the rebuild offer and
-  `playpen start` itself were not run against that VM; they are unit-tested.
+  Verified 2026-10-21 with `playpen start` on Lima 2.2.0, in a container without
+  KVM: the approval prompts, a `~/.ssh` symlink refused, the clone's `lima.yaml`
+  and QEMU's `readonly=on`, the session record, and the rebuild offer when the
+  list changed. In the guest, root could neither write, delete, rename, link,
+  `chmod`, `chown` nor set times or xattrs in the share, even after
+  `mount -o remount,rw`, and the host copy was unchanged.
 - `setup` in `playpen.config.ts` runs project-declared commands in the guest on
   create and rebuild, with `playpen setup` to re-run. Config parsing and the
   guest ordering are unit-tested; the actual run needs a host with `limactl`.
