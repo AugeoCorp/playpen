@@ -1,6 +1,6 @@
 # Plan
 
-Updated 2026-09-29. Design and reasoning are in `spec.md`; constraints that must
+Updated 2026-10-21. Design and reasoning are in `spec.md`; constraints that must
 not be inverted are in `AGENTS.md`. The network fence's mechanism is in
 `docs/NETWORK.md`. Update this when status changes.
 
@@ -51,6 +51,19 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
   skipped, no compile-out); a project pinning `.node-version` installs and
   resolves it on the first login shell (~7s cold, ~30ms after); one pinning
   nothing falls through to the floor with no output.
+- `mounts` in `playpen.config.ts` mounts host directories read-only, each
+  approved on its own and recorded in `<trust>/<sandbox>.mounts.json`, since the
+  paths are only known once the approved config has run. Lima's QEMU driver adds
+  `readonly=on` to the 9p share for `writable: false`
+  (`pkg/driver/qemu/qemu.go`, unchanged in Lima 2.2.0), so guest root cannot
+  write it; virtiofs has no such option, and switching `mountType` would make
+  the flag the guest's to lift. Mounts are written into a clone once, so a
+  changed list is compared against the session record and offered as a rebuild.
+  Verified 2026-10-21 on Lima 2.2.0, Ubuntu 24.04 guest, in a container without
+  KVM: the mount list playpen builds reached QEMU with `readonly=on`, the guest
+  read the share, and neither the guest user nor root could write it, even after
+  `mount -o remount,rw`. The approval prompt, the rebuild offer and
+  `playpen start` itself were not run against that VM; they are unit-tested.
 - `setup` in `playpen.config.ts` runs project-declared commands in the guest on
   create and rebuild, with `playpen setup` to re-run. Config parsing and the
   guest ordering are unit-tested; the actual run needs a host with `limactl`.
