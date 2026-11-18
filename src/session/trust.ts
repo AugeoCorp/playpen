@@ -144,11 +144,11 @@ async function preview(
 			const status =
 				approvedHash === undefined
 					? "new"
-					: marked.length === 0
+					: approvedHash === file.hash
 						? "unchanged"
-						: marked.some((line) => !line.startsWith(" "))
-							? "changed"
-							: "changed only in line endings";
+						: marked.every((line) => line.startsWith("  "))
+							? "changed only in line endings"
+							: "changed";
 			return [
 				`  ── ${file.rel} (${status})`,
 				...marked.map((line) => `  │ ${line}`),
@@ -165,10 +165,9 @@ async function preview(
 }
 
 /**
- * Every line of the file as it was hashed, never as it is on disk now, marked
- * against the approved copy. Unchanged lines are shown too: an edit can change
- * what a line far from it does, such as closing a template literal that held
- * it. The approved copy is in `trust/`, which no guest mounts. Without one
+ * Marked against the approved copy. Unchanged lines are shown too: an edit can
+ * change what a line far from it does, such as closing a template literal that
+ * held it. The approved copy is in `trust/`, which no guest mounts. Without one
  * that matches its approved hash every line is `+`, so a line that starts with
  * `-` cannot pass for a removed one.
  */

@@ -4,7 +4,8 @@ const MAX_TABLE_CELLS = 1_000_000;
 /**
  * Every line of `after`, marked ` ` where `before` has it too and `+` where it
  * does not, with the lines only `before` has marked `-` where they stood. Lines
- * too many to compare are all marked `+`.
+ * too many to compare are all marked `+`. A space follows each mark, so an
+ * unchanged line that starts with `-` cannot pass for a removed one.
  */
 export function markChanges(
 	before: readonly string[],
@@ -12,7 +13,7 @@ export function markChanges(
 ): string[] {
 	const width = after.length + 1;
 	if ((before.length + 1) * width > MAX_TABLE_CELLS)
-		return after.map((line) => `+${line}`);
+		return after.map((line) => `+ ${line}`);
 
 	// How many lines the rest of `before` and the rest of `after` share, in order.
 	const shared = new Uint32Array((before.length + 1) * width);
@@ -46,7 +47,7 @@ export function markChanges(
 		const removed = before[beforeIndex];
 		const added = after[afterIndex];
 		if (removed !== undefined && removed === added) {
-			marked.push(` ${added}`);
+			marked.push(`  ${added}`);
 			beforeIndex++;
 			afterIndex++;
 		} else if (
@@ -55,10 +56,10 @@ export function markChanges(
 				sharedFrom(beforeIndex + 1, afterIndex) >=
 					sharedFrom(beforeIndex, afterIndex + 1))
 		) {
-			marked.push(`-${removed}`);
+			marked.push(`- ${removed}`);
 			beforeIndex++;
 		} else if (added !== undefined) {
-			marked.push(`+${added}`);
+			marked.push(`+ ${added}`);
 			afterIndex++;
 		}
 	});
