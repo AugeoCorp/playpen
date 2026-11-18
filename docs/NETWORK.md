@@ -158,7 +158,8 @@ nor a directory, which gets a line in helper.log. A path whose `realpath` is not
 itself, a symlink or under one, fails the start: a bind there would land
 wherever the link leads. The binds are made by the bwrap that starts qemu, so
 they are fixed for the VM's life: a reattaching helper starts no bwrap, and an
-entry added later is bound on the next start of the VM.
+entry added later is bound on the next start of the VM. A path deleted between
+the helper's check and bwrap's start is created by bwrap on the host, empty.
 
 A bind is made over the inode at the path. A host-side replace unlinks that
 inode, the kernel drops a mount whose mount point is unlinked, in every

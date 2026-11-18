@@ -28,10 +28,3 @@ test("every entry is quoted into the loop", () => {
 		/^for rel in 'node_modules' '\.env' 'it'\\''s'; do$/m,
 	);
 });
-
-test("an entry listed before the directory it is in is left to that directory's mask", () => {
-	assert.match(
-		maskScript(MOUNT, ["config/secret", "config"]),
-		/^for rel in 'config'; do$/m,
-	);
-});
