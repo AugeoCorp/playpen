@@ -106,6 +106,8 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
 - A replace during boot fails the start, but it is noticed only just before the
   start reports ready, after the egress probe, which can take a minute. The
   guest can read the new contents until then.
+- A replace while no helper runs, as after a crash, is caught when the next
+  `playpen start` reattaches, and stops the sandbox then.
 - Which paths are kept out is fixed when the VM starts, so an entry added to a
   running sandbox needs `playpen stop && playpen start`.
 - An entry inside a directory the guest can write, such as `config/secret.json`,
