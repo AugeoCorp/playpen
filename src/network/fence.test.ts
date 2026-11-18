@@ -26,6 +26,7 @@ const helper = {
 	ready: true,
 	egress: true,
 	policy: "1:2",
+	secrets: ["GH_TOKEN"],
 };
 
 test("a sandbox's sockets and logs live together under the data directory", () => {
@@ -313,12 +314,16 @@ test("a running helper is found by the record it wrote", async (t) => {
 	assert.deepEqual(await liveHelper("api-abc123"), record);
 });
 
-test("a helper that wrote its record before the policy field existed is still found, with no policy applied yet", async (t) => {
+test("a helper that wrote its record before the policy and secrets fields existed is still found, with no policy applied and no secrets held", async (t) => {
 	await dataDir(t);
 	await mkdir(fencePaths("api-abc123").dir, { recursive: true });
-	const { policy: _, ...older } = { ...helper, ...(await self()) };
+	const { policy: _, secrets: __, ...older } = { ...helper, ...(await self()) };
 	await writeFile(fencePaths("api-abc123").helper, JSON.stringify(older));
-	assert.deepEqual(await liveHelper("api-abc123"), { ...older, policy: "" });
+	assert.deepEqual(await liveHelper("api-abc123"), {
+		...older,
+		policy: "",
+		secrets: [],
+	});
 });
 
 test("a helper.json that is not a helper record reads as no helper", async (t) => {
