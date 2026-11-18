@@ -206,6 +206,8 @@ export function placeholderFor(env: string): string {
 	return `playpen-secret-${env.toLowerCase().replaceAll("_", "-")}`;
 }
 
+export const PLACEHOLDER = /playpen-secret-[a-z0-9-]+/g;
+
 function matchesHost(entry: Extract<Entry, { kind: "host" }>, host: string) {
 	return host === entry.host || host.endsWith(`.${entry.host}`);
 }
