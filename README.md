@@ -133,16 +133,18 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
 - `network.secrets` names credentials from your environment that the sandbox may
   use on given hosts: `{ env: "GH_TOKEN", hosts: ["github.com"] }`. Names only,
   never a value — the file sits in the project directory, which the sandbox
-  mounts. `env` is an upper-case variable name; each host is a plain hostname,
-  with no port and not an address. Injection will match the host exactly; the
-  allow entry it implies covers subdomains, like any entry in `allow`. A mistake
-  here stops the config loading rather than being skipped. `playpen start` needs
-  each variable set, and says which are not; a sandbox that is already running
-  keeps the values it started with, so a later command does not need them.
-  Nothing is injected yet: the values are held on the host and not used. Every
-  sandbox trusts a certificate authority made for this install, whose key stays
-  on the host (`docs/NETWORK.md`, "Secrets"); the first `start` after upgrading
-  rebakes the base and offers each sandbox a rebuild.
+  mounts. `env` is an upper-case variable name, but not one playpen itself reads
+  (`PATH`, `HOME`, `XDG_DATA_HOME`, `LIMA_HOME` or any `PLAYPEN_` name); each
+  host is a plain hostname, with no port and not an address. Injection will
+  match the host exactly; the allow entry it implies covers subdomains, like any
+  entry in `allow`. A mistake here stops the config loading rather than being
+  skipped. `playpen start` needs each variable set, and says which are not; a
+  sandbox that is already running keeps the values it started with, so a later
+  command does not need them. Nothing is injected yet: the values are held on
+  the host and not used. Every sandbox trusts a certificate authority made for
+  this install, whose key stays on the host (`docs/NETWORK.md`, "Secrets"); the
+  first `start` after upgrading rebakes the base and offers each sandbox a
+  rebuild.
 - `mode: "log"` records what the sandbox reaches and blocks nothing on the
   internet side; your own machine's localhost stays closed in every mode. Use it
   to find the hosts a project needs, then list them; the default is `enforce`.
