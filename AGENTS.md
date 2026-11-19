@@ -1,4 +1,4 @@
-<!-- BEGIN:namshub@a51e2bf -->
+<!-- BEGIN:namshub@eeb6772 -->
 <!-- prettier-ignore-start -->
 
 # namshub
