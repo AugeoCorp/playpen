@@ -290,6 +290,38 @@ test("a directory the project names but nobody approved is not mounted, and the 
 	assert.match(lines, /not mounting .*shared: it is not yet approved/);
 });
 
+test("a newline in a refused mount is shown as an escape", async (t) => {
+	const { run } = await sandboxFor(
+		t,
+		'export default { mounts: ["../gone\\n  approved"] };',
+	);
+	const said = t.mock.method(console, "error", () => {});
+	await run();
+	const lines = said.mock.calls
+		.map((call) => String(call.arguments[0]))
+		.join("\n");
+	assert.match(
+		lines,
+		/^warning: not mounting \.\.\/gone\\u\{a\} {2}approved: /m,
+	);
+});
+
+test("a newline in an approved mount is shown as an escape when it is mounted", async (t) => {
+	const { sb, run } = await sandboxFor(
+		t,
+		'export default { mounts: ["../shared\\n  approved"] };',
+	);
+	const shared = join(dirname(sb.cwd), "shared\n  approved");
+	await mkdir(shared, { recursive: true });
+	await approveMount(sb, shared);
+	const said = t.mock.method(console, "error", () => {});
+	await run();
+	const lines = said.mock.calls
+		.map((call) => String(call.arguments[0]))
+		.join("\n");
+	assert.match(lines, /^mounting read-only: .*shared\\u\{a\} {2}approved$/m);
+});
+
 test("a sandbox is offered a rebuild once a read-only mount is approved after it was made", async (t) => {
 	const { sb, run } = await sandboxFor(t, SHARED);
 	const shared = await sharedDir(sb);
@@ -767,10 +799,28 @@ test("an approved config that is gone, approved, forgets the approval and starts
 	assert.deepEqual(calls, ["start behind the gatekeeper", "ready ~/.claude"]);
 });
 
+test("a load error's control characters reach the refusal escaped", async (t) => {
+	const { run } = await sandboxFor(t, 'throw new Error("\\u001b[2J");');
+	await assert.rejects(run(), /not loaded \(\\u\{1b\}\[2J\); start refused/);
+});
+
 test("a project that never had a config starts", async (t) => {
 	const { run } = await sandboxFor(t, undefined);
 	await run();
 	assert.deepEqual(calls, ["start behind the gatekeeper", "ready ~/.claude"]);
+});
+
+test("a config that cannot be loaded is refused with the invisible characters in its import paths escaped", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await writeFile(
+		join(sb.cwd, "playpen.config.js"),
+		'import "../\u202eevil.js"; export default {};',
+		"utf8",
+	);
+	await assert.rejects(
+		run(),
+		/not loaded \(.*"\.\.\/\\u\{202e\}evil\.js", which is outside.*start refused/,
+	);
 });
 
 test("a guest port nothing could listen on is named in a warning, and the sandbox still starts", async (t) => {

@@ -24,7 +24,7 @@ import {
 	type LoadedNetwork,
 } from "./projectconfig.ts";
 import * as store from "./store.ts";
-import { approveMounts, loadTrustedConfig } from "./trust.ts";
+import { approveMounts, escapeUnshowable, loadTrustedConfig } from "./trust.ts";
 
 export interface Sandbox {
 	sandbox: string;
@@ -70,7 +70,9 @@ async function loadConfig(sb: Sandbox): Promise<{
 	} = await loadTrustedConfig(sb.cwd, sb.sandbox);
 	// Starting without it would share every masked path over 9p.
 	if (error !== undefined)
-		throw new Error(`${CONFIG_FILE} not loaded (${error}); start refused`);
+		throw new Error(
+			`${CONFIG_FILE} not loaded (${escapeUnshowable(error)}); start refused`,
+		);
 	if (legacyIgnore) {
 		console.error(
 			`warning: ${LEGACY_IGNORE_FILE} is no longer read. Move its entries to`,
@@ -116,7 +118,9 @@ async function loadConfig(sb: Sandbox): Promise<{
 	}
 	const mounts = await grantMounts(sb, requested);
 	if (mounts.length > 0) {
-		console.error(`mounting read-only: ${mounts.join(", ")}`);
+		console.error(
+			`mounting read-only: ${mounts.map(escapeUnshowable).join(", ")}`,
+		);
 	}
 	return { masked, mounts, setup, network };
 }
@@ -128,7 +132,8 @@ async function grantMounts(
 	const resolved: string[] = [];
 	for (const entry of requested) {
 		const result = await checkReadOnlyMount(entry, sb.cwd);
-		if (!result.ok) console.error(`warning: ${result.reason}`);
+		if (!result.ok)
+			console.error(`warning: ${escapeUnshowable(result.reason)}`);
 		else if (!resolved.includes(result.path)) resolved.push(result.path);
 	}
 	return approveMounts(sb.sandbox, resolved);
