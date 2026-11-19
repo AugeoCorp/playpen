@@ -26,9 +26,7 @@ export type TrustState =
 	/** Never seen before. First use of this config for this sandbox. */
 	| "unpinned"
 	/** Seen before, and something in the graph has changed since you approved it. */
-	| "changed"
-	/** Approved before, and the file is gone. */
-	| "removed";
+	| "changed";
 
 /** Pure, because this is the line that decides whether project code runs on the host. */
 export function decideTrust(
@@ -130,14 +128,17 @@ export function escapeUnshowable(text: string): string {
 const ESCAPES_WARNING =
 	"  warning: invisible or control characters are shown above as escapes like \\u{1b}";
 
+/** A file with no contents is gone, and shows as a diff against nothing. */
+type ShownFile = Pick<GraphFile, "rel"> & Partial<GraphFile>;
+
 /** Names and contents come from a directory the guest can write. */
 async function preview(
 	sandbox: string,
-	graph: ConfigGraph,
+	files: readonly ShownFile[],
 	approved: Record<string, string> | undefined,
 ): Promise<string> {
 	const sections = await Promise.all(
-		graph.files.map(async (file) => {
+		files.map(async (file) => {
 			const approvedHash = approved?.[file.rel];
 			const marked =
 				approvedHash === file.hash
@@ -148,7 +149,7 @@ async function preview(
 					? "new"
 					: approvedHash === file.hash
 						? "unchanged"
-						: marked.every((line) => line.startsWith("  "))
+						: marked.length > 0 && marked.every((line) => line.startsWith("  "))
 							? "changed only in line endings"
 							: "changed";
 			return [
@@ -175,7 +176,7 @@ async function preview(
  */
 async function markedLines(
 	sandbox: string,
-	file: GraphFile,
+	file: ShownFile,
 	approvedHash: string | undefined,
 ): Promise<string[]> {
 	const approved = await readFile(
@@ -186,7 +187,7 @@ async function markedLines(
 		approved !== undefined && sha256(approved) === approvedHash
 			? linesOf(approved)
 			: [],
-		linesOf(file.contents),
+		file.contents === undefined ? [] : linesOf(file.contents),
 	);
 }
 
@@ -200,17 +201,6 @@ function linesOf(contents: string): string[] {
 	return contents
 		.split(/(?<=\n|\r(?!\n)|\u2028|\u2029)/)
 		.map((line) => line.replace(/\r?\n$/, ""));
-}
-
-/** A pin written before its snapshot has no lines to show, only the header. */
-async function removedPreview(sandbox: string, file: string): Promise<string> {
-	const contents = await readFile(join(snapshotDir(sandbox), file), "utf8")
-		.then((text) => text.replace(/\n$/, "").split("\n"))
-		.catch(() => []);
-	return [
-		`  ── ${file} (removed)`,
-		...contents.map((line) => `  │ ${line}`),
-	].join("\n");
 }
 
 export interface TrustedConfig extends ConfigResult {
@@ -249,7 +239,7 @@ export async function loadTrustedConfig(
 		if (record === null) return skipped("absent");
 		if (!process.stdin.isTTY)
 			return skipped(
-				"removed",
+				"changed",
 				`the approved ${record.file} is gone, and approval needs a terminal; run playpen start in one first`,
 			);
 		console.error("");
@@ -258,16 +248,16 @@ export async function loadTrustedConfig(
 			`  a process inside the sandbox can delete it; without it, none of its settings apply.`,
 		);
 		console.error("");
-		console.error(await removedPreview(sandbox, record.file));
+		console.error(await preview(sandbox, [{ rel: record.file }], record.files));
 		console.error("");
 		if (!(await confirm(`  start without ${record.file}? [y/N] `)))
 			return skipped(
-				"removed",
+				"changed",
 				`the approved ${record.file} is gone and starting without it was declined; run playpen start again and approve it`,
 			);
 		await rm(recordPath(sandbox), { force: true });
 		await rm(snapshotDir(sandbox), { recursive: true, force: true });
-		return skipped("removed");
+		return skipped("changed");
 	}
 
 	let graph: ConfigGraph;
@@ -323,7 +313,7 @@ export async function loadTrustedConfig(
 		console.error(
 			await preview(
 				sandbox,
-				graph,
+				graph.files,
 				pinned === null ? undefined : record?.files,
 			),
 		);

@@ -179,6 +179,19 @@ test("an approval recorded without the date it was approved is asked for again, 
 	assert.match(r.error ?? "", /approval needs a terminal/);
 });
 
+test("an approved config that is gone is not started without a terminal", async (t) => {
+	const { dir, sandbox } = await scenario(t, { "playpen.config.js": CONFIG });
+	await approve(dir, sandbox);
+	await rm(join(dir, "playpen.config.js"));
+
+	const r = await loadTrustedConfig(dir, sandbox);
+	assert.equal(r.state, "changed");
+	assert.match(
+		r.error ?? "",
+		/the approved playpen\.config\.js is gone, and approval needs a terminal/,
+	);
+});
+
 test("a pin is scoped to its sandbox", async (t) => {
 	const { dir, sandbox } = await scenario(t, { "playpen.config.js": CONFIG });
 	await approve(dir, sandbox);

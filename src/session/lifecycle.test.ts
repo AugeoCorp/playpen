@@ -770,33 +770,42 @@ test("an approved config that is gone, declined, refuses the start, before anyth
 	assert.deepEqual(calls, []);
 });
 
-test("an approved config that is gone is shown removed, with its approved lines, when asked about", async (t) => {
+test("an approved config that is gone shows as a diff against nothing, every approved line removed", async (t) => {
 	const { sb, run } = await sandboxFor(t, BOTH);
-	await run();
+	const writeTheSnapshot = run;
+	await writeTheSnapshot();
 	await rm(join(sb.cwd, "playpen.config.js"));
 	withTerminal(t, true);
 	const said = t.mock.method(console, "error", () => {});
-	await assert.rejects(run());
+	await assert.rejects(run(), /starting without it was declined/);
 	const lines = said.mock.calls.map((c) => String(c.arguments[0]));
-	assert.deepEqual(
-		lines
-			.join("\n")
-			.split("\n")
-			.filter((line) => line.startsWith("  ── ") || line.startsWith("  │ ")),
-		["  ── playpen.config.js (removed)", `  │ ${BOTH}`],
-	);
+	assert.ok(lines.includes(`  ── playpen.config.js (changed)\n  │ - ${BOTH}`));
 });
 
-test("an approved config that is gone, approved, forgets the approval and starts with no config", async (t) => {
+test("an approved config that is gone, with no snapshot of it, is asked about with no lines, and can be approved", async (t) => {
 	const { sb, run } = await sandboxFor(t, BOTH);
+	await rm(join(sb.cwd, "playpen.config.js"));
+	withTerminal(t, true);
+	answer = true;
+	const said = t.mock.method(console, "error", () => {});
+	await run();
+	const lines = said.mock.calls.map((c) => String(c.arguments[0]));
+	assert.ok(lines.includes("  ── playpen.config.js (changed)"));
+});
+
+test("approving the removal of an approved config forgets the approval and starts with no config", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	const writeTheSnapshot = run;
+	await writeTheSnapshot();
 	await rm(join(sb.cwd, "playpen.config.js"));
 	withTerminal(t, true);
 	answer = true;
 	t.mock.method(console, "error", () => {});
 	await run();
-	const { trustDir } = await import("../config.ts");
-	await assert.rejects(stat(join(trustDir(), `${sb.sandbox}.json`)));
-	assert.deepEqual(calls, ["start behind the gatekeeper", "ready ~/.claude"]);
+	asked.length = 0;
+	withTerminal(t, false);
+	await run();
+	assert.deepEqual(asked, []);
 });
 
 test("a load error's control characters reach the refusal escaped", async (t) => {
