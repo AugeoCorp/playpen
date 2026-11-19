@@ -137,6 +137,14 @@ mock.module("../lima/client.ts", {
 	},
 });
 
+function withTerminal(t: TestContext, terminal: boolean): void {
+	const tty = process.stdin.isTTY;
+	process.stdin.isTTY = terminal;
+	t.after(() => {
+		process.stdin.isTTY = tty;
+	});
+}
+
 function guestStep(script: string): string {
 	if (script.includes('"$HOME/.claude"')) return "ready ~/.claude";
 	if (script.includes("mount --bind")) return "apply masks";
@@ -145,13 +153,14 @@ function guestStep(script: string): string {
 
 async function sandboxFor(
 	t: TestContext,
-	config: string,
+	config: string | undefined,
 ): Promise<{ sb: Sandbox; run: () => Promise<unknown> }> {
 	const root = await mkdtemp(join(tmpdir(), "playpen-lifecycle-"));
 	t.after(() => rm(root, { recursive: true, force: true }));
 	const project = join(root, "project");
 	await mkdir(project, { recursive: true });
-	await writeFile(join(project, "playpen.config.js"), config, "utf8");
+	if (config !== undefined)
+		await writeFile(join(project, "playpen.config.js"), config, "utf8");
 
 	const before = {
 		xdg: process.env.XDG_DATA_HOME,
@@ -186,10 +195,11 @@ async function sandboxFor(
 
 	const sb = await identify(project);
 	// Approved up front; the trust prompt is not what these test.
-	await pinConfig(
-		sb.sandbox,
-		await readConfigGraph(project, "playpen.config.js"),
-	);
+	if (config !== undefined)
+		await pinConfig(
+			sb.sandbox,
+			await readConfigGraph(project, "playpen.config.js"),
+		);
 	return { sb, run: () => ensureRunning(sb) };
 }
 
@@ -660,22 +670,40 @@ test("a config that fails to load refuses the start, saying why, before anything
 	assert.deepEqual(calls, []);
 });
 
+test("an approved config that throws with no message refuses the start, before anything is built", async (t) => {
+	const { run } = await sandboxFor(t, 'throw new Error("");');
+	await assert.rejects(run(), /not loaded \(\); start refused/);
+	assert.equal(exists, false);
+	assert.deepEqual(calls, []);
+});
+
 test("a changed config with no terminal to approve it on refuses the start, before anything is built", async (t) => {
 	const { sb, run } = await sandboxFor(t, BOTH);
 	await writeFile(join(sb.cwd, "playpen.config.js"), `${BOTH}\n`, "utf8");
-	await assert.rejects(run(), /approval needs a terminal.*start refused/);
+	withTerminal(t, false);
+	await assert.rejects(
+		run(),
+		/it has changed since you approved it, and approval needs a terminal.*start refused/,
+	);
 	assert.equal(exists, false);
+	assert.deepEqual(calls, []);
+});
+
+test("a running sandbox whose config changed, with no terminal, is refused and left running", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await run();
+	calls.length = 0;
+	await writeFile(join(sb.cwd, "playpen.config.js"), `${BOTH}\n`, "utf8");
+	withTerminal(t, false);
+	await assert.rejects(run(), /approval needs a terminal.*start refused/);
+	assert.equal(status, "Running");
 	assert.deepEqual(calls, []);
 });
 
 test("a changed config whose approval is declined refuses the start, before anything is built", async (t) => {
 	const { sb, run } = await sandboxFor(t, BOTH);
 	await writeFile(join(sb.cwd, "playpen.config.js"), `${BOTH}\n`, "utf8");
-	const tty = process.stdin.isTTY;
-	process.stdin.isTTY = true;
-	t.after(() => {
-		process.stdin.isTTY = tty;
-	});
+	withTerminal(t, true);
 	t.mock.method(console, "error", () => {});
 	await assert.rejects(
 		run(),
@@ -685,9 +713,62 @@ test("a changed config whose approval is declined refuses the start, before anyt
 	assert.deepEqual(calls, []);
 });
 
-test("a project with no config starts", async (t) => {
+test("an approved config that is gone, with no terminal, refuses the start, before anything is built", async (t) => {
 	const { sb, run } = await sandboxFor(t, BOTH);
 	await rm(join(sb.cwd, "playpen.config.js"));
+	withTerminal(t, false);
+	await assert.rejects(
+		run(),
+		/the approved playpen\.config\.js is gone, and approval needs a terminal.*start refused/,
+	);
+	assert.equal(exists, false);
+	assert.deepEqual(calls, []);
+});
+
+test("an approved config that is gone, declined, refuses the start, before anything is built", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await rm(join(sb.cwd, "playpen.config.js"));
+	withTerminal(t, true);
+	t.mock.method(console, "error", () => {});
+	await assert.rejects(
+		run(),
+		/the approved playpen\.config\.js is gone and starting without it was declined.*start refused/,
+	);
+	assert.equal(exists, false);
+	assert.deepEqual(calls, []);
+});
+
+test("an approved config that is gone is shown removed, with its approved lines, when asked about", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await run();
+	await rm(join(sb.cwd, "playpen.config.js"));
+	withTerminal(t, true);
+	const said = t.mock.method(console, "error", () => {});
+	await assert.rejects(run());
+	const lines = said.mock.calls.map((c) => String(c.arguments[0]));
+	assert.deepEqual(
+		lines
+			.join("\n")
+			.split("\n")
+			.filter((line) => line.startsWith("  ── ") || line.startsWith("  │ ")),
+		["  ── playpen.config.js (removed)", `  │ ${BOTH}`],
+	);
+});
+
+test("an approved config that is gone, approved, forgets the approval and starts with no config", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await rm(join(sb.cwd, "playpen.config.js"));
+	withTerminal(t, true);
+	answer = true;
+	t.mock.method(console, "error", () => {});
+	await run();
+	const { trustDir } = await import("../config.ts");
+	await assert.rejects(stat(join(trustDir(), `${sb.sandbox}.json`)));
+	assert.deepEqual(calls, ["start behind the gatekeeper", "ready ~/.claude"]);
+});
+
+test("a project that never had a config starts", async (t) => {
+	const { run } = await sandboxFor(t, undefined);
 	await run();
 	assert.deepEqual(calls, ["start behind the gatekeeper", "ready ~/.claude"]);
 });

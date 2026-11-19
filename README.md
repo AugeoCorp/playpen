@@ -171,7 +171,8 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
   anything it imports changes. Approvals live outside the project, so a sandbox
   cannot approve its own edits.
 - A config that is not approved, or fails to load, refuses the start: no
-  terminal to ask on, a "no" at the prompt and a broken file all stop it.
+  terminal to ask on, a "no" at the prompt and a broken file all stop it. An
+  approved config that is deleted is asked about like any other change.
 
 Reasoning in `docs/spec.md`.
 

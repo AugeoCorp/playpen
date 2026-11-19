@@ -30,8 +30,8 @@ test("a differing pin is 'changed'", () => {
 	assert.equal(decideTrust("abc", "def"), "changed");
 });
 
-// node --test never runs against a TTY, so every case below exercises the
-// fail-closed path: an unapproved config is not executed when nobody can be asked.
+// Every case below runs with no terminal, so it exercises the fail-closed
+// path: an unapproved config is not executed when nobody can be asked.
 
 let counter = 0;
 
@@ -43,8 +43,11 @@ async function scenario(
 	const dir = await mkdtemp(join(tmpdir(), "playpen-trust-"));
 	const data = await mkdtemp(join(tmpdir(), "playpen-data-"));
 	const previous = process.env.XDG_DATA_HOME;
+	const tty = process.stdin.isTTY;
 	process.env.XDG_DATA_HOME = data;
+	process.stdin.isTTY = false;
 	t.after(async () => {
+		process.stdin.isTTY = tty;
 		if (previous === undefined) delete process.env.XDG_DATA_HOME;
 		else process.env.XDG_DATA_HOME = previous;
 		await rm(dir, { recursive: true, force: true });
@@ -71,7 +74,7 @@ test("a project with no config needs no approval", async (t) => {
 	const { dir, sandbox } = await scenario(t, {});
 	const r = await loadTrustedConfig(dir, sandbox);
 	assert.equal(r.state, "absent");
-	assert.equal(r.loaded, false);
+	assert.equal(r.error, undefined);
 	assert.deepEqual(r.masked, []);
 });
 
@@ -81,7 +84,7 @@ test("an approved config is executed without asking", async (t) => {
 
 	const r = await loadTrustedConfig(dir, sandbox);
 	assert.equal(r.state, "trusted");
-	assert.equal(r.loaded, true);
+	assert.equal(r.error, undefined);
 	assert.deepEqual(r.masked, ["node_modules"]);
 });
 
@@ -89,7 +92,7 @@ test("an unapproved config is not executed without a terminal", async (t) => {
 	const { dir, sandbox } = await scenario(t, { "playpen.config.js": CONFIG });
 	const r = await loadTrustedConfig(dir, sandbox);
 	assert.equal(r.state, "unpinned");
-	assert.equal(r.loaded, false);
+	assert.match(r.error ?? "", /approval needs a terminal/);
 	assert.deepEqual(r.masked, []);
 });
 
@@ -104,7 +107,7 @@ test("editing an approved config revokes it", async (t) => {
 
 	const r = await loadTrustedConfig(dir, sandbox);
 	assert.equal(r.state, "changed");
-	assert.equal(r.loaded, false);
+	assert.match(r.error ?? "", /approval needs a terminal/);
 	assert.deepEqual(r.masked, []);
 });
 
@@ -123,7 +126,7 @@ test("editing a file the approved config imports revokes it too", async (t) => {
 
 	const r = await loadTrustedConfig(dir, sandbox);
 	assert.equal(r.state, "changed");
-	assert.equal(r.loaded, false);
+	assert.match(r.error ?? "", /approval needs a terminal/);
 });
 
 test("an approved config that imports a project file is executed with it", async (t) => {
@@ -144,7 +147,6 @@ test("a config whose imports cannot be pinned is reported and not executed", asy
 		"playpen.config.js": 'import "../elsewhere.js"; export default {};',
 	});
 	const r = await loadTrustedConfig(dir, sandbox);
-	assert.equal(r.loaded, false);
 	assert.match(r.error ?? "", /outside the project/);
 });
 
@@ -160,7 +162,7 @@ test("approving one filename does not bless another", async (t) => {
 	// Same bytes are approved under the .js name, but .ts is what will be loaded.
 	const r = await loadTrustedConfig(dir, sandbox);
 	assert.equal(r.state, "unpinned");
-	assert.equal(r.loaded, false);
+	assert.match(r.error ?? "", /approval needs a terminal/);
 });
 
 test("an approval recorded without the date it was approved is asked for again, even though its hash matches", async (t) => {
@@ -172,7 +174,7 @@ test("an approval recorded without the date it was approved is asked for again, 
 
 	const r = await loadTrustedConfig(dir, sandbox);
 	assert.equal(r.state, "unpinned");
-	assert.equal(r.loaded, false);
+	assert.match(r.error ?? "", /approval needs a terminal/);
 });
 
 test("a pin is scoped to its sandbox", async (t) => {
@@ -181,7 +183,7 @@ test("a pin is scoped to its sandbox", async (t) => {
 
 	const r = await loadTrustedConfig(dir, `${sandbox}-other`);
 	assert.equal(r.state, "unpinned");
-	assert.equal(r.loaded, false);
+	assert.match(r.error ?? "", /approval needs a terminal/);
 });
 
 test("a leftover .playpenignore is reported even when nothing is executed", async (t) => {

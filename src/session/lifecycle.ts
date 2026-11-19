@@ -67,10 +67,9 @@ async function loadConfig(sb: Sandbox): Promise<{
 		rejectedNetwork,
 		error,
 		legacyIgnore,
-		loaded,
 	} = await loadTrustedConfig(sb.cwd, sb.sandbox);
 	// Starting without it would share every masked path over 9p.
-	if (error)
+	if (error !== undefined)
 		throw new Error(`${CONFIG_FILE} not loaded (${error}); start refused`);
 	if (legacyIgnore) {
 		console.error(
@@ -115,9 +114,7 @@ async function loadConfig(sb: Sandbox): Promise<{
 	for (const { env, hosts } of network.secrets) {
 		console.error(`naming ${env} for ${hosts.join(", ")} (not injected yet)`);
 	}
-	// An unloaded config names nothing, and approving nothing would forget
-	// every path approved before.
-	const mounts = loaded ? await grantMounts(sb, requested) : [];
+	const mounts = await grantMounts(sb, requested);
 	if (mounts.length > 0) {
 		console.error(`mounting read-only: ${mounts.join(", ")}`);
 	}

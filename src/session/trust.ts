@@ -13,14 +13,16 @@ import {
 } from "./projectconfig.ts";
 
 export type TrustState =
-	/** No config file in the project. Nothing to decide. */
+	/** No config file in the project, and none approved. Nothing to decide. */
 	| "absent"
 	/** The graph matches what you approved. Import it without asking. */
 	| "trusted"
 	/** Never seen before. First use of this config for this sandbox. */
 	| "unpinned"
 	/** Seen before, and something in the graph has changed since you approved it. */
-	| "changed";
+	| "changed"
+	/** Approved before, and the file is gone. */
+	| "removed";
 
 /** Pure, because this is the line that decides whether project code runs on the host. */
 export function decideTrust(
@@ -124,18 +126,27 @@ function preview(
 	return out.join("\n");
 }
 
+/** A pin written before its snapshot has no lines to show, only the header. */
+async function removedPreview(sandbox: string, file: string): Promise<string> {
+	const contents = await readFile(join(snapshotDir(sandbox), file), "utf8")
+		.then((text) => text.replace(/\n$/, "").split("\n"))
+		.catch(() => []);
+	return [
+		`  ── ${file} (removed)`,
+		...contents.map((line) => `  │ ${line}`),
+	].join("\n");
+}
+
 export interface TrustedConfig extends ConfigResult {
 	state: TrustState;
-	/** False when a config was not executed: none exists, or `error` says why. */
-	loaded: boolean;
 }
 
 /**
  * Load the project config, but only after its import graph has been approved.
  *
  * Without a TTY there is nobody to ask, so the config is not executed, and
- * declining does the same. Either way `error` says why, and the caller refuses
- * to start.
+ * declining does the same; `error` says which. An approved config that is gone
+ * is asked about the same way, and approving its removal forgets the approval.
  */
 export async function loadTrustedConfig(
 	projectDir: string,
@@ -154,11 +165,34 @@ export async function loadTrustedConfig(
 		rejectedNetwork: [],
 		legacyIgnore,
 		state,
-		loaded: false,
 		...(error === undefined ? {} : { error }),
 	});
 
-	if (name === null) return skipped("absent");
+	const record = await readRecord(sandbox);
+	if (name === null) {
+		if (record === null) return skipped("absent");
+		if (!process.stdin.isTTY)
+			return skipped(
+				"removed",
+				`the approved ${record.file} is gone, and approval needs a terminal; run playpen start in one first`,
+			);
+		console.error("");
+		console.error(`${record.file} was approved for this sandbox and is gone.`);
+		console.error(
+			`  a process inside the sandbox can delete it; without it, none of its settings apply.`,
+		);
+		console.error("");
+		console.error(await removedPreview(sandbox, record.file));
+		console.error("");
+		if (!(await confirm(`  start without ${record.file}? [y/N] `)))
+			return skipped(
+				"removed",
+				`the approved ${record.file} is gone and starting without it was declined; run playpen start again and approve it`,
+			);
+		await rm(recordPath(sandbox), { force: true });
+		await rm(snapshotDir(sandbox), { recursive: true, force: true });
+		return skipped("removed");
+	}
 
 	let graph: ConfigGraph;
 	try {
@@ -170,7 +204,6 @@ export async function loadTrustedConfig(
 		);
 	}
 
-	const record = await readRecord(sandbox);
 	const pinned = record?.file === name ? record.hash : null;
 	const state = decideTrust(pinned, graph.hash);
 
@@ -178,7 +211,7 @@ export async function loadTrustedConfig(
 		if (!process.stdin.isTTY) {
 			return skipped(
 				state,
-				`it is ${state === "changed" ? "changed since you approved it" : "not yet approved"}, and approval needs a terminal; run playpen start in one first`,
+				`it ${state === "changed" ? "has changed since you approved it" : "is not yet approved"}, and approval needs a terminal; run playpen start in one first`,
 			);
 		}
 
@@ -224,7 +257,7 @@ export async function loadTrustedConfig(
 	}
 
 	const entry = await snapshot(sandbox, graph);
-	return { ...(await importConfig(entry)), legacyIgnore, state, loaded: true };
+	return { ...(await importConfig(entry)), legacyIgnore, state };
 }
 
 const mountRecord = z.object({ paths: z.array(z.string()) });
