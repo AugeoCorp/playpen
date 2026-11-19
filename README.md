@@ -170,8 +170,8 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
 - playpen prints the file and asks before executing it, again whenever it or
   anything it imports changes. Approvals live outside the project, so a sandbox
   cannot approve its own edits.
-- No terminal, no approval: the file is not executed, and you get neither masks
-  nor setup.
+- A config that is not approved, or fails to load, refuses the start: no
+  terminal to ask on, a "no" at the prompt and a broken file all stop it.
 
 Reasoning in `docs/spec.md`.
 

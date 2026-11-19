@@ -646,20 +646,50 @@ test("each secret is reported by name and hosts, and its value stays out of the 
 	);
 });
 
-test("a bad secret fails the config load, so the sandbox starts with no project policy", async (t) => {
+test("a config that fails to load refuses the start, saying why, before anything is built", async (t) => {
 	const { run } = await sandboxFor(
 		t,
-		'export default { network: { allow: ["example.com"], secrets: [{ env: "gh_token", hosts: ["github.com"] }] } };',
+		'export default { network: { secrets: [{ env: "gh_token", hosts: ["github.com"] }] } };',
 	);
-	const said = t.mock.method(console, "error", () => {});
+	t.mock.method(console, "error", () => {});
+	await assert.rejects(
+		run(),
+		/`network\.secrets\[0\]\.env` must be an environment variable name.*start refused/,
+	);
+	assert.equal(exists, false);
+	assert.deepEqual(calls, []);
+});
+
+test("a changed config with no terminal to approve it on refuses the start, before anything is built", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await writeFile(join(sb.cwd, "playpen.config.js"), `${BOTH}\n`, "utf8");
+	await assert.rejects(run(), /approval needs a terminal.*start refused/);
+	assert.equal(exists, false);
+	assert.deepEqual(calls, []);
+});
+
+test("a changed config whose approval is declined refuses the start, before anything is built", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await writeFile(join(sb.cwd, "playpen.config.js"), `${BOTH}\n`, "utf8");
+	const tty = process.stdin.isTTY;
+	process.stdin.isTTY = true;
+	t.after(() => {
+		process.stdin.isTTY = tty;
+	});
+	t.mock.method(console, "error", () => {});
+	await assert.rejects(
+		run(),
+		/approval was declined; run playpen start again and approve it.*start refused/,
+	);
+	assert.equal(exists, false);
+	assert.deepEqual(calls, []);
+});
+
+test("a project with no config starts", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await rm(join(sb.cwd, "playpen.config.js"));
 	await run();
-	const lines = said.mock.calls.map((c) => String(c.arguments[0])).join("\n");
-	assert.match(
-		lines,
-		/`network\.secrets\[0\]\.env` must be an environment variable name/,
-	);
-	assert.deepEqual(fencedWith?.secrets, []);
-	assert.equal(fencedWith?.allow.includes("example.com"), false);
+	assert.deepEqual(calls, ["start behind the gatekeeper", "ready ~/.claude"]);
 });
 
 test("a guest port nothing could listen on is named in a warning, and the sandbox still starts", async (t) => {

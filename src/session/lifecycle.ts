@@ -69,12 +69,9 @@ async function loadConfig(sb: Sandbox): Promise<{
 		legacyIgnore,
 		loaded,
 	} = await loadTrustedConfig(sb.cwd, sb.sandbox);
-	if (error) {
-		console.error(`warning: ${CONFIG_FILE} not loaded (${error})`);
-		console.error(
-			`  continuing with no masks and no setup; everything is shared over 9p.`,
-		);
-	}
+	// Starting without it would share every masked path over 9p.
+	if (error)
+		throw new Error(`${CONFIG_FILE} not loaded (${error}); start refused`);
 	if (legacyIgnore) {
 		console.error(
 			`warning: ${LEGACY_IGNORE_FILE} is no longer read. Move its entries to`,

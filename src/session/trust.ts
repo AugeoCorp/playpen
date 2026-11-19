@@ -126,7 +126,7 @@ function preview(
 
 export interface TrustedConfig extends ConfigResult {
 	state: TrustState;
-	/** False when a config exists but was not executed, so masks are missing. */
+	/** False when a config was not executed: none exists, or `error` says why. */
 	loaded: boolean;
 }
 
@@ -134,8 +134,8 @@ export interface TrustedConfig extends ConfigResult {
  * Load the project config, but only after its import graph has been approved.
  *
  * Without a TTY there is nobody to ask, so the config is not executed, and
- * declining does the same. Either way the sandbox starts with no masks rather
- * than aborting, so the host's contents at every masked path reach the guest.
+ * declining does the same. Either way `error` says why, and the caller refuses
+ * to start.
  */
 export async function loadTrustedConfig(
 	projectDir: string,
@@ -176,12 +176,10 @@ export async function loadTrustedConfig(
 
 	if (state !== "trusted") {
 		if (!process.stdin.isTTY) {
-			console.error(
-				`warning: ${name} is ${state === "changed" ? "changed since you approved it" : "not yet approved"}, and there is no terminal to ask.`,
+			return skipped(
+				state,
+				`it is ${state === "changed" ? "changed since you approved it" : "not yet approved"}, and approval needs a terminal; run playpen start in one first`,
 			);
-			console.error(`  not executing it; this sandbox will run unmasked.`);
-			console.error(`  approve it with an interactive: playpen start`);
-			return skipped(state);
 		}
 
 		const count = graph.files.length;
@@ -217,10 +215,11 @@ export async function loadTrustedConfig(
 		console.error("");
 
 		const ok = await confirm(`  execute ${name} on the host? [y/N] `);
-		if (!ok) {
-			console.error(`  declined; continuing unmasked.`);
-			return skipped(state);
-		}
+		if (!ok)
+			return skipped(
+				state,
+				"its approval was declined; run playpen start again and approve it",
+			);
 		await pinConfig(sandbox, graph);
 	}
 

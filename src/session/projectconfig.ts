@@ -144,7 +144,7 @@ export interface LoadedConfig {
 	rejectedSetup: string[];
 	/** `network.allow` entries dropped by validation, verbatim. */
 	rejectedNetwork: string[];
-	/** Set when the file exists but could not be loaded. Masking is skipped. */
+	/** Set when the file exists but could not be loaded. */
 	error?: string;
 }
 
