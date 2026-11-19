@@ -137,6 +137,14 @@ mock.module("../lima/client.ts", {
 	},
 });
 
+function withTerminal(t: TestContext, terminal: boolean): void {
+	const tty = process.stdin.isTTY;
+	process.stdin.isTTY = terminal;
+	t.after(() => {
+		process.stdin.isTTY = tty;
+	});
+}
+
 function guestStep(script: string): string {
 	if (script.includes('"$HOME/.claude"')) return "ready ~/.claude";
 	if (script.includes("mount --bind")) return "apply masks";
@@ -145,13 +153,14 @@ function guestStep(script: string): string {
 
 async function sandboxFor(
 	t: TestContext,
-	config: string,
+	config: string | undefined,
 ): Promise<{ sb: Sandbox; run: () => Promise<unknown> }> {
 	const root = await mkdtemp(join(tmpdir(), "playpen-lifecycle-"));
 	t.after(() => rm(root, { recursive: true, force: true }));
 	const project = join(root, "project");
 	await mkdir(project, { recursive: true });
-	await writeFile(join(project, "playpen.config.js"), config, "utf8");
+	if (config !== undefined)
+		await writeFile(join(project, "playpen.config.js"), config, "utf8");
 
 	const before = {
 		xdg: process.env.XDG_DATA_HOME,
@@ -186,10 +195,11 @@ async function sandboxFor(
 
 	const sb = await identify(project);
 	// Approved up front; the trust prompt is not what these test.
-	await pinConfig(
-		sb.sandbox,
-		await readConfigGraph(project, "playpen.config.js"),
-	);
+	if (config !== undefined)
+		await pinConfig(
+			sb.sandbox,
+			await readConfigGraph(project, "playpen.config.js"),
+		);
 	return { sb, run: () => ensureRunning(sb) };
 }
 
@@ -278,6 +288,38 @@ test("a directory the project names but nobody approved is not mounted, and the 
 	assert.equal(((await limaMounts(sb)) as unknown[]).length, 2);
 	const lines = said.mock.calls.map((c) => String(c.arguments[0])).join("\n");
 	assert.match(lines, /not mounting .*shared: it is not yet approved/);
+});
+
+test("a newline in a refused mount is shown as an escape", async (t) => {
+	const { run } = await sandboxFor(
+		t,
+		'export default { mounts: ["../gone\\n  approved"] };',
+	);
+	const said = t.mock.method(console, "error", () => {});
+	await run();
+	const lines = said.mock.calls
+		.map((call) => String(call.arguments[0]))
+		.join("\n");
+	assert.match(
+		lines,
+		/^warning: not mounting \.\.\/gone\\u\{a\} {2}approved: /m,
+	);
+});
+
+test("a newline in an approved mount is shown as an escape when it is mounted", async (t) => {
+	const { sb, run } = await sandboxFor(
+		t,
+		'export default { mounts: ["../shared\\n  approved"] };',
+	);
+	const shared = join(dirname(sb.cwd), "shared\n  approved");
+	await mkdir(shared, { recursive: true });
+	await approveMount(sb, shared);
+	const said = t.mock.method(console, "error", () => {});
+	await run();
+	const lines = said.mock.calls
+		.map((call) => String(call.arguments[0]))
+		.join("\n");
+	assert.match(lines, /^mounting read-only: .*shared\\u\{a\} {2}approved$/m);
 });
 
 test("a sandbox is offered a rebuild once a read-only mount is approved after it was made", async (t) => {
@@ -646,20 +688,148 @@ test("each secret is reported by name and hosts, and its value stays out of the 
 	);
 });
 
-test("a bad secret fails the config load, so the sandbox starts with no project policy", async (t) => {
+test("a config that fails to load refuses the start, saying why, before anything is built", async (t) => {
 	const { run } = await sandboxFor(
 		t,
-		'export default { network: { allow: ["example.com"], secrets: [{ env: "gh_token", hosts: ["github.com"] }] } };',
+		'export default { network: { secrets: [{ env: "gh_token", hosts: ["github.com"] }] } };',
 	);
+	t.mock.method(console, "error", () => {});
+	await assert.rejects(
+		run(),
+		/`network\.secrets\[0\]\.env` must be an environment variable name.*start refused/,
+	);
+	assert.equal(exists, false);
+	assert.deepEqual(calls, []);
+});
+
+test("an approved config that throws with no message refuses the start, before anything is built", async (t) => {
+	const { run } = await sandboxFor(t, 'throw new Error("");');
+	await assert.rejects(run(), /not loaded \(\); start refused/);
+	assert.equal(exists, false);
+	assert.deepEqual(calls, []);
+});
+
+test("a changed config with no terminal to approve it on refuses the start, before anything is built", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await writeFile(join(sb.cwd, "playpen.config.js"), `${BOTH}\n`, "utf8");
+	withTerminal(t, false);
+	await assert.rejects(
+		run(),
+		/it has changed since you approved it, and approval needs a terminal.*start refused/,
+	);
+	assert.equal(exists, false);
+	assert.deepEqual(calls, []);
+});
+
+test("a running sandbox whose config changed, with no terminal, is refused and left running", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await run();
+	calls.length = 0;
+	await writeFile(join(sb.cwd, "playpen.config.js"), `${BOTH}\n`, "utf8");
+	withTerminal(t, false);
+	await assert.rejects(run(), /approval needs a terminal.*start refused/);
+	assert.equal(status, "Running");
+	assert.deepEqual(calls, []);
+});
+
+test("a changed config whose approval is declined refuses the start, before anything is built", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await writeFile(join(sb.cwd, "playpen.config.js"), `${BOTH}\n`, "utf8");
+	withTerminal(t, true);
+	t.mock.method(console, "error", () => {});
+	await assert.rejects(
+		run(),
+		/approval was declined; run playpen start again and approve it.*start refused/,
+	);
+	assert.equal(exists, false);
+	assert.deepEqual(calls, []);
+});
+
+test("an approved config that is gone, with no terminal, refuses the start, before anything is built", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await rm(join(sb.cwd, "playpen.config.js"));
+	withTerminal(t, false);
+	await assert.rejects(
+		run(),
+		/the approved playpen\.config\.js is gone, and approval needs a terminal.*start refused/,
+	);
+	assert.equal(exists, false);
+	assert.deepEqual(calls, []);
+});
+
+test("an approved config that is gone, declined, refuses the start, before anything is built", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await rm(join(sb.cwd, "playpen.config.js"));
+	withTerminal(t, true);
+	t.mock.method(console, "error", () => {});
+	await assert.rejects(
+		run(),
+		/the approved playpen\.config\.js is gone and starting without it was declined.*start refused/,
+	);
+	assert.equal(exists, false);
+	assert.deepEqual(calls, []);
+});
+
+test("an approved config that is gone shows as a diff against nothing, every approved line removed", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	const writeTheSnapshot = run;
+	await writeTheSnapshot();
+	await rm(join(sb.cwd, "playpen.config.js"));
+	withTerminal(t, true);
+	const said = t.mock.method(console, "error", () => {});
+	await assert.rejects(run(), /starting without it was declined/);
+	const lines = said.mock.calls.map((c) => String(c.arguments[0]));
+	assert.ok(lines.includes(`  ── playpen.config.js (changed)\n  │ - ${BOTH}`));
+});
+
+test("an approved config that is gone, with no snapshot of it, is asked about with no lines, and can be approved", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await rm(join(sb.cwd, "playpen.config.js"));
+	withTerminal(t, true);
+	answer = true;
 	const said = t.mock.method(console, "error", () => {});
 	await run();
-	const lines = said.mock.calls.map((c) => String(c.arguments[0])).join("\n");
-	assert.match(
-		lines,
-		/`network\.secrets\[0\]\.env` must be an environment variable name/,
+	const lines = said.mock.calls.map((c) => String(c.arguments[0]));
+	assert.ok(lines.includes("  ── playpen.config.js (changed)"));
+});
+
+test("approving the removal of an approved config forgets the approval and starts with no config", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	const writeTheSnapshot = run;
+	await writeTheSnapshot();
+	await rm(join(sb.cwd, "playpen.config.js"));
+	withTerminal(t, true);
+	answer = true;
+	t.mock.method(console, "error", () => {});
+	await run();
+	asked.length = 0;
+	withTerminal(t, false);
+	await run();
+	assert.deepEqual(asked, []);
+});
+
+test("a load error's control characters reach the refusal escaped", async (t) => {
+	const { run } = await sandboxFor(t, 'throw new Error("\\u001b[2J");');
+	await assert.rejects(run(), /not loaded \(\\u\{1b\}\[2J\); start refused/);
+});
+
+test("a project that never had a config starts", async (t) => {
+	const { run } = await sandboxFor(t, undefined);
+	await run();
+	assert.deepEqual(calls, ["start behind the gatekeeper", "ready ~/.claude"]);
+});
+
+test("a config that cannot be loaded is refused with the invisible characters in its import paths escaped", async (t) => {
+	const { sb, run } = await sandboxFor(t, BOTH);
+	await writeFile(
+		join(sb.cwd, "playpen.config.js"),
+		'import "../\u202eevil.js"; export default {};',
+		"utf8",
 	);
-	assert.deepEqual(fencedWith?.secrets, []);
-	assert.equal(fencedWith?.allow.includes("example.com"), false);
+	await assert.rejects(
+		run(),
+		/not loaded \(.*"\.\.\/\\u\{202e\}evil\.js", which is outside.*start refused/,
+	);
 });
 
 test("a guest port nothing could listen on is named in a warning, and the sandbox still starts", async (t) => {

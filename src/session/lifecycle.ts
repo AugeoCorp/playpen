@@ -24,7 +24,7 @@ import {
 	type LoadedNetwork,
 } from "./projectconfig.ts";
 import * as store from "./store.ts";
-import { approveMounts, loadTrustedConfig } from "./trust.ts";
+import { approveMounts, escapeUnshowable, loadTrustedConfig } from "./trust.ts";
 
 export interface Sandbox {
 	sandbox: string;
@@ -67,14 +67,12 @@ async function loadConfig(sb: Sandbox): Promise<{
 		rejectedNetwork,
 		error,
 		legacyIgnore,
-		loaded,
 	} = await loadTrustedConfig(sb.cwd, sb.sandbox);
-	if (error) {
-		console.error(`warning: ${CONFIG_FILE} not loaded (${error})`);
-		console.error(
-			`  continuing with no masks and no setup; everything is shared over 9p.`,
+	// Starting without it would share every masked path over 9p.
+	if (error !== undefined)
+		throw new Error(
+			`${CONFIG_FILE} not loaded (${escapeUnshowable(error)}); start refused`,
 		);
-	}
 	if (legacyIgnore) {
 		console.error(
 			`warning: ${LEGACY_IGNORE_FILE} is no longer read. Move its entries to`,
@@ -118,11 +116,11 @@ async function loadConfig(sb: Sandbox): Promise<{
 	for (const { env, hosts } of network.secrets) {
 		console.error(`naming ${env} for ${hosts.join(", ")} (not injected yet)`);
 	}
-	// An unloaded config names nothing, and approving nothing would forget
-	// every path approved before.
-	const mounts = loaded ? await grantMounts(sb, requested) : [];
+	const mounts = await grantMounts(sb, requested);
 	if (mounts.length > 0) {
-		console.error(`mounting read-only: ${mounts.join(", ")}`);
+		console.error(
+			`mounting read-only: ${mounts.map(escapeUnshowable).join(", ")}`,
+		);
 	}
 	return { masked, mounts, setup, network };
 }
@@ -134,7 +132,8 @@ async function grantMounts(
 	const resolved: string[] = [];
 	for (const entry of requested) {
 		const result = await checkReadOnlyMount(entry, sb.cwd);
-		if (!result.ok) console.error(`warning: ${result.reason}`);
+		if (!result.ok)
+			console.error(`warning: ${escapeUnshowable(result.reason)}`);
 		else if (!resolved.includes(result.path)) resolved.push(result.path);
 	}
 	return approveMounts(sb.sandbox, resolved);
