@@ -17,8 +17,8 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
 | `image build`, base image + clone                                  | done, verified on host |
 | `completion bash\|zsh`, generated from the citty command tree      | done; zsh unverified   |
 | network fence (mechanism in `docs/NETWORK.md`)                     | done, see below        |
-| per-install CA in `<dataDir>/ca/`, trusted by the base image       | unit-tested; no VM yet |
-| `network.secrets` values swapped in by the gatekeeper              | unit-tested; no VM yet |
+| per-install CA in `<dataDir>/ca/`, trusted by the base image       | done, verified on a VM |
+| `network.secrets` values swapped in by the gatekeeper              | done, verified on a VM |
 
 ## Known problems
 
@@ -28,9 +28,13 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
 - The CA certificate is part of the image hash, and the CA is created on first
   use, so the first `start` or `image build` after it lands mints the CA and
   finds no matching base: every existing sandbox is offered a rebuild, and the
-  base is rebaked. Deleting `<dataDir>/ca/` does the same again. Whether a
-  booted guest trusts the CA (curl, Node, Python requests) is unverified; it
-  needs `playpen start` on a host with `limactl`.
+  base is rebaked. Deleting `<dataDir>/ca/` does the same again. A booted
+  guest's curl, Node, Python (urllib and requests), gh, git and npm all accept
+  the interceptor's certificates; that was run on Linux without KVM, not on
+  macOS.
+- A secret read from the project's `.env` or `.env.local` is in the mount, so
+  the guest can read the value there and the placeholder protects nothing for
+  it. Only a value from the user's environment stays out of the guest.
 - A secret's host gets no protocol upgrades: the interceptor relays HTTP/1.1
   requests only, so a WebSocket that carries the placeholder does not open
   (`docs/NETWORK.md`, "Secrets").

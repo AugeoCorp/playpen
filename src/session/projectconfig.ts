@@ -51,8 +51,8 @@ export type NetworkMode = z.infer<typeof networkMode>;
  * with it rather than needing one in `allow`. The guest port has to be free
  * in the guest.
  *
- * `secrets` names credentials from this machine's environment that the
- * sandbox may use on given hosts: `{ env: "GH_TOKEN", hosts: ["github.com"] }`.
+ * `secrets` names credentials from this machine's environment, or the
+ * project's `.env.local` or `.env`, that the sandbox may use on given hosts: `{ env: "GH_TOKEN", hosts: ["github.com"] }`.
  * Names only, never a value: this file sits in the project directory, which
  * the sandbox mounts. The guest holds a placeholder, which the gatekeeper
  * replaces with the value in the `Authorization` header of HTTPS requests to

@@ -334,13 +334,19 @@ and change over time, while the CA is one per install.
 The values travel one way. `playpen start` takes each named variable out of its
 own environment as it reads it (`takeSecretValues`), so nothing it spawns
 afterwards inherits one, and writes them as JSON to the stdin of the helper it
-spawns. The helper keeps them in memory and records only their names in
-`helper.json`. Nothing writes a value to a file, an argument list or a log. A
-helper takes its values only when it is spawned, but every command that brings
-the sandbox up is refused when a variable is unset or empty, whether or not it
-finds a helper running: one rule, and nothing to look up first. A value Node
-would refuse to put in a header (a newline, a character past U+00FF) is refused
-at `start` too.
+spawns. A variable unset or empty there is read from the project's `.env.local`,
+then its `.env` (`readEnvFiles`). They are parsed with Node's `util.parseEnv`,
+never run, and only the named variables are taken. The guest can write to the
+project directory, so each file is opened without following a link and read only
+if it is a regular file; anything else refuses the start. A value in either file
+sits in the mount, where the guest can read it, so for that value the
+placeholder protects nothing. The helper keeps them in memory and records only
+their names in `helper.json`. Nothing writes a value to a file, an argument list
+or a log. A helper takes its values only when it is spawned, but every command
+that brings the sandbox up is refused when a variable is unset or empty, whether
+or not it finds a helper running: one rule, and nothing to look up first. A
+value Node would refuse to put in a header (a newline, a character past U+00FF)
+is refused at `start` too.
 
 The guest gets a placeholder per name, `playpen-secret-` and the name in lower
 case with `-` for `_` (`placeholderFor`). It is fixed, not random: it is not a

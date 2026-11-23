@@ -31,6 +31,7 @@ import {
 import {
 	PROFILE_SCRIPT,
 	placeholderProfile,
+	readEnvFiles,
 	takeSecretValues,
 } from "./secrets.ts";
 import * as store from "./store.ts";
@@ -198,7 +199,11 @@ interface Template {
 /** Loads the project config, so it is read once per command and reused. */
 async function renderTemplate(sb: Sandbox): Promise<Template> {
 	const { masked, mounts, setup, network } = await loadConfig(sb);
-	const held = takeSecretValues(network.secrets, process.env);
+	const held = takeSecretValues(
+		network.secrets,
+		process.env,
+		await readEnvFiles(sb.cwd),
+	);
 	const rendered = await renderFor(sb);
 	return {
 		yaml: `${serialize(rendered)}\n`,
