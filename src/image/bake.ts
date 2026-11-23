@@ -3,12 +3,12 @@ import { join } from "node:path";
 import { defaults, templatesDir } from "../config.ts";
 import * as lima from "../lima/client.ts";
 import { baseInstanceName, parseBaseInstance } from "../session/identity.ts";
-import { baseImage } from "./base.ts";
+import { loadBaseImage } from "./base.ts";
 import { imageHash, renderBase, serialize } from "./render.ts";
 
 /** Identifies the image definition every sandbox clones from. */
-export function currentHash(): string {
-	return imageHash(baseImage);
+export async function currentHash(): Promise<string> {
+	return imageHash(await loadBaseImage());
 }
 
 /**
@@ -27,10 +27,10 @@ export function pickBase(
 	return matches[0]?.name ?? null;
 }
 
-export async function findBase(hash = currentHash()): Promise<string | null> {
+export async function findBase(hash?: string): Promise<string | null> {
 	return pickBase(
 		(await lima.list()).map((i) => i.name),
-		hash,
+		hash ?? (await currentHash()),
 	);
 }
 
@@ -40,8 +40,9 @@ function isoDate(now: Date): string {
 }
 
 export async function buildBase(now = new Date()): Promise<string> {
-	const name = baseInstanceName(currentHash(), isoDate(now));
-	const rendered = renderBase(baseImage, defaults);
+	const image = await loadBaseImage();
+	const name = baseInstanceName(imageHash(image), isoDate(now));
+	const rendered = renderBase(image, defaults);
 
 	await mkdir(templatesDir(), { recursive: true });
 	const path = join(templatesDir(), `${name}.yaml`);
@@ -78,7 +79,7 @@ export async function ensureBase(): Promise<{
 	const instances = await lima.list();
 	const found = pickBase(
 		instances.map((i) => i.name),
-		currentHash(),
+		await currentHash(),
 	);
 	if (!found) return { instance: await buildBase(), built: true };
 
