@@ -78,7 +78,11 @@ function guard(hash: string, name: string, body: string): string {
  * resolved yaml, which playpen cannot add provision entries to.
  *
  * Backing storage is on the VM disk, which keeps it off 9p and lets an install
- * survive stop/start.
+ * survive stop/start. An entry that is a file at the target gets a file, any
+ * other a directory, including one absent from the host: the guest cannot tell
+ * a file-to-be from a directory-to-be. Files are stored apart from
+ * directories, so an entry that changes kind never meets a store of the other
+ * kind.
  */
 export function maskScript(mount: string, masks: readonly string[]): string {
 	const quoted = masks.map((m) => `'${m.replace(/'/g, `'\\''`)}'`).join(" ");
@@ -90,6 +94,14 @@ export function maskScript(mount: string, masks: readonly string[]): string {
 		'owner="$(stat -c "%u:%g" "$MOUNT")"',
 		`for rel in ${quoted}; do`,
 		'  target="$MOUNT/$rel"',
+		'  if [ -f "$target" ] && [ ! -L "$target" ]; then',
+		'    store="/var/lib/playpen/mask-files/$rel"',
+		'    mkdir -p "$(dirname "$store")"',
+		'    touch "$store"',
+		'    chown "$owner" "$store"',
+		'    mountpoint -q "$target" || mount --bind "$store" "$target"',
+		"    continue",
+		"  fi",
 		'  store="/var/lib/playpen/masks/$rel"',
 		'  mkdir -p "$store"',
 		'  chown "$owner" "$store"',
