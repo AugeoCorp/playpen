@@ -18,6 +18,7 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
 | `completion bash\|zsh`, generated from the citty command tree      | done; zsh unverified   |
 | network fence (mechanism in `docs/NETWORK.md`)                     | done, see below        |
 | per-install CA in `<dataDir>/ca/`, trusted by the base image       | unit-tested; no VM yet |
+| `network.secrets` values read at `start` and held by the helper    | unit-tested; no VM yet |
 
 ## Known problems
 

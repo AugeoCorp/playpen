@@ -75,6 +75,10 @@ export interface SecretGrant {
 	hosts: readonly string[];
 }
 
+export function secretNames(grants: readonly SecretGrant[]): string[] {
+	return [...new Set(grants.map((grant) => grant.env))];
+}
+
 export interface Policy {
 	/**
 	 * Built-in entries plus the project's `network.allow`, already merged, a

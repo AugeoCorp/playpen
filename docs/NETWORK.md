@@ -330,7 +330,17 @@ sudo included. The certificate is part of the image hash, so a new CA rebakes
 the base. The CA is created in a staging directory and published with one
 rename, so two first runs at once share one CA. It has no name constraints: the
 hosts differ per project and change over time, while the CA is one per install.
-Nothing intercepts yet.
+
+The values travel one way. `playpen start` takes each named variable out of its
+own environment as it reads it (`takeSecretValues`), so nothing it spawns
+afterwards inherits one, and writes them as JSON to the stdin of the helper it
+spawns. The helper keeps them in memory and records only their names in
+`helper.json`. Nothing writes a value to a file, an argument list or a log. A
+helper takes its values only when it is spawned, but every command that brings
+the sandbox up is refused when a variable is unset or empty, whether or not it
+finds a helper running: one rule, and nothing to look up first. A value Node
+would refuse to put in a header (a newline, a character past U+00FF) is refused
+at `start` too. Nothing intercepts yet.
 
 ## What it does not contain
 

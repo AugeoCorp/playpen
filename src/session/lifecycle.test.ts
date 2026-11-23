@@ -15,6 +15,7 @@ import { dirname, join } from "node:path";
 import { mock, type TestContext, test } from "node:test";
 import { loadBaseImage } from "../image/base.ts";
 import { imageHash } from "../image/render.ts";
+import type { HeldSecret } from "../network/fence.ts";
 import type { Policy, PortForward } from "../network/policy.ts";
 import { baseInstanceName } from "./identity.ts";
 import type { Sandbox } from "./lifecycle.ts";
@@ -46,6 +47,12 @@ let helperEgress = true;
 let helperUnbound: PortForward[] = [];
 /** Whether the fake fence has been brought up already in this test. */
 let fenced = false;
+/** The secrets `bringUp` was last handed, values included. */
+let fencedHeld: readonly HeldSecret[] = [];
+/** The first `TEST_TOKEN` a `limactl` call could have inherited. */
+let limactlSaw: string | undefined;
+/** Whether a helper is running: false until `bringUp` spawns one, and again when a test kills it. */
+let helperLive = false;
 /** Every yes-or-no question put to the user, and the answer each one gets. */
 const asked: string[] = [];
 let answer = false;
@@ -66,27 +73,33 @@ mock.module("../network/fence.ts", {
 	// runtime has deprecated. Delete this line once the types catch up.
 	exports: {
 		fenceStatus: async () => (exists ? fenceState : "stopped"),
-		liveHelper: async () => ({
-			pid: 1,
-			start: "1",
-			boot: "b",
-			gatekeeperPort: 1080,
-			ready: true,
-			egress: helperEgress,
-			unboundPorts: helperUnbound,
-			policy: "1:2",
-		}),
+		liveHelper: async () =>
+			helperLive
+				? {
+						pid: 1,
+						start: "1",
+						boot: "b",
+						gatekeeperPort: 1080,
+						ready: true,
+						egress: helperEgress,
+						unboundPorts: helperUnbound,
+						policy: "1:2",
+						secrets: [],
+					}
+				: null,
 		// Like the real one: the policy is written whatever state the fence is
 		// in, and a sandbox that is already up behind a gatekeeper is left where
 		// it is rather than started a second time.
-		async bringUp(opts: { policy: Policy }) {
+		async bringUp(opts: { policy: Policy; held: readonly HeldSecret[] }) {
 			fencedWith = opts.policy;
+			fencedHeld = opts.held;
 			const up = fenceState === "sealed" || fenceState === "sealed-no-egress";
 			if (fenced && up) {
 				calls.push("leave the fence alone");
 				return;
 			}
 			fenced = true;
+			helperLive = true;
 			calls.push("start behind the gatekeeper");
 		},
 	},
@@ -102,7 +115,10 @@ mock.module("../lima/client.ts", {
 				name: baseInstanceName(imageHash(await loadBaseImage()), "2026-09-16"),
 			},
 		],
-		get: async (name: string) => (exists ? { name, status } : null),
+		async get(name: string) {
+			limactlSaw ??= process.env.TEST_TOKEN;
+			return exists ? { name, status } : null;
+		},
 		stop: async () => {
 			calls.push("stop");
 		},
@@ -166,6 +182,9 @@ async function sandboxFor(
 	helperEgress = true;
 	helperUnbound = [];
 	fenced = false;
+	fencedHeld = [];
+	limactlSaw = undefined;
+	helperLive = false;
 	status = "Running";
 	asked.length = 0;
 	answer = false;
@@ -189,6 +208,16 @@ async function sandboxFor(
 		await readConfigGraph(project, "playpen.config.js"),
 	);
 	return { sb, run: () => ensureRunning(sb) };
+}
+
+/** Sets each variable for this test only. */
+function setEnv(t: TestContext, values: Record<string, string>): void {
+	Object.assign(process.env, values);
+	t.after(() => {
+		Object.keys(values).forEach((name) => {
+			delete process.env[name];
+		});
+	});
 }
 
 /** pid 1 always exists, so this is a second attached session without one. */
@@ -584,6 +613,7 @@ test("a port entry brings its own localhost entry into the policy, and reaches t
 });
 
 test("a secret's hosts are allowed without being listed, and the secret reaches the helper's policy", async (t) => {
+	setEnv(t, { GH_TOKEN: "ghp_a", NPM_TOKEN: "npm_a" });
 	const { run } = await sandboxFor(
 		t,
 		'export default { network: { allow: ["example.com"], secrets: [{ env: "GH_TOKEN", hosts: ["api.github.com", "github.com"] }, { env: "NPM_TOKEN", hosts: ["registry.example.com"] }] } };',
@@ -608,20 +638,17 @@ test("a secret's hosts are allowed without being listed, and the secret reaches 
 });
 
 test("each secret is reported by name and hosts, and its value stays out of the output, so a later injector cannot print it", async (t) => {
-	process.env.PLAYPEN_TEST_TOKEN = "ghp_not-to-be-printed";
-	t.after(() => {
-		delete process.env.PLAYPEN_TEST_TOKEN;
-	});
+	setEnv(t, { TEST_TOKEN: "ghp_not-to-be-printed" });
 	const { run } = await sandboxFor(
 		t,
-		'export default { network: { secrets: [{ env: "PLAYPEN_TEST_TOKEN", hosts: ["api.github.com", "github.com"] }] } };',
+		'export default { network: { secrets: [{ env: "TEST_TOKEN", hosts: ["api.github.com", "github.com"] }] } };',
 	);
 	const said = t.mock.method(console, "error", () => {});
 	await run();
 	const lines = said.mock.calls.map((c) => String(c.arguments[0]));
 	assert.ok(
 		lines.includes(
-			"naming PLAYPEN_TEST_TOKEN for api.github.com, github.com (not injected yet)",
+			"naming TEST_TOKEN for api.github.com, github.com (not injected yet)",
 		),
 		`expected a naming line, got:\n${lines.join("\n")}`,
 	);
@@ -694,4 +721,46 @@ test("a session that asked to keep the sandbox does not stop it", async (t) => {
 		calls.filter((c) => c === "stop"),
 		[],
 	);
+});
+
+const TOKEN = "ghp_correct-horse-battery-staple";
+const ONE_SECRET =
+	'export default { network: { secrets: [{ env: "TEST_TOKEN", hosts: ["api.github.com"] }] } };';
+
+test("the helper is handed each secret's name and value", async (t) => {
+	setEnv(t, { TEST_TOKEN: TOKEN });
+	const { run } = await sandboxFor(t, ONE_SECRET);
+	await run();
+	assert.deepEqual(fencedHeld, [{ env: "TEST_TOKEN", value: TOKEN }]);
+});
+
+test("limactl never sees a secret's value", async (t) => {
+	setEnv(t, { TEST_TOKEN: TOKEN });
+	const { run } = await sandboxFor(t, ONE_SECRET);
+	await run();
+	assert.equal(limactlSaw, undefined);
+});
+
+test("a start with secrets whose variables are unset is refused, naming every one, and nothing is booted", async (t) => {
+	delete process.env.TEST_A;
+	setEnv(t, { TEST_B: "", TEST_C: TOKEN });
+	const { run } = await sandboxFor(
+		t,
+		'export default { network: { secrets: [{ env: "TEST_A", hosts: ["a.example.com"] }, { env: "TEST_B", hosts: ["b.example.com"] }, { env: "TEST_C", hosts: ["c.example.com"] }] } };',
+	);
+	await assert.rejects(run(), {
+		message: "network.secrets needs TEST_A, TEST_B set in your environment",
+	});
+	assert.deepEqual(calls, []);
+	assert.equal(fencedWith, null);
+});
+
+test("a running sandbox needs the variable again, and is left as it was without it", async (t) => {
+	setEnv(t, { TEST_TOKEN: TOKEN });
+	const { run } = await sandboxFor(t, ONE_SECRET);
+	await run();
+	calls.length = 0;
+	delete process.env.TEST_TOKEN;
+	await assert.rejects(run(), /network\.secrets needs TEST_TOKEN/);
+	assert.deepEqual(calls, []);
 });

@@ -5,9 +5,11 @@ import * as fsReal from "node:fs/promises";
 import { mkdir, mkdtemp, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
+import { text } from "node:stream/consumers";
 import { mock, type TestContext, test } from "node:test";
 import { owner, self } from "../session/proc.ts";
-import type { Policy } from "./policy.ts";
+import type { Policy, SecretGrant } from "./policy.ts";
 
 const SANDBOX = "api-abc123";
 const INSTANCE = "playpen-api-abc123";
@@ -20,6 +22,8 @@ const NOTHING_ALLOWED: Policy = {
 
 /** How many helpers `bringUp` has spawned in this process. */
 let helpersStarted = 0;
+/** The stdin of the helper `bringUp` spawned last. */
+let helperStdin = new PassThrough();
 
 /**
  * Stands in for the helper process `bringUp` spawns, doing what the real one
@@ -27,7 +31,11 @@ let helpersStarted = 0;
  */
 function startHelper(): EventEmitter {
 	helpersStarted++;
-	const child = Object.assign(new EventEmitter(), { unref() {} });
+	helperStdin = new PassThrough();
+	const child = Object.assign(new EventEmitter(), {
+		stdin: helperStdin,
+		unref() {},
+	});
 	void (async () => {
 		if ((await fence.liveHelper(SANDBOX)) !== null) {
 			child.emit("exit", 1);
@@ -39,6 +47,7 @@ function startHelper(): EventEmitter {
 			ready: true,
 			egress: true,
 			policy: "",
+			secrets: [],
 		});
 	})();
 	return child;
@@ -104,6 +113,7 @@ async function earlierHelper(fields: {
 		gatekeeperPort: 1,
 		egress: true,
 		policy: "",
+		secrets: [],
 		...fields,
 	});
 }
@@ -137,6 +147,7 @@ function start(timeoutMs: number): Promise<void> {
 		sandbox: SANDBOX,
 		instance: INSTANCE,
 		policy: NOTHING_ALLOWED,
+		held: [],
 		log: () => {},
 		timeoutMs,
 	});
@@ -179,4 +190,19 @@ test("an earlier helper that neither exits nor brings the VM up fails the start,
 		start(1_000),
 		/earlier network helper for api-abc123 \(pid 1\) has neither exited nor brought its VM up.*stop it with: kill 1$/s,
 	);
+});
+
+const GH: SecretGrant = { env: "GH_TOKEN", hosts: ["api.github.com"] };
+
+test("a helper is handed the values of its secrets on stdin", async (t) => {
+	await stoppedSandbox(t);
+	const held = [{ env: "GH_TOKEN", value: "ghp_a" }];
+	await fence.bringUp({
+		sandbox: SANDBOX,
+		instance: INSTANCE,
+		policy: { ...NOTHING_ALLOWED, secrets: [GH] },
+		held,
+		log: () => {},
+	});
+	assert.deepEqual(fence.parseHeldSecrets(await text(helperStdin)), held);
 });
