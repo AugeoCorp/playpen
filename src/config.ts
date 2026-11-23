@@ -45,7 +45,7 @@ export function historyDir(): string {
 
 /**
  * Approved config graphs and their snapshots. Under the data directory, never
- * the project: the sandbox mounts only the project and its own
+ * the project: the sandbox mounts nothing under the data directory but its own
  * `history/<sandbox>`, so nothing inside a guest can reach these and approve
  * its own config.
  */

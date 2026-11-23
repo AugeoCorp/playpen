@@ -31,6 +31,17 @@ codemod can't regenerate.
 - **A fresh reviewer before `review requested`.** A different agent reviews
   every PR and drafts description fixes for the manager to post. It starts right
   away; open questions go in its brief as things to report, not change.
+- **Size each agent's model and effort to its job.** Higher effort can reason
+  its way into more than the job needs.
+- **Quiet by default.** A wake earns a message only when it changes what
+  The Operator should do or know: a PR reaches `review requested`, a decision
+  is needed, a failure the manager can't route to the agent already on it, or
+  an agent's report that carries findings or judgement calls. Green CI,
+  subscription confirmations, echoes of the manager's own actions, and
+  conflicts or red CI on a branch an agent is still working are handled and
+  left unsaid. An agent's work is reported once, when its job finishes, not
+  push by push. An open question is asked once, and again only when
+  The Operator next writes.
 - **QA means regressions.** Anything also on production is reported separately
   as pre-existing.
 - **One worktree per branch,** at `.claude/worktrees/<branch>` with slashes as
@@ -82,3 +93,4 @@ keeping the scripts' rules.
   without changes loses it, so relaunch rather than resume.
 
 @.claude/extensions/skills/ns-manager-mode/BRIEFS.md
+@.claude/extensions/skills/ns-manager-mode/SKILL.md

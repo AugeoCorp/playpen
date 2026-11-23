@@ -1,6 +1,6 @@
 ---
 name: ns-pr-review
-description: Write a pull request description, or review a branch before its pull request goes up, against nam-shub and the comment and test rubrics. Use when starting a change, before a pull request leaves draft, or when The Operator asks for a self review.
+description: Write a pull request description, or review a branch before its pull request goes up, against namshub and the comment and test rubrics. Use when starting a change, before a pull request leaves draft, or when The Operator asks for a self review.
 ---
 
 # Pull Request Review
@@ -10,7 +10,7 @@ when the change starts; run the review once the shape has stopped moving. Judge
 the code as it needs to be from here on, and don't editorialize about how it got
 written.
 
-The rules are in the nam-shub block of `AGENTS.md`. This skill is the
+The rules are in the namshub block of `AGENTS.md`. This skill is the
 description's shape, the order to check the rules in, and the comment rubric.
 
 ## The Description

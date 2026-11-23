@@ -146,6 +146,18 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
 - playpen prints the file and asks before executing it, again whenever it or
   anything it imports changes. Approvals live outside the project, so a sandbox
   cannot approve its own edits.
+- A file you approved before is shown whole, with the lines that changed marked
+  `-` as you approved them and `+` as they are now. The approved copy is kept
+  outside the project. Every line of a new file is marked `+`, and so is every
+  line of a changed file whose approved copy is missing, does not match the
+  approval, or is too long to compare. A change to only line endings is named.
+- The prompt shows control characters, format characters such as bidi overrides,
+  and characters that draw as nothing as escapes like `\u{1b}`, and says when it
+  has. It starts a new line wherever JavaScript ends one. An emoji written with
+  U+FE0F is escaped too, since U+FE0F draws as nothing. Look-alike letters from
+  other scripts, such as a Cyrillic `а`, are not caught. Nor are right-to-left
+  letters such as Hebrew or Arabic: a bidi-aware terminal can reorder text
+  around them.
 - No terminal, no approval: the file is not executed, and you get neither masks
   nor setup.
 

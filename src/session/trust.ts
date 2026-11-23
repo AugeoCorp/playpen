@@ -3,8 +3,14 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 import { trustDir } from "../config.ts";
 import { confirm } from "../prompt.ts";
-import { type ConfigGraph, readConfigGraph } from "./configgraph.ts";
+import {
+	type ConfigGraph,
+	type GraphFile,
+	readConfigGraph,
+	sha256,
+} from "./configgraph.ts";
 import { assertSandboxName } from "./identity.ts";
+import { markChanges } from "./linediff.ts";
 import {
 	type ConfigResult,
 	findConfigFile,
@@ -103,25 +109,95 @@ async function snapshot(sandbox: string, graph: ConfigGraph): Promise<string> {
 	return join(dir, graph.entry);
 }
 
-function preview(
+/**
+ * What a terminal acts on or draws as nothing: controls other than tab, format
+ * characters such as bidi overrides, the line separators and default-ignorable
+ * code points. Several are legal in a JavaScript name, so `false` followed by
+ * one is a name and not the keyword.
+ */
+const UNSHOWABLE =
+	/(?!\t)[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
+
+export function escapeUnshowable(text: string): string {
+	return text.replace(
+		UNSHOWABLE,
+		(character) => `\\u{${character.codePointAt(0)?.toString(16)}}`,
+	);
+}
+
+const ESCAPES_WARNING =
+	"  warning: invisible or control characters are shown above as escapes like \\u{1b}";
+
+/** Names and contents come from a directory the guest can write. */
+async function preview(
+	sandbox: string,
 	graph: ConfigGraph,
 	approved: Record<string, string> | undefined,
-): string {
-	const out: string[] = [];
-	for (const f of graph.files) {
-		const before = approved?.[f.rel];
-		const status =
-			before === undefined
-				? "new"
-				: before === f.hash
-					? "unchanged"
-					: "changed";
-		out.push(`  ── ${f.rel} (${status})`);
-		if (status === "unchanged") continue;
-		for (const line of f.contents.replace(/\n$/, "").split("\n"))
-			out.push(`  │ ${line}`);
-	}
-	return out.join("\n");
+): Promise<string> {
+	const sections = await Promise.all(
+		graph.files.map(async (file) => {
+			const approvedHash = approved?.[file.rel];
+			const marked =
+				approvedHash === file.hash
+					? []
+					: await markedLines(sandbox, file, approvedHash);
+			const status =
+				approvedHash === undefined
+					? "new"
+					: approvedHash === file.hash
+						? "unchanged"
+						: marked.every((line) => line.startsWith("  "))
+							? "changed only in line endings"
+							: "changed";
+			return [
+				`  ── ${file.rel} (${status})`,
+				...marked.map((line) => `  │ ${line}`),
+			];
+		}),
+	);
+	const lines = sections.flat();
+	const shown = lines.map(escapeUnshowable);
+	return (
+		shown.some((line, index) => line !== lines[index])
+			? [...shown, "", ESCAPES_WARNING]
+			: shown
+	).join("\n");
+}
+
+/**
+ * Marked against the approved copy. Unchanged lines are shown too: an edit can
+ * change what a line far from it does, such as closing a template literal that
+ * held it. The approved copy is in `trust/`, which no guest mounts. Without one
+ * that matches its approved hash every line is `+`, so a line that starts with
+ * `-` cannot pass for a removed one.
+ */
+async function markedLines(
+	sandbox: string,
+	file: GraphFile,
+	approvedHash: string | undefined,
+): Promise<string[]> {
+	const approved = await readFile(
+		join(snapshotDir(sandbox), file.rel),
+		"utf8",
+	).catch(() => undefined);
+	return markChanges(
+		approved !== undefined && sha256(approved) === approvedHash
+			? linesOf(approved)
+			: [],
+		linesOf(file.contents),
+	);
+}
+
+/**
+ * Escaping a line terminator does not stop it ending a line for the parser, so
+ * a line also ends on screen wherever JavaScript ends one (ECMA-262,
+ * LineTerminator). A lone `\r`, U+2028 or U+2029 stays on the line it ends, to
+ * be escaped there.
+ */
+function linesOf(contents: string): string[] {
+	return contents
+		.split(/(?<=\n|\r(?!\n)|\u2028|\u2029)/)
+		.map((line) => line.replace(/\r?\n$/, ""));
 }
 
 export interface TrustedConfig extends ConfigResult {
@@ -214,7 +290,13 @@ export async function loadTrustedConfig(
 			`  ${count === 1 ? "1 file" : `${count} files`} will be executed:`,
 		);
 		console.error("");
-		console.error(preview(graph, pinned === null ? undefined : record?.files));
+		console.error(
+			await preview(
+				sandbox,
+				graph,
+				pinned === null ? undefined : record?.files,
+			),
+		);
 		console.error("");
 
 		const ok = await confirm(`  execute ${name} on the host? [y/N] `);
@@ -272,19 +354,21 @@ export async function approveMounts(
 
 	const approved: string[] = [];
 	for (const dir of paths) {
+		// A resolved path can carry a symlink target the guest wrote.
+		const shown = escapeUnshowable(dir);
 		if (before.includes(dir)) {
 			approved.push(dir);
 			continue;
 		}
 		if (!process.stdin.isTTY) {
 			console.error(
-				`warning: not mounting ${dir}: it is not yet approved, and there is no terminal to ask.`,
+				`warning: not mounting ${shown}: it is not yet approved, and there is no terminal to ask.`,
 			);
 			console.error(`  approve it with an interactive: playpen start`);
 			continue;
 		}
 		console.error("");
-		console.error(`this project asks to mount ${dir} read-only.`);
+		console.error(`this project asks to mount ${shown} read-only.`);
 		console.error(`  everything in it becomes readable by the sandbox.`);
 		if (await confirm(`  allow it? [y/N] `)) approved.push(dir);
 		else console.error(`  declined; not mounting it.`);

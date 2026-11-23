@@ -13,9 +13,11 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const namShubRepository = "https://github.com/seanhealy/nam-shub";
+const namshubRepository = "https://github.com/seanhealy/namshub";
+// Also finds blocks marked nam-shub, the name before the rename. Remove the
+// alternation once coverlet, charles and rohl are resynced.
 const blockPattern =
-	/<!-- BEGIN:nam-shub@(\w+) -->[\s\S]*?<!-- END:nam-shub -->/;
+	/<!-- BEGIN:nam-?shub@(\w+) -->[\s\S]*?<!-- END:nam-?shub -->/;
 const skillPrefix = "ns-";
 // The shared skills' names before the prefix, for moving a repo that synced
 // them. Remove once coverlet, charles and rohl are migrated.
@@ -28,8 +30,8 @@ const unprefixedSkills = {
 // Tests run here, not in the repos the skills are copied into.
 const testMarker = ".test.";
 
-export function nsSync(repository: string, source = namShubRepository) {
-	const checkout = mkdtempSync(join(tmpdir(), "nam-shub-"));
+export function nsSync(repository: string, source = namshubRepository) {
+	const checkout = mkdtempSync(join(tmpdir(), "namshub-"));
 	try {
 		execFileSync("git", ["clone", "--quiet", "--depth", "1", source, checkout]);
 		const commit = execFileSync(
@@ -57,7 +59,7 @@ function writeBlock(repository: string, core: string, commit: string) {
 	const file = existsSync(agents) ? agents : join(repository, "CLAUDE.md");
 	const current = existsSync(file) ? readFileSync(file, "utf8") : "";
 	// Generated and replaced whole, so a repo's formatter leaves it alone.
-	const block = `<!-- BEGIN:nam-shub@${commit} -->\n<!-- prettier-ignore-start -->\n\n${core.trim()}\n\n<!-- prettier-ignore-end -->\n<!-- END:nam-shub -->`;
+	const block = `<!-- BEGIN:namshub@${commit} -->\n<!-- prettier-ignore-start -->\n\n${core.trim()}\n\n<!-- prettier-ignore-end -->\n<!-- END:namshub -->`;
 	const previous = current.match(blockPattern)?.[1];
 	const next = previous
 		? current.replace(blockPattern, () => block)
@@ -97,12 +99,12 @@ function moveUnprefixedSkills(claude: string) {
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
 	const { previous, commit, skills } = nsSync(process.cwd());
 	if (previous === commit) {
-		console.log(`nam-shub is already at ${commit}.`);
+		console.log(`namshub is already at ${commit}.`);
 	} else if (previous) {
-		console.log(`Updated nam-shub ${previous} → ${commit}.`);
-		console.log(`Changes: ${namShubRepository}/compare/${previous}...${commit}`);
+		console.log(`Updated namshub ${previous} → ${commit}.`);
+		console.log(`Changes: ${namshubRepository}/compare/${previous}...${commit}`);
 	} else {
-		console.log(`Added nam-shub @${commit}.`);
+		console.log(`Added namshub @${commit}.`);
 	}
 	console.log(`Skills written: ${skills.join(", ")}`);
 }

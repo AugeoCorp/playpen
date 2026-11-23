@@ -1,10 +1,10 @@
-<!-- BEGIN:nam-shub@8c22d0a -->
+<!-- BEGIN:namshub@eeb6772 -->
 <!-- prettier-ignore-start -->
 
-# nam-shub
+# namshub
 
 The rules for every repo. This block is generated from `core.md` in
-`seanhealy/nam-shub` by the `ns-sync` skill and replaced whole on each
+`seanhealy/namshub` by the `ns-sync` skill and replaced whole on each
 update: change it there, never here. The rest of this file is specific to this
 repo.
 
@@ -116,7 +116,7 @@ Optimize only after it works and a measurement says it matters.
 - No em dashes, Title Case headings, straight quotes.
 
 <!-- prettier-ignore-end -->
-<!-- END:nam-shub -->
+<!-- END:namshub -->
 
 # Working in This Repo
 
