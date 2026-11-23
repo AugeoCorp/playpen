@@ -130,23 +130,28 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
   the guest: `playpen start` warns and carries on if something there already
   holds it. A stdio MCP server is a process, not a port, and this does not cover
   it.
-- `network.secrets` names credentials from your environment that the sandbox may
-  use on given hosts: `{ env: "GH_TOKEN", hosts: ["github.com"] }`. Names only,
-  never a value — the file sits in the project directory, which the sandbox
-  mounts. `env` is an upper-case variable name, but not one playpen itself reads
-  (`PATH`, `HOME`, `XDG_DATA_HOME`, `LIMA_HOME` or any `PLAYPEN_` name); each
-  host is a plain hostname, with no port and not an address. Injection matches
-  the host exactly; the allow entry it implies covers subdomains, like any entry
-  in `allow`. A mistake here stops the config loading rather than being skipped.
-  Every command that brings the sandbox up (`start`, `run`, `shell`, `claude`,
-  `setup`) needs each variable set, and says which are not. Inside the sandbox
-  each variable holds a placeholder, `playpen-secret-gh-token` for `GH_TOKEN`,
-  never the value. On the way out, the placeholder is swapped for the value in
-  the `Authorization` header of HTTPS requests to exactly those hosts on port
-  443, which is where `gh`, `git`, `curl -u` and npm put a token; no other
-  header, body or URL gets it. A host that echoes `Authorization` back hands the
-  value to the sandbox, so grant a secret only to hosts you would send it to
-  anyway. A secret added or changed while the sandbox runs takes effect after
+- `network.secrets` names credentials from your environment, or from the
+  project's `.env.local` or `.env`, that the sandbox may use on given hosts:
+  `{ env: "GH_TOKEN", hosts: ["github.com"] }`. Names only, never a value — the
+  file sits in the project directory, which the sandbox mounts. `env` is an
+  upper-case variable name, but not one playpen itself reads (`PATH`, `HOME`,
+  `XDG_DATA_HOME`, `LIMA_HOME` or any `PLAYPEN_` name); each host is a plain
+  hostname, with no port and not an address. Injection matches the host exactly;
+  the allow entry it implies covers subdomains, like any entry in `allow`. A
+  mistake here stops the config loading rather than being skipped. Every command
+  that brings the sandbox up (`start`, `run`, `shell`, `claude`, `setup`) needs
+  each variable set, and says which are not. Your environment is read first,
+  then `.env.local`, then `.env`; only the named variables are taken from the
+  files. A value in either file is in the project directory, so the sandbox can
+  read it there: the placeholder keeps a value out of the sandbox only when it
+  comes from your environment. Inside the sandbox each variable holds a
+  placeholder, `playpen-secret-gh-token` for `GH_TOKEN`, never the value. On the
+  way out, the placeholder is swapped for the value in the `Authorization`
+  header of HTTPS requests to exactly those hosts on port 443, which is where
+  `gh`, `git`, `curl -u` and npm put a token; no other header, body or URL gets
+  it. A host that echoes `Authorization` back hands the value to the sandbox, so
+  grant a secret only to hosts you would send it to anyway. A secret added or
+  changed while the sandbox runs takes effect after
   `playpen stop && playpen start`. Every sandbox trusts a certificate authority
   made for this install, whose key stays on the host (`docs/NETWORK.md`,
   "Secrets"); the first `start` after upgrading rebakes the base and offers each

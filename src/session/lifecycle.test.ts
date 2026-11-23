@@ -751,6 +751,13 @@ test("the helper is handed each secret's name and value", async (t) => {
 	assert.deepEqual(fencedHeld, [{ env: "TEST_TOKEN", value: TOKEN }]);
 });
 
+test("the helper is handed a value the project's .env sets", async (t) => {
+	const { sb, run } = await sandboxFor(t, ONE_SECRET);
+	await writeFile(join(sb.cwd, ".env"), `TEST_TOKEN=${TOKEN}\n`);
+	await run();
+	assert.deepEqual(fencedHeld, [{ env: "TEST_TOKEN", value: TOKEN }]);
+});
+
 test("limactl never sees a secret's value", async (t) => {
 	setEnv(t, { TEST_TOKEN: TOKEN });
 	const { run } = await sandboxFor(t, ONE_SECRET);
@@ -766,7 +773,8 @@ test("a start with secrets whose variables are unset is refused, naming every on
 		'export default { network: { secrets: [{ env: "TEST_A", hosts: ["a.example.com"] }, { env: "TEST_B", hosts: ["b.example.com"] }, { env: "TEST_C", hosts: ["c.example.com"] }] } };',
 	);
 	await assert.rejects(run(), {
-		message: "network.secrets needs TEST_A, TEST_B set in your environment",
+		message:
+			"network.secrets needs TEST_A, TEST_B set in your environment, .env.local or .env",
 	});
 	assert.deepEqual(calls, []);
 	assert.equal(fencedWith, null);

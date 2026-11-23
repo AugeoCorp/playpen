@@ -31,6 +31,9 @@ once; a sandbox then clones from it and boots in 10s. Restart ~20s.
   base is rebaked. Deleting `<dataDir>/ca/` does the same again. Whether a
   booted guest trusts the CA (curl, Node, Python requests) is unverified; it
   needs `playpen start` on a host with `limactl`.
+- A secret read from the project's `.env` or `.env.local` is in the mount, so
+  the guest can read the value there and the placeholder protects nothing for
+  it. Only a value from the user's environment stays out of the guest.
 - A secret's host gets no protocol upgrades: the interceptor relays HTTP/1.1
   requests only, so a WebSocket that carries the placeholder does not open
   (`docs/NETWORK.md`, "Secrets").
