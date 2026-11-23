@@ -336,10 +336,11 @@ own environment as it reads it (`takeSecretValues`), so nothing it spawns
 afterwards inherits one, and writes them as JSON to the stdin of the helper it
 spawns. The helper keeps them in memory and records only their names in
 `helper.json`. Nothing writes a value to a file, an argument list or a log. A
-helper takes its values only when it is spawned, which is why a start that would
-spawn one is refused when a variable is unset or empty, and why one that finds a
-helper running is not. A value Node would refuse to put in a header (a newline,
-a character past U+00FF) is refused at `start` too. Nothing intercepts yet.
+helper takes its values only when it is spawned, but every command that brings
+the sandbox up is refused when a variable is unset or empty, whether or not it
+finds a helper running: one rule, and nothing to look up first. A value Node
+would refuse to put in a header (a newline, a character past U+00FF) is refused
+at `start` too. Nothing intercepts yet.
 
 ## What it does not contain
 

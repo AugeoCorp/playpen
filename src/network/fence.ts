@@ -20,13 +20,7 @@ import { networkMode } from "../session/projectconfig.ts";
 import { capture } from "../sh.ts";
 import { sleep } from "../time.ts";
 import { isPort } from "./names.ts";
-import {
-	isEnvName,
-	missingMessage,
-	type Policy,
-	parseSecretHost,
-	secretNames,
-} from "./policy.ts";
+import { isEnvName, type Policy, parseSecretHost } from "./policy.ts";
 
 /**
  * The fence: a network namespace with no route out, holding one sandbox VM.
@@ -418,12 +412,6 @@ export async function bringUp(opts: BringUpOptions): Promise<void> {
 	}
 
 	const paths = fencePaths(sandbox);
-	const held = new Set(opts.held.map((secret) => secret.env));
-	const unheld = secretNames(opts.policy.secrets).filter(
-		(name) => !held.has(name),
-	);
-	if (unheld.length > 0) throw new Error(missingMessage(unheld));
-
 	let offset = await sizeOrZero(paths.helperLog);
 	const child = await spawnHelper(sandbox, instance, opts.held);
 

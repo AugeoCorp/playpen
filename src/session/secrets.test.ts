@@ -8,13 +8,10 @@ const NPM: SecretGrant = { env: "NPM_TOKEN", hosts: ["registry.npmjs.org"] };
 
 test("each granted variable's value is taken, by name", () => {
 	const env = { GH_TOKEN: "ghp_a", NPM_TOKEN: "npm_b", HOME: "/home/me" };
-	assert.deepEqual(takeSecretValues([GH, NPM], env), {
-		held: [
-			{ env: "GH_TOKEN", value: "ghp_a" },
-			{ env: "NPM_TOKEN", value: "npm_b" },
-		],
-		missing: [],
-	});
+	assert.deepEqual(takeSecretValues([GH, NPM], env), [
+		{ env: "GH_TOKEN", value: "ghp_a" },
+		{ env: "NPM_TOKEN", value: "npm_b" },
+	]);
 });
 
 test("a taken variable is gone from the environment, and the rest stay", () => {
@@ -23,27 +20,28 @@ test("a taken variable is gone from the environment, and the rest stay", () => {
 	assert.deepEqual(env, { HOME: "/home/me" });
 });
 
-test("an unset or empty variable is reported missing, and the rest are still taken", () => {
+test("an unset or empty variable is refused, naming every one, and the rest are still taken", () => {
 	const env = { GH_TOKEN: "", NPM_TOKEN: "npm_b" };
-	assert.deepEqual(
-		takeSecretValues(
-			[GH, { env: "CARGO_TOKEN", hosts: ["crates.io"] }, NPM],
-			env,
-		),
+	assert.throws(
+		() =>
+			takeSecretValues(
+				[GH, { env: "CARGO_TOKEN", hosts: ["crates.io"] }, NPM],
+				env,
+			),
 		{
-			held: [{ env: "NPM_TOKEN", value: "npm_b" }],
-			missing: ["GH_TOKEN", "CARGO_TOKEN"],
+			message:
+				"network.secrets needs GH_TOKEN, CARGO_TOKEN set in your environment",
 		},
 	);
+	assert.deepEqual(env, {});
 });
 
 test("a variable named by two grants is held once", () => {
 	const env = { GH_TOKEN: "ghp_a" };
-	const { held } = takeSecretValues(
-		[GH, { env: "GH_TOKEN", hosts: ["github.com"] }],
-		env,
+	assert.deepEqual(
+		takeSecretValues([GH, { env: "GH_TOKEN", hosts: ["github.com"] }], env),
+		[{ env: "GH_TOKEN", value: "ghp_a" }],
 	);
-	assert.deepEqual(held, [{ env: "GH_TOKEN", value: "ghp_a" }]);
 });
 
 test("a value that cannot go in a request header is refused, naming the variable and not the value", () => {
