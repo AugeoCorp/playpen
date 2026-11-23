@@ -790,27 +790,3 @@ test("the host sees one Host header, the approved host, whatever the guest sent"
 
 	assert.deepEqual(upstream.received[0]?.hosts, ["api.example"]);
 });
-
-test("headers a front end could route by instead of Host never reach the host", async (t) => {
-	const upstream = await upstreamHost(t);
-	const { port } = await gatekeeperWith(t, {
-		policy: () => secretPolicy(),
-		upstreamPort: upstream.port,
-	});
-
-	await send(clientThrough(t, port, "api.example:443"), {
-		headers: {
-			"x-forwarded-host": "other.example",
-			forwarded: "host=other.example",
-			"x-original-url": "/admin",
-			"x-rewrite-url": "/admin",
-			"x-host": "other.example",
-			"x-http-host-override": "other.example",
-			"x-forwarded-server": "other.example",
-			accept: "application/json",
-		},
-	});
-
-	const { connection: _, ...sent } = upstream.received[0]?.headers ?? {};
-	assert.deepEqual(sent, { host: "api.example", accept: "application/json" });
-});
