@@ -5,7 +5,7 @@ import { type Duplex, pipeline } from "node:stream";
 import type tls from "node:tls";
 import type { HeldSecret } from "./fence.ts";
 import type { LogEntry } from "./gatekeeper.ts";
-import type { Header } from "./inject.ts";
+import { type Header, rewriteHeaders } from "./inject.ts";
 import type { ContextFor } from "./leaf.ts";
 import { type Policy, parseSecretHost } from "./policy.ts";
 
@@ -50,9 +50,10 @@ export function interceptor(options: InterceptorOptions): Interceptor {
 				)
 				.map((grant) => grant.env),
 		);
-		return options.held.some((secret) => granted.has(secret.env))
-			? tunnelServer(options, target.host, lookup)
-			: undefined;
+		const secrets = options.held.filter((secret) => granted.has(secret.env));
+		return secrets.length === 0
+			? undefined
+			: tunnelServer(options, target.host, secrets, lookup);
 	};
 }
 
@@ -76,14 +77,16 @@ const HOP_BY_HOP = new Set([
  * socket as a `connection` once it has answered the `CONNECT`. It terminates
  * TLS for the approved host with a certificate from the install's CA and
  * sends each request on to that host alone, over TLS it verifies, at an
- * address `lookup` allows. Bodies are streamed through unread.
+ * address `lookup` allows, with `secrets` swapped in for their placeholders.
+ * Bodies are streamed through unread.
  */
 function tunnelServer(
 	{ contextFor, log, connect }: InterceptorOptions,
 	host: string,
+	secrets: readonly HeldSecret[],
 	lookup: LookupFunction,
 ): Server {
-	function logLine(verdict: "deny" | "error", reason: string): void {
+	function logLine(verdict: "deny" | "inject" | "error", reason: string): void {
 		log({
 			time: new Date().toISOString(),
 			host,
@@ -105,6 +108,45 @@ function tunnelServer(
 			if (response.headersSent) response.destroy();
 			else response.writeHead(502, { connection: "close" }).end();
 		}
+		function refuse(status: 405 | 421, reason: string): void {
+			logLine("deny", reason);
+			response.writeHead(status, { connection: "close" }).end();
+		}
+		// A TRACE answer echoes the request as the host received it (RFC 9110,
+		// 9.3.8), the value included.
+		if (request.method === "TRACE") {
+			refuse(
+				405,
+				"method TRACE echoes the request back, and the value with it",
+			);
+			return;
+		}
+		// Behind a shared front end the request line can decide which site gets
+		// the request: an absolute-form target overrides `Host` (RFC 9112,
+		// 3.2.2), and a URL parser reads a path starting `//` or `/\` as naming
+		// a host.
+		const target = request.url ?? "";
+		if (!target.startsWith("/") || /^\/[/\\]/.test(target)) {
+			refuse(
+				421,
+				`request target ${target} is not a path on ${host}, the host this tunnel was allowed for`,
+			);
+			return;
+		}
+		const { headers, injected } = rewriteHeaders(
+			[
+				["Host", host],
+				...endToEnd(request.rawHeaders).filter(
+					([name]) => name.toLowerCase() !== "host",
+				),
+			],
+			secrets,
+		);
+		function logInjected(): void {
+			injected.forEach((name) => {
+				logLine("inject", `${name} in Authorization`);
+			});
+		}
 		const upstream = https.request({
 			host,
 			port: TLS_PORT,
@@ -113,8 +155,15 @@ function tunnelServer(
 			lookup,
 			agent,
 			method: request.method,
-			path: request.url,
-			headers: endToEnd(request.rawHeaders).flat(),
+			path: target,
+			headers: headers.flat(),
+		});
+		// Logged once the connection to the host is up, which is when the value
+		// leaves: a dial the address rules refuse, or a certificate that fails,
+		// sends nothing. A kept-alive connection is up already.
+		upstream.once("socket", (socket) => {
+			if (socket.connecting) socket.once("secureConnect", logInjected);
+			else logInjected();
 		});
 		upstream.on("response", (answer) => {
 			response.writeHead(

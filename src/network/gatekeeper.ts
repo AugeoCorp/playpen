@@ -18,13 +18,15 @@ export interface Gatekeeper {
 
 /**
  * A verdict on a request, or a line from inside a tunnel the interceptor
- * holds: a refused TLS server name (`deny`) or an upstream failure (`error`).
+ * holds: a refused TLS server name, request target or method (`deny`), a value
+ * put into a request (`inject`, naming the variable and never the value), or
+ * an upstream failure (`error`).
  */
 export interface LogEntry {
 	time: string;
 	host: string;
 	port: number;
-	verdict: "allow" | "deny" | "probe" | "report" | "error";
+	verdict: "allow" | "deny" | "probe" | "report" | "inject" | "error";
 	reason: string;
 }
 
