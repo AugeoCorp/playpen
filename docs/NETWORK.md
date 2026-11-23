@@ -371,10 +371,13 @@ Inside a tunnel:
 - The placeholder becomes the value in `Authorization` only, verbatim or inside
   `Basic` credentials (`rewriteHeaders`), and only for the secrets granted to
   this host. No other header, the body or the URL is touched.
-- The value can go nowhere else. A TLS server name other than the host is
-  refused. A request target that is not a path, or starts with `//`, gets a 421,
-  since an absolute target overrides `Host`. The host is sent one `Host`, its
-  own, and none of the headers a front end might route by instead (`ROUTING`).
+- The value goes to the approved host and nowhere else. A TLS server name other
+  than the host is refused. A request target that is not a path, or starts with
+  `//`, gets a 421, since an absolute target overrides `Host`. The host is sent
+  one `Host`, its own. Every other header goes on as the guest sent it, so a
+  host whose own front end routes by one (`X-Forwarded-Host`, say) can still be
+  steered by the guest: grant a secret only to hosts you would send it to
+  anyway.
 - `TRACE` gets a 405, since its answer would echo the value back to the guest.
 - HTTP/1.1 only, and no protocol upgrades: an upgrade request reaches the host
   as a plain request, so a WebSocket to a secret's host does not open.
