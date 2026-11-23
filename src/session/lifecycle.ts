@@ -14,7 +14,6 @@ import {
 } from "../network/fence.ts";
 import {
 	BUILTIN_ALLOW,
-	missingMessage,
 	NO_EGRESS_ADVICE,
 	type SecretGrant,
 } from "../network/policy.ts";
@@ -194,20 +193,12 @@ interface Template {
 	setup: string[];
 	network: LoadedNetwork;
 	held: HeldSecret[];
-	/** The variables `network.secrets` names that are unset or empty. */
-	missing: string[];
 }
 
 /** Loads the project config, so it is read once per command and reused. */
 async function renderTemplate(sb: Sandbox): Promise<Template> {
 	const { masked, mounts, setup, network } = await loadConfig(sb);
-	const { held, missing } = takeSecretValues(network.secrets, process.env);
-	// Refused here, before anything is built or booted, when no helper is
-	// running to keep its values; `bringUp` refuses again if it is about to
-	// spawn one.
-	if (missing.length > 0 && (await liveHelper(sb.sandbox)) === null) {
-		throw new Error(missingMessage(missing));
-	}
+	const held = takeSecretValues(network.secrets, process.env);
 	const rendered = await renderFor(sb);
 	return {
 		yaml: `${serialize(rendered)}\n`,
@@ -217,7 +208,6 @@ async function renderTemplate(sb: Sandbox): Promise<Template> {
 		setup,
 		network,
 		held,
-		missing,
 	};
 }
 
@@ -501,10 +491,6 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 			(await changedMounts(sb, template)) ??
 			(await outdatedBase(sb));
 		rebuilding = reason !== null && (await confirmRebuild(sb, reason));
-		// A rebuild destroys the helper that had the values and spawns another.
-		if (rebuilding && template.missing.length > 0) {
-			throw new Error(missingMessage(template.missing));
-		}
 		if (!rebuilding) {
 			const fence = lima.isRunning(existing)
 				? await fenceStatus(sb.sandbox, sb.instance)
