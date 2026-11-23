@@ -340,7 +340,17 @@ helper takes its values only when it is spawned, but every command that brings
 the sandbox up is refused when a variable is unset or empty, whether or not it
 finds a helper running: one rule, and nothing to look up first. A value Node
 would refuse to put in a header (a newline, a character past U+00FF) is refused
-at `start` too. Nothing intercepts yet.
+at `start` too.
+
+The guest gets a placeholder per name, `playpen-secret-` and the name in lower
+case with `-` for `_` (`placeholderFor`). It is fixed, not random: it is not a
+secret, and a fixed one still works in a process or a saved `.npmrc` that
+outlives the helper. Every `start` writes them to
+`/etc/profile.d/playpen-secrets.sh` as root, with the content on stdin, so a
+name dropped from the config leaves the guest; only login shells read it. When
+`start` finds a helper running, it names each configured secret that helper was
+not spawned with, since those wait for the next `stop` and `start`. Nothing
+intercepts yet.
 
 ## What it does not contain
 

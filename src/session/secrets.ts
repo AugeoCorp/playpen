@@ -1,6 +1,13 @@
 import { validateHeaderValue } from "node:http";
 import type { HeldSecret } from "../network/fence.ts";
-import { type SecretGrant, secretNames } from "../network/policy.ts";
+import {
+	placeholderFor,
+	type SecretGrant,
+	secretNames,
+} from "../network/policy.ts";
+
+/** Run as root in the guest with `placeholderProfile` on stdin. */
+export const PROFILE_SCRIPT = "cat > /etc/profile.d/playpen-secrets.sh";
 
 /**
  * Takes each granted variable's value out of `env`, every one before any is
@@ -29,6 +36,16 @@ export function takeSecretValues(
 		assertFitsHeader(secret.env, secret.value);
 	});
 	return held;
+}
+
+/**
+ * What the guest's login shells source: each name set to its placeholder. With
+ * no names it is empty, so a secret dropped from the config leaves the guest.
+ */
+export function placeholderProfile(grants: readonly SecretGrant[]): string {
+	return secretNames(grants)
+		.map((name) => `export ${name}=${placeholderFor(name)}\n`)
+		.join("");
 }
 
 function assertFitsHeader(name: string, value: string): void {

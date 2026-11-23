@@ -12,7 +12,11 @@ import {
 	type HeldSecret,
 	liveHelper,
 } from "../network/fence.ts";
-import { BUILTIN_ALLOW, NO_EGRESS_ADVICE } from "../network/policy.ts";
+import {
+	BUILTIN_ALLOW,
+	NO_EGRESS_ADVICE,
+	type SecretGrant,
+} from "../network/policy.ts";
 import { confirm } from "../prompt.ts";
 import * as history from "./history.ts";
 import { instanceName, sandboxName } from "./identity.ts";
@@ -24,7 +28,11 @@ import {
 	LEGACY_IGNORE_FILE,
 	type LoadedNetwork,
 } from "./projectconfig.ts";
-import { takeSecretValues } from "./secrets.ts";
+import {
+	PROFILE_SCRIPT,
+	placeholderProfile,
+	takeSecretValues,
+} from "./secrets.ts";
 import * as store from "./store.ts";
 import { approveMounts, loadTrustedConfig } from "./trust.ts";
 
@@ -280,6 +288,21 @@ async function applyMasks(
 	return true;
 }
 
+async function applySecrets(
+	sb: Sandbox,
+	grants: readonly SecretGrant[],
+): Promise<void> {
+	const result = await lima.runScript(sb.instance, PROFILE_SCRIPT, {
+		root: true,
+		input: placeholderProfile(grants),
+	});
+	if (result.code !== 0) {
+		console.error(
+			`warning: could not set the secret placeholders in the guest (${result.stderr.trim()})`,
+		);
+	}
+}
+
 /**
  * Lima boots an existing instance from its own stored lima.yaml, so edits to
  * the image definition or the project config do not reach it. Comparing
@@ -486,6 +509,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 			// started takes effect without a restart.
 			await startFenced(sb, template);
 			await applyMasks(sb, template.masks);
+			await applySecrets(sb, template.network.secrets);
 			await history.prepareGuest(sb.instance);
 			await store.touch(sb.sandbox);
 			return { created: false, setupOk: true, setup: template.setup };
@@ -517,6 +541,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 		throw err;
 	}
 	const masked = await applyMasks(sb, template.masks);
+	await applySecrets(sb, template.network.secrets);
 	await history.prepareGuest(sb.instance);
 
 	// Recorded before setup, not after: setup can run for minutes, and an

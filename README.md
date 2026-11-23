@@ -139,11 +139,14 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
   match the host exactly; the allow entry it implies covers subdomains, like any
   entry in `allow`. A mistake here stops the config loading rather than being
   skipped. Every command that brings the sandbox up (`start`, `run`, `shell`,
-  `claude`, `setup`) needs each variable set, and says which are not. Nothing is
-  injected yet: the values are held on the host and not used. Every sandbox
-  trusts a certificate authority made for this install, whose key stays on the
-  host (`docs/NETWORK.md`, "Secrets"); the first `start` after upgrading rebakes
-  the base and offers each sandbox a rebuild.
+  `claude`, `setup`) needs each variable set, and says which are not. Inside the
+  sandbox each variable holds a placeholder, `playpen-secret-gh-token` for
+  `GH_TOKEN`, never the value. A secret added while the sandbox runs takes
+  effect after `playpen stop && playpen start`. Nothing is injected yet: the
+  placeholder reaches the host as it is. Every sandbox trusts a certificate
+  authority made for this install, whose key stays on the host
+  (`docs/NETWORK.md`, "Secrets"); the first `start` after upgrading rebakes the
+  base and offers each sandbox a rebuild.
 - `mode: "log"` records what the sandbox reaches and blocks nothing on the
   internet side; your own machine's localhost stays closed in every mode. Use it
   to find the hosts a project needs, then list them; the default is `enforce`.
