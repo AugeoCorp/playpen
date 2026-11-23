@@ -237,18 +237,3 @@ test("a helper is handed the values of its secrets on stdin", async (t) => {
 	});
 	assert.deepEqual(fence.parseHeldSecrets(await text(helperStdin)), held);
 });
-
-test("a stopped sandbox whose policy names a secret with no value is refused, and no helper is started", async (t) => {
-	await stoppedSandbox(t);
-	await assert.rejects(
-		fence.bringUp({
-			sandbox: SANDBOX,
-			instance: INSTANCE,
-			policy: { ...NOTHING_ALLOWED, secrets: [GH] },
-			held: [],
-			log: () => {},
-		}),
-		{ message: "network.secrets needs GH_TOKEN set in your environment" },
-	);
-	assert.equal(helpersStarted, 0, "bringUp started a helper anyway");
-});

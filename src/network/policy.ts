@@ -79,10 +79,6 @@ export function secretNames(grants: readonly SecretGrant[]): string[] {
 	return [...new Set(grants.map((grant) => grant.env))];
 }
 
-export function missingMessage(missing: readonly string[]): string {
-	return `network.secrets needs ${missing.join(", ")} set in your environment`;
-}
-
 export interface Policy {
 	/**
 	 * Built-in entries plus the project's `network.allow`, already merged, a
