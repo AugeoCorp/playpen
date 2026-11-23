@@ -772,37 +772,12 @@ test("a start with secrets whose variables are unset is refused, naming every on
 	assert.equal(fencedWith, null);
 });
 
-test("a running sandbox with a live helper does not need the variable again", async (t) => {
+test("a running sandbox needs the variable again, and is left as it was without it", async (t) => {
 	setEnv(t, { TEST_TOKEN: TOKEN });
 	const { run } = await sandboxFor(t, ONE_SECRET);
 	await run();
 	calls.length = 0;
 	delete process.env.TEST_TOKEN;
-	await run();
-	assert.deepEqual(calls, ["leave the fence alone", "ready ~/.claude"]);
-});
-
-test("a running sandbox whose helper is gone needs the variable again, and is left as it was without it", async (t) => {
-	setEnv(t, { TEST_TOKEN: TOKEN });
-	const { run } = await sandboxFor(t, ONE_SECRET);
-	await run();
-	calls.length = 0;
-	delete process.env.TEST_TOKEN;
-	fenceState = "sealed-no-gatekeeper";
-	helperLive = false;
-	await assert.rejects(run(), /network\.secrets needs TEST_TOKEN/);
-	assert.deepEqual(calls, []);
-});
-
-test("a rebuild the user confirmed is refused when a variable is unset, and the old sandbox is kept", async (t) => {
-	setEnv(t, { TEST_TOKEN: TOKEN });
-	const { sb, run } = await sandboxFor(t, ONE_SECRET);
-	await run();
-	calls.length = 0;
-	delete process.env.TEST_TOKEN;
-	const { templatesDir } = await import("../config.ts");
-	await writeFile(join(templatesDir(), `${sb.sandbox}.yaml`), "older\n");
-	answer = true;
 	await assert.rejects(run(), /network\.secrets needs TEST_TOKEN/);
 	assert.deepEqual(calls, []);
 });
@@ -820,6 +795,8 @@ test("a sandbox that is already up has its placeholders written again", async (t
 	setEnv(t, { TEST_TOKEN: TOKEN });
 	const { run } = await sandboxFor(t, ONE_SECRET);
 	await run();
+	// A second command is a second process, with the variable set again.
+	setEnv(t, { TEST_TOKEN: TOKEN });
 	await run();
 	assert.deepEqual(profileWrites, [PROFILE, PROFILE]);
 });
