@@ -23,9 +23,9 @@ As root. It is safe to re-run. It installs QEMU, socat, bubblewrap and
 openssh-client from apt, Lima 2.2.0 from the GitHub release, and Node 24 in
 `/opt/node`. The container's Node 22 cannot strip types, so neither the CLI nor
 `lifecycle.test.ts` runs on it. It also creates the `runner` user, because
-`limactl` refuses to run as root, and links the system certificate
-store for that user, which carries the agent proxy's CA. Without it, the
-host-side network helper cannot reach real hosts. It ends with `pp doctor`.
+`limactl` refuses to run as root, and links the system certificate store for
+that user, which carries the agent proxy's CA. Without it, the host-side network
+helper cannot reach real hosts. It ends with `pp doctor`.
 
 `as_runner <command>` runs a command as `runner`, with
 `XDG_DATA_HOME=/home/runner/pp-data`. It starts from `env -i`, so the
