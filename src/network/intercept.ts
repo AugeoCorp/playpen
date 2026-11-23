@@ -73,21 +73,6 @@ const HOP_BY_HOP = new Set([
 ]);
 
 /**
- * Headers a front end may route a request by, rather than by its connection.
- * The host gets one `Host`, the approved one, and none of the rest.
- */
-const ROUTING = new Set([
-	"host",
-	"x-forwarded-host",
-	"forwarded",
-	"x-original-url",
-	"x-rewrite-url",
-	"x-host",
-	"x-http-host-override",
-	"x-forwarded-server",
-]);
-
-/**
  * One server per tunnel, never listening: proxy-chain hands it the tunnel's
  * socket as a `connection` once it has answered the `CONNECT`. It terminates
  * TLS for the approved host with a certificate from the install's CA and
@@ -152,7 +137,7 @@ function tunnelServer(
 			[
 				["Host", host],
 				...endToEnd(request.rawHeaders).filter(
-					([name]) => !ROUTING.has(name.toLowerCase()),
+					([name]) => name.toLowerCase() !== "host",
 				),
 			],
 			secrets,
