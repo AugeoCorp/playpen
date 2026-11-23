@@ -6,6 +6,7 @@ import type {
 	PrepareRequestFunctionResult,
 } from "proxy-chain";
 import { RequestError, Server } from "proxy-chain";
+import type { Interceptor } from "./intercept.ts";
 import { isIpv4, isPublicIpv4, isPublicOrLanIpv4 } from "./names.ts";
 import type { Policy, Reach } from "./policy.ts";
 import { decide } from "./policy.ts";
@@ -15,11 +16,15 @@ export interface Gatekeeper {
 	close(): Promise<void>;
 }
 
+/**
+ * A verdict on a request, or a line from inside a tunnel the interceptor
+ * holds: a refused TLS server name (`deny`) or an upstream failure (`error`).
+ */
 export interface LogEntry {
 	time: string;
 	host: string;
 	port: number;
-	verdict: "allow" | "deny" | "probe" | "report";
+	verdict: "allow" | "deny" | "probe" | "report" | "error";
 	reason: string;
 }
 
@@ -39,6 +44,8 @@ export interface StartGatekeeperOptions {
 	port?: number;
 	log: (line: LogEntry) => void;
 	resolve?: Resolve;
+	/** Takes the tunnels to a held secret's host; without it every one is piped. */
+	intercept?: Interceptor;
 }
 
 /**
@@ -159,8 +166,8 @@ function lookupReachable(
 }
 
 /** Starts the CONNECT-gating proxy. Every outbound guest connection arrives
- * here as an HTTP CONNECT; `policy` decides whether it is piped through,
- * refused with a 403 before any upstream socket opens, or (in `"log"` mode)
+ * here as an HTTP CONNECT; `policy` decides whether it is piped through or
+ * handed to `intercept`, refused with a 403 before any upstream socket opens, or (in `"log"` mode)
  * piped through and recorded as what would have been refused. A request for
  * `PROBE_HOST` is refused the same way, and its log line is what tells the
  * helper the guest's route reaches here at all. */
@@ -178,9 +185,11 @@ export async function startGatekeeper(
 		prepareRequestFunction: ({
 			hostname,
 			port,
+			isHttp,
 		}: PrepareRequestFunctionOpts): PrepareRequestFunctionResult => {
 			const own = ownAddresses();
-			const verdict = decide(policy(), hostname, port, own);
+			const current = policy();
+			const verdict = decide(current, hostname, port, own);
 			log({
 				time: new Date().toISOString(),
 				host: hostname,
@@ -196,17 +205,17 @@ export async function startGatekeeper(
 			// case, in a trailing dot, and wherever the policy mapped the name to an
 			// address of its own.
 			const { target, reach } = verdict;
-			if (isIpv4(target.host)) return { dnsLookup: lookupAt(target.host) };
-			return {
-				dnsLookup: lookupReachable(
-					target.host,
-					target.port,
-					reach,
-					own,
-					resolve,
-					log,
-				),
-			};
+			const dnsLookup = isIpv4(target.host)
+				? lookupAt(target.host)
+				: lookupReachable(target.host, target.port, reach, own, resolve, log);
+			// Only a tunnel: proxy-chain ignores `customConnectServer` for a plain
+			// HTTP request, which would then be forwarded without this lookup.
+			const customConnectServer = isHttp
+				? undefined
+				: opts.intercept?.(current, target, dnsLookup);
+			return customConnectServer === undefined
+				? { dnsLookup }
+				: { customConnectServer };
 		},
 	});
 
