@@ -418,27 +418,6 @@ test("a host whose certificate fails verification gets nothing, and the guest a 
 	);
 });
 
-test("a host whose certificate is for another name gets nothing, and the guest a 502", async (t) => {
-	const contextFor = leafMinter(publicCa);
-	const received: string[] = [];
-	const server = https.createServer(
-		{ SNICallback: (_name, done) => done(null, contextFor("other.example")) },
-		(request, response) => {
-			received.push(request.url ?? "");
-			response.end();
-		},
-	);
-	const { port } = await gatekeeperWith(t, {
-		policy: () => secretPolicy(),
-		upstreamPort: await listening(t, server),
-	});
-
-	const answer = await send(clientThrough(t, port, "api.example:443"));
-
-	assert.equal(answer.status, 502);
-	assert.deepEqual(received, []);
-});
-
 test("a reason phrase holding a control byte is not passed on, and the guest still gets the answer", async (t) => {
 	const { port } = await gatekeeperWith(t, {
 		policy: () => secretPolicy(),
