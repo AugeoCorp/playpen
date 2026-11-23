@@ -37,8 +37,10 @@ fi
 id runner >/dev/null 2>&1 || useradd -m runner
 
 # The host-side network helper reaches real hosts through the container's
-# egress proxy, so the test user needs its CA.
-install -m 644 /root/.ccr/ca-bundle.crt /opt/ca-bundle.crt
+# egress proxy, so the test user needs its CA. The system store carries it,
+# exists while setup runs, and the test user can read it; /root/.ccr is none
+# of those.
+ln -sf /etc/ssl/certs/ca-certificates.crt /opt/ca-bundle.crt
 
 # The test user runs the repo's CLI in place.
 dir=$REPO
