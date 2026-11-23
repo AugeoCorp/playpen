@@ -126,7 +126,9 @@ async function loadConfig(sb: Sandbox): Promise<{
 		);
 	}
 	for (const { env, hosts } of network.secrets) {
-		console.error(`naming ${env} for ${hosts.join(", ")} (not injected yet)`);
+		console.error(
+			`secret ${env} for ${hosts.join(", ")}: the guest holds a placeholder, swapped for the value in the Authorization header of HTTPS requests to them`,
+		);
 	}
 	// An unloaded config names nothing, and approving nothing would forget
 	// every path approved before.

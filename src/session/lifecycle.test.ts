@@ -654,7 +654,7 @@ test("a secret's hosts are allowed without being listed, and the secret reaches 
 	});
 });
 
-test("each secret is reported by name and hosts, and its value stays out of the output, so a later injector cannot print it", async (t) => {
+test("each secret is reported by name and hosts, and its value stays out of the output", async (t) => {
 	setEnv(t, { TEST_TOKEN: "ghp_not-to-be-printed" });
 	const { run } = await sandboxFor(
 		t,
@@ -665,7 +665,7 @@ test("each secret is reported by name and hosts, and its value stays out of the 
 	const lines = said.mock.calls.map((c) => String(c.arguments[0]));
 	assert.ok(
 		lines.includes(
-			"naming TEST_TOKEN for api.github.com, github.com (not injected yet)",
+			"secret TEST_TOKEN for api.github.com, github.com: the guest holds a placeholder, swapped for the value in the Authorization header of HTTPS requests to them",
 		),
 		`expected a naming line, got:\n${lines.join("\n")}`,
 	);

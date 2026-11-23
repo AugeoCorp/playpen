@@ -111,3 +111,15 @@ test("a group- or world-readable key is refused, naming the file", async (t) => 
 	await chmod(keyPath, 0o604);
 	await assert.rejects(ensureCa, (err: Error) => err.message.includes(keyPath));
 });
+
+test("a key with no certificate beside it is refused, saying how to start over", async (t) => {
+	await withTempData(t);
+	const { ensureCa } = await import("./ca.ts");
+	const { caDir } = await import("../config.ts");
+	await ensureCa();
+	await rm(join(caDir(), "ca.crt"));
+	await assert.rejects(
+		ensureCa(),
+		/ca\.crt cannot be read, though its key is there; delete the ca directory to start over/,
+	);
+});
