@@ -16,9 +16,8 @@ export const PROFILE_SCRIPT = "cat > /etc/profile.d/playpen-secrets.sh";
 /**
  * Takes each granted variable's value out of `env`, every one before any is
  * checked, so no child spawned afterwards inherits it, even after a refusal.
- * A variable unset or empty there is read from `envFiles` instead. Every
- * command needs every variable, even when a helper is already running with the
- * values.
+ * Every command needs every variable, even when a helper is already running
+ * with the values.
  */
 export function takeSecretValues(
 	grants: readonly SecretGrant[],
@@ -50,7 +49,6 @@ export function takeSecretValues(
 /** A later file wins: `.env.local` is this machine's own, `.env` is shared. */
 const ENV_FILES = [".env", ".env.local"];
 
-/** The variables the project's `.env` and `.env.local` set, parsed and never run. */
 export async function readEnvFiles(
 	project: string,
 ): Promise<NodeJS.Dict<string>> {
