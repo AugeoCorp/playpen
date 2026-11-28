@@ -1,5 +1,8 @@
 // Every key, with one line each. The rules are in README.md under Config.
 export default {
+	// The sandbox's memory in GiB. Without it, 8.
+	memory: 16,
+
 	// Guest-local storage for paths that are slow or platform-specific on the share.
 	masked: ["node_modules"],
 

@@ -104,6 +104,15 @@ export async function clone(source: string, target: string): Promise<void> {
 	);
 }
 
+/** Takes effect when the instance next boots; Lima refuses a running one. */
+export async function setMemory(name: string, gib: number): Promise<void> {
+	assertOurs("edit", name);
+	mustSucceed(
+		"limactl edit",
+		await capture(LIMACTL, ["edit", "--tty=false", `--memory=${gib}`, name]),
+	);
+}
+
 /**
  * Checked here rather than trusting callers to have gone through
  * `instanceName()`: these operations destroy VMs, so the check belongs at the

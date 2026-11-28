@@ -51,12 +51,14 @@ function renderFor(sb: Sandbox) {
 }
 
 async function loadConfig(sb: Sandbox): Promise<{
+	memory: number | undefined;
 	masked: string[];
 	mounts: string[];
 	setup: string[];
 	network: LoadedNetwork;
 }> {
 	const {
+		memory,
 		masked,
 		mounts: requested,
 		setup,
@@ -128,7 +130,7 @@ async function loadConfig(sb: Sandbox): Promise<{
 			`mounting read-only: ${mounts.map(escapeUnshowable).join(", ")}`,
 		);
 	}
-	return { masked, mounts, setup, network };
+	return { memory, masked, mounts, setup, network };
 }
 
 async function grantMounts(
@@ -180,6 +182,8 @@ export async function runSetup(
 interface Template {
 	yaml: string;
 	hash: string;
+	/** In GiB; undefined when the project names none, which leaves the VM's as it is. */
+	memory: number | undefined;
 	masks: string[];
 	/** Approved and resolved, so these are exactly the paths Lima is given. */
 	mounts: string[];
@@ -189,11 +193,12 @@ interface Template {
 
 /** Loads the project config, so it is read once per command and reused. */
 async function renderTemplate(sb: Sandbox): Promise<Template> {
-	const { masked, mounts, setup, network } = await loadConfig(sb);
+	const { memory, masked, mounts, setup, network } = await loadConfig(sb);
 	const rendered = renderFor(sb);
 	return {
 		yaml: `${serialize(rendered)}\n`,
 		hash: rendered.contentHash,
+		memory,
 		masks: masked,
 		mounts,
 		setup,
@@ -259,6 +264,28 @@ async function giveCloneItsMounts(
 		path,
 		yaml.replace(NO_MOUNTS, () => mountsFor(sb, readOnly)),
 	);
+}
+
+const GIB = 2 ** 30;
+
+/**
+ * Gives an existing sandbox the memory its project now names, without a
+ * rebuild. Lima changes it only on a stopped VM, so a running one is told what
+ * it takes.
+ */
+async function applyMemory(
+	instance: lima.Instance,
+	memory: number | undefined,
+): Promise<void> {
+	if (memory === undefined || instance.memory === memory * GIB) return;
+	if (lima.isRunning(instance)) {
+		console.error(
+			`memory ${memory}GiB takes effect after: playpen stop && playpen start`,
+		);
+		return;
+	}
+	await lima.setMemory(instance.name, memory);
+	console.error(`set the sandbox's memory to ${memory}GiB`);
 }
 
 /**
@@ -478,6 +505,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 				);
 			}
 			if (!lima.isRunning(existing)) await history.makeHostDir(sb.sandbox);
+			await applyMemory(existing, template.memory);
 			// In every other state, including a sandbox that is already up: a
 			// stopped VM is started, one that survived its helper gets another
 			// gatekeeper, and a running one has its policy rewritten, which is
@@ -512,6 +540,10 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 	try {
 		await history.makeHostDir(sb.sandbox);
 		await giveCloneItsMounts(sb, current.mounts);
+		// After the mounts: `limactl edit` re-emits lima.yaml in its own layout.
+		if (current.memory !== undefined) {
+			await lima.setMemory(sb.instance, current.memory);
+		}
 		await startFenced(sb, current);
 	} catch (err) {
 		await lima

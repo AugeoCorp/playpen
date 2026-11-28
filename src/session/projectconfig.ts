@@ -72,6 +72,14 @@ export interface NetworkConfig {
 
 export interface PlaypenConfig {
 	/**
+	 * The guest's memory in GiB, a whole number. A new sandbox without it gets
+	 * playpen's default. On an existing sandbox it takes effect the next time
+	 * the VM boots, with no rebuild; taking the key out leaves the memory where
+	 * it was.
+	 */
+	memory?: number;
+
+	/**
 	 * Project-relative paths given guest-local storage instead of the 9p share.
 	 *
 	 * Two reasons, neither of them privacy: the 9p share is slow, and host and
@@ -134,6 +142,8 @@ export interface LoadedNetwork {
 }
 
 export interface LoadedConfig {
+	/** In GiB. Undefined when the project names none. */
+	memory?: number | undefined;
 	masked: string[];
 	/** As written: resolving and approving a path needs the host, not the schema. */
 	mounts: string[];
@@ -295,6 +305,8 @@ const secretEntry = z.strictObject(
 	},
 );
 
+const MEMORY = "must be a whole number of GiB, like 16";
+
 const secrets = z.array(secretEntry, {
 	error: "must be an array of { env, hosts }",
 });
@@ -320,9 +332,20 @@ const networkSchema = z
 	)
 	.prefault({});
 
+/**
+ * Fails the load rather than being dropped: a sandbox quietly started with the
+ * default would look like the setting had taken effect.
+ */
+const memory = z
+	.number({ error: MEMORY })
+	.int({ error: MEMORY })
+	.positive({ error: MEMORY })
+	.optional();
+
 const configSchema = z
 	.object(
 		{
+			memory,
 			masked: lenientList(maskEntry),
 			mounts: lenientList(mountEntry),
 			setup: lenientList(setupEntry),
@@ -337,11 +360,13 @@ const configSchema = z
 	)
 	.transform(
 		({
+			memory,
 			masked,
 			mounts,
 			setup,
 			network: { allow, mode, ports, secrets },
 		}): LoadedConfig => ({
+			memory,
 			masked: masked.kept,
 			mounts: [...new Set(mounts.kept)],
 			setup: setup.kept,
