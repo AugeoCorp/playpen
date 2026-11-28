@@ -449,6 +449,41 @@ test("reports a non-array network.allow instead of throwing", async (t) => {
 	assert.deepEqual(r.network.allow, []);
 });
 
+test("a project's memory is loaded as a number of GiB", async (t) => {
+	const dir = await project(t, {
+		"playpen.config.js": "export default { memory: 16 };",
+	});
+	assert.equal((await loadProjectConfig(dir)).memory, 16);
+});
+
+test("a project that names no memory loads with none", async (t) => {
+	const dir = await project(t, {
+		"playpen.config.js": 'export default { masked: ["node_modules"] };',
+	});
+	assert.equal((await loadProjectConfig(dir)).memory, undefined);
+});
+
+test("a memory that is not a whole number of GiB above zero is an error, not a silent fall back to the default", async (t) => {
+	const written = ['"16GiB"', "1.5", "0", "-8"];
+	const loaded = await Promise.all(
+		written.map(async (memory) =>
+			loadProjectConfig(
+				await project(t, {
+					"playpen.config.js": `export default { memory: ${memory} };`,
+				}),
+			),
+		),
+	);
+	loaded.forEach((r, index) => {
+		assert.match(
+			r.error ?? "",
+			/`memory` must be a whole number of GiB, like 16/,
+			`memory: ${written[index]} was accepted`,
+		);
+		assert.equal(r.memory, undefined);
+	});
+});
+
 test("an unknown mode is an error, not a silent fall back to enforcing", async (t) => {
 	const dir = await project(t, {
 		"playpen.config.js":

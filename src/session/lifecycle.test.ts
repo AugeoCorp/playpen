@@ -34,6 +34,7 @@ let exists = false;
 let status: "Running" | "Stopped" = "Running";
 /** The policy the sandbox was brought up behind, as the fence was handed it. */
 let fencedWith: Policy | null = null;
+let clonedWithMemory: number | undefined;
 /** What the fake fence reports for a running VM; a test overrides it. */
 let fenceState:
 	| "sealed"
@@ -107,7 +108,8 @@ mock.module("../lima/client.ts", {
 		remove: async () => {
 			calls.push("delete the VM");
 		},
-		async clone(_source: string, target: string) {
+		async clone(_source: string, target: string, memoryGiB?: number) {
+			clonedWithMemory = memoryGiB;
 			exists = true;
 			await mkdir(join(limaHome, target), { recursive: true });
 			const path = join(limaHome, target, "lima.yaml");
@@ -160,6 +162,7 @@ async function sandboxFor(
 	calls.length = 0;
 	exists = false;
 	fencedWith = null;
+	clonedWithMemory = undefined;
 	fenceState = "sealed";
 	helperEgress = true;
 	helperUnbound = [];
@@ -231,6 +234,27 @@ test("a new sandbox mounts its own host directory, writable, over the guest's ~/
 			"9p": { securityModel: "mapped-xattr" },
 		},
 	]);
+});
+
+test("a project's memory is what the sandbox is cloned with, and start says so", async (t) => {
+	const { run } = await sandboxFor(t, "export default { memory: 16 };");
+	const said = t.mock.method(console, "error", () => {});
+	await run();
+	assert.equal(clonedWithMemory, 16);
+	const lines = said.mock.calls.map((c) => String(c.arguments[0]));
+	assert.ok(
+		lines.includes("giving the sandbox 16GiB of memory"),
+		`not said in: ${lines.join(" / ")}`,
+	);
+});
+
+test("a project that names no memory is cloned with the base's, and start says nothing of it", async (t) => {
+	const { run } = await sandboxFor(t, BOTH);
+	const said = t.mock.method(console, "error", () => {});
+	await run();
+	assert.equal(clonedWithMemory, undefined);
+	const lines = said.mock.calls.map((c) => String(c.arguments[0])).join("\n");
+	assert.doesNotMatch(lines, /of memory/);
 });
 
 const SHARED = 'export default { mounts: ["../shared"] };';

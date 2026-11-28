@@ -46,17 +46,23 @@ function templatePath(sb: Sandbox): string {
 	return join(templatesDir(), `${sb.sandbox}.yaml`);
 }
 
-function renderFor(sb: Sandbox) {
-	return render(baseImage, { ...defaults, mount: sb.cwd });
+function renderFor(sb: Sandbox, memory: number | undefined) {
+	return render(baseImage, {
+		...defaults,
+		memory: memory === undefined ? defaults.memory : `${memory}GiB`,
+		mount: sb.cwd,
+	});
 }
 
 async function loadConfig(sb: Sandbox): Promise<{
+	memory: number | undefined;
 	masked: string[];
 	mounts: string[];
 	setup: string[];
 	network: LoadedNetwork;
 }> {
 	const {
+		memory,
 		masked,
 		mounts: requested,
 		setup,
@@ -103,6 +109,9 @@ async function loadConfig(sb: Sandbox): Promise<{
 		);
 		console.error(`  connections are recorded and allowed.`);
 	}
+	if (memory !== undefined) {
+		console.error(`giving the sandbox ${memory}GiB of memory`);
+	}
 	if (masked.length > 0) {
 		console.error(`masking with guest-local storage: ${masked.join(", ")}`);
 	}
@@ -128,7 +137,7 @@ async function loadConfig(sb: Sandbox): Promise<{
 			`mounting read-only: ${mounts.map(escapeUnshowable).join(", ")}`,
 		);
 	}
-	return { masked, mounts, setup, network };
+	return { memory, masked, mounts, setup, network };
 }
 
 async function grantMounts(
@@ -180,6 +189,8 @@ export async function runSetup(
 interface Template {
 	yaml: string;
 	hash: string;
+	/** In GiB; undefined when the project names none and the base's stands. */
+	memory: number | undefined;
 	masks: string[];
 	/** Approved and resolved, so these are exactly the paths Lima is given. */
 	mounts: string[];
@@ -189,11 +200,12 @@ interface Template {
 
 /** Loads the project config, so it is read once per command and reused. */
 async function renderTemplate(sb: Sandbox): Promise<Template> {
-	const { masked, mounts, setup, network } = await loadConfig(sb);
-	const rendered = renderFor(sb);
+	const { memory, masked, mounts, setup, network } = await loadConfig(sb);
+	const rendered = renderFor(sb, memory);
 	return {
 		yaml: `${serialize(rendered)}\n`,
 		hash: rendered.contentHash,
+		memory,
 		masks: masked,
 		mounts,
 		setup,
@@ -508,7 +520,7 @@ export async function ensureRunning(sb: Sandbox): Promise<Running> {
 
 	// A clone that never came up is worse than no clone at all: `start` would find
 	// it, see nothing stale, and try to start the broken instance forever.
-	await lima.clone(base.instance, sb.instance);
+	await lima.clone(base.instance, sb.instance, current.memory);
 	try {
 		await history.makeHostDir(sb.sandbox);
 		await giveCloneItsMounts(sb, current.mounts);

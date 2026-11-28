@@ -145,8 +145,10 @@ They run from the host over `limactl shell` after every start, which they had to
 do anyway since a bind does not survive a reboot. Changing `masked` now takes
 effect on the next `start` without a rebuild.
 
-Consequence: cpus, memory, disk and mountType come from the base, so they cannot
-yet vary per sandbox. They are global defaults today.
+Consequence: cpus, disk and mountType come from the base, so they cannot yet
+vary per sandbox. They are global defaults today. Memory is the exception:
+`limactl clone --memory` sets it on the clone, from `memory` in
+`playpen.config.ts`.
 
 - [x] `image build`, with `--force` for a fresh dated bake
 - [x] base naming, lookup by hash, newest wins
