@@ -34,7 +34,9 @@ let exists = false;
 let status: "Running" | "Stopped" = "Running";
 /** The policy the sandbox was brought up behind, as the fence was handed it. */
 let fencedWith: Policy | null = null;
-let clonedWithMemory: number | undefined;
+const GIB = 2 ** 30;
+/** What Lima reports for the instance, in bytes. A clone has the base's 8 GiB. */
+let instanceMemory = 8 * GIB;
 /** What the fake fence reports for a running VM; a test overrides it. */
 let fenceState:
 	| "sealed"
@@ -101,15 +103,20 @@ mock.module("../lima/client.ts", {
 		list: async () => [
 			{ name: baseInstanceName(imageHash(baseImage), "2026-09-16") },
 		],
-		get: async (name: string) => (exists ? { name, status } : null),
+		get: async (name: string) =>
+			exists ? { name, status, memory: instanceMemory } : null,
 		stop: async () => {
 			calls.push("stop");
 		},
 		remove: async () => {
 			calls.push("delete the VM");
 		},
-		async clone(_source: string, target: string, memoryGiB?: number) {
-			clonedWithMemory = memoryGiB;
+		async setMemory(_name: string, gib: number) {
+			calls.push(`set memory to ${gib}GiB`);
+			instanceMemory = gib * GIB;
+		},
+		async clone(_source: string, target: string) {
+			instanceMemory = 8 * GIB;
 			exists = true;
 			await mkdir(join(limaHome, target), { recursive: true });
 			const path = join(limaHome, target, "lima.yaml");
@@ -162,7 +169,7 @@ async function sandboxFor(
 	calls.length = 0;
 	exists = false;
 	fencedWith = null;
-	clonedWithMemory = undefined;
+	instanceMemory = 8 * GIB;
 	fenceState = "sealed";
 	helperEgress = true;
 	helperUnbound = [];
@@ -236,25 +243,94 @@ test("a new sandbox mounts its own host directory, writable, over the guest's ~/
 	]);
 });
 
-test("a project's memory is what the sandbox is cloned with, and start says so", async (t) => {
-	const { run } = await sandboxFor(t, "export default { memory: 16 };");
-	const said = t.mock.method(console, "error", () => {});
+const SIXTEEN = "export default { memory: 16 };";
+
+test("a new sandbox gets its project's memory before it first boots", async (t) => {
+	const { run } = await sandboxFor(t, SIXTEEN);
 	await run();
-	assert.equal(clonedWithMemory, 16);
+	assert.deepEqual(
+		calls.filter((c) => /memory|start/.test(c)),
+		["set memory to 16GiB", "start behind the gatekeeper"],
+	);
+});
+
+test("a new sandbox whose project names no memory keeps the base's", async (t) => {
+	const { run } = await sandboxFor(t, BOTH);
+	await run();
+	assert.deepEqual(
+		calls.filter((c) => c.includes("memory")),
+		[],
+	);
+});
+
+test("a stopped sandbox is given a memory its project now names, with no rebuild, and start says so", async (t) => {
+	const { run } = await sandboxFor(t, SIXTEEN);
+	await run();
+	calls.length = 0;
+	status = "Stopped";
+	fenced = false;
+	instanceMemory = 8 * GIB;
+	const said = t.mock.method(console, "error", () => {});
+	const result = (await run()) as { created: boolean };
+	assert.equal(result.created, false);
+	assert.deepEqual(
+		calls.filter((c) => /memory|start|delete/.test(c)),
+		["set memory to 16GiB", "start behind the gatekeeper"],
+	);
+	assert.deepEqual(asked, []);
 	const lines = said.mock.calls.map((c) => String(c.arguments[0]));
 	assert.ok(
-		lines.includes("giving the sandbox 16GiB of memory"),
+		lines.includes("set the sandbox's memory to 16GiB"),
 		`not said in: ${lines.join(" / ")}`,
 	);
 });
 
-test("a project that names no memory is cloned with the base's, and start says nothing of it", async (t) => {
-	const { run } = await sandboxFor(t, BOTH);
+test("a running sandbox keeps its memory, and start says what a new one takes", async (t) => {
+	const { run } = await sandboxFor(t, SIXTEEN);
+	await run();
+	calls.length = 0;
+	instanceMemory = 8 * GIB;
 	const said = t.mock.method(console, "error", () => {});
 	await run();
-	assert.equal(clonedWithMemory, undefined);
+	assert.deepEqual(
+		calls.filter((c) => c.includes("memory")),
+		[],
+	);
+	const lines = said.mock.calls.map((c) => String(c.arguments[0]));
+	assert.ok(
+		lines.includes(
+			"memory 16GiB takes effect after: playpen stop && playpen start",
+		),
+		`not said in: ${lines.join(" / ")}`,
+	);
+});
+
+test("a sandbox that already has its project's memory is left alone, and start says nothing of it", async (t) => {
+	const { run } = await sandboxFor(t, SIXTEEN);
+	await run();
+	calls.length = 0;
+	status = "Stopped";
+	const said = t.mock.method(console, "error", () => {});
+	await run();
+	assert.deepEqual(
+		calls.filter((c) => c.includes("memory")),
+		[],
+	);
 	const lines = said.mock.calls.map((c) => String(c.arguments[0])).join("\n");
-	assert.doesNotMatch(lines, /of memory/);
+	assert.doesNotMatch(lines, /memory/);
+});
+
+test("a stopped sandbox whose project names no memory keeps the memory it has", async (t) => {
+	const { run } = await sandboxFor(t, BOTH);
+	await run();
+	calls.length = 0;
+	status = "Stopped";
+	instanceMemory = 16 * GIB;
+	await run();
+	assert.deepEqual(
+		calls.filter((c) => c.includes("memory")),
+		[],
+	);
 });
 
 const SHARED = 'export default { mounts: ["../shared"] };';

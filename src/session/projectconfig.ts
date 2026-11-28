@@ -72,8 +72,10 @@ export interface NetworkConfig {
 
 export interface PlaypenConfig {
 	/**
-	 * The guest's memory in GiB, a whole number. Without it the sandbox gets
-	 * playpen's default. Changing it needs a rebuild, which `start` offers.
+	 * The guest's memory in GiB, a whole number. A new sandbox without it gets
+	 * playpen's default. On an existing sandbox it takes effect the next time
+	 * the VM boots, with no rebuild; taking the key out leaves the memory where
+	 * it was.
 	 */
 	memory?: number;
 
@@ -140,7 +142,7 @@ export interface LoadedNetwork {
 }
 
 export interface LoadedConfig {
-	/** Undefined when the project names none; the default is applied where it is used. */
+	/** In GiB. Undefined when the project names none. */
 	memory?: number | undefined;
 	masked: string[];
 	/** As written: resolving and approving a path needs the host, not the schema. */

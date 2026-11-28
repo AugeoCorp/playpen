@@ -90,9 +90,11 @@ export default { masked: ["node_modules"], setup: ["npm ci"] };
 | `setup`   | `string[]`                                                                                                                                             | Shell commands run in the guest, after masks, in order                                                                              |
 | `network` | `{ allow?: string[]; mode?: "enforce" \| "log"; ports?: (number \| { host: number; guest: number })[]; secrets?: { env: string; hosts: string[] }[] }` | Hosts this project may reach, on top of the ones playpen ships, host ports it sees at its own `localhost`, and credentials it names |
 
-- `memory` is a whole number of GiB, `16` for 16 GiB. Changing it needs a
-  rebuild, which `start` offers. A value that is not a whole number above zero
-  stops the config loading rather than being skipped.
+- `memory` is a whole number of GiB, `16` for 16 GiB. An existing sandbox takes
+  a new value the next time its VM boots, with nothing rebuilt; one that is
+  running says so and waits for `playpen stop && playpen start`. Taking the key
+  out leaves the memory where it was. A value that is not a whole number above
+  zero stops the config loading rather than being skipped.
 - `masked` gives host and guest their own copy of a path: the 9p share is slow,
   and the two often need different contents there — native modules and toolchain
   builds are per-platform, and the environments drift.

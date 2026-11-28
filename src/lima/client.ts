@@ -96,25 +96,20 @@ export async function createAndStart(
  * Near-free on a reflinking filesystem. `clone` refuses a running source, and
  * without --tty=false it prompts and then starts the copy.
  */
-/**
- * A clone inherits the base's memory. `memoryGiB` gives it its own, through
- * the flag `limactl clone` shares with `limactl edit`.
- */
-export async function clone(
-	source: string,
-	target: string,
-	memoryGiB?: number,
-): Promise<void> {
+export async function clone(source: string, target: string): Promise<void> {
 	assertOurs("clone into", target);
 	mustSucceed(
 		"limactl clone",
-		await capture(LIMACTL, [
-			"clone",
-			"--tty=false",
-			...(memoryGiB === undefined ? [] : [`--memory=${memoryGiB}`]),
-			source,
-			target,
-		]),
+		await capture(LIMACTL, ["clone", "--tty=false", source, target]),
+	);
+}
+
+/** Takes effect when the instance next boots; Lima refuses a running one. */
+export async function setMemory(name: string, gib: number): Promise<void> {
+	assertOurs("edit", name);
+	mustSucceed(
+		"limactl edit",
+		await capture(LIMACTL, ["edit", "--tty=false", `--memory=${gib}`, name]),
 	);
 }
 

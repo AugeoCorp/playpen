@@ -147,8 +147,8 @@ effect on the next `start` without a rebuild.
 
 Consequence: cpus, disk and mountType come from the base, so they cannot yet
 vary per sandbox. They are global defaults today. Memory is the exception:
-`limactl clone --memory` sets it on the clone, from `memory` in
-`playpen.config.ts`.
+`limactl edit --memory` sets it on a stopped sandbox, new or existing, from
+`memory` in `playpen.config.ts`, with no rebuild.
 
 - [x] `image build`, with `--force` for a fresh dated bake
 - [x] base naming, lookup by hash, newest wins
